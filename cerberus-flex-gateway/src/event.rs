@@ -1,0 +1,58 @@
+// CerberusEvent — Rust mirror of cerberus-django's CoreData payload.
+//
+// Field naming and presence rules match
+// cerberus-django/src/cerberus_django/middleware.py:88-107 (the WS-side
+// payload). Credentials (api_key, client_id, token) are NOT serialized
+// here — they live at the batch envelope level (see sink.rs) and are
+// fanned into each Kafka message server-side by event_ingest.
+//
+// `custom_data` is intentionally absent in v1. See README "Known gaps in
+// v1" — the response-body mutation needed to extract `_cerberus_metrics`
+// is out of scope per flex_gateway_plan.md §7.
+
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CerberusEvent {
+    /// Hashed client IP (HMAC-SHA256 hex), or raw IP if no secret is
+    /// configured. None when no IP could be resolved.
+    pub remote_addr: Option<String>,
+
+    /// Request path without query string.
+    pub endpoint: String,
+
+    /// True for HTTPS, false for HTTP.
+    pub scheme: bool,
+
+    /// Uppercased HTTP method.
+    pub method: String,
+
+    /// ISO 8601 UTC timestamp captured at request_filter entry.
+    pub timestamp: String,
+
+    /// Sanitized headers (Authorization HMAC'd / SENSITIVE_HEADERS
+    /// REDACTED). BTreeMap so serialization order is stable across
+    /// runs — matters for deterministic golden-fixture comparisons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
+
+    /// Sanitized query parameters. Single-valued keys serialize as
+    /// strings, multi-valued as arrays — matches Django's `getlist`
+    /// behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_params: Option<serde_json::Map<String, serde_json::Value>>,
+
+    /// Sanitized JSON body for write-mutating methods + JSON content
+    /// type. None for everything else (matches Django middleware).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+
+    /// User-Agent header, raw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+
+    /// Application-supplied user identity (read from userIdHeader).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}

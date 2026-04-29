@@ -1,0 +1,36 @@
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: ApiInstance
+metadata:
+  name: cerberus-flex-test
+spec:
+  address: http://0.0.0.0:8081
+  services:
+    upstream:
+      address: http://backend
+      routes:
+        - config:
+            destinationPath: /anything/echo/
+  policies:
+    - policyRef:
+        # Patched by `make run` from $(POLICY_REF_NAME) — the value
+        # below is a placeholder so this file is valid as committed.
+        name: cerberus-flex-gateway-v1-0-impl
+        namespace: default
+      config:
+        ingestService: http://mock-ingest:8080
+        token: dev-token
+        clientId: dev-client
+        # Local-mode hashing: comment out secretKey to test the
+        # "no secret → raw PII + warn log" fallback path.
+        secretKey: cerberus-parity-test-key-v1
+        clientIpHeader: X-Forwarded-For
+        # No userIdHeader by default — set to e.g. X-User-Id once your
+        # upstream auth policy populates it.
+        capturePaths: []
+        excludePaths: []
+        captureRequestBody: true
+        batchSize: 50
+        flushIntervalMs: 2000
+        queueCapacity: 10000
+        logLevel: debug

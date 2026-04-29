@@ -1,0 +1,120 @@
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: Extension
+metadata:
+  labels:
+    title: "Cerberus Flex Gateway Policy"
+    description: "Captures HTTP request metadata, sanitizes PII, and ships events to the Cerberus event_ingest service."
+    category: Custom
+spec:
+  extends:
+    - name: extension-definition
+      namespace: default
+  properties:
+    # ---------------------------------------------------------------------
+    # Required
+    # ---------------------------------------------------------------------
+    ingestService:
+      type: string
+      description: "Cerberus event_ingest URL (e.g. https://ingest.cerberus.example.com). The policy POSTs to {ingestService}/v1/ingest/batch. Plain URL string rather than format:service so operators get the same 'paste a URL' UX as the Django middleware — see flex_gateway_plan.md §0 row 6."
+    token:
+      type: string
+      description: "Cerberus API key. Sent as both api_key and token in the batch envelope (token field is a back-compat duplicate retained for the WS-path wire shape)."
+      "@context":
+        "@characteristics":
+          - "security:sensitive"
+    clientId:
+      type: string
+      description: "Cerberus client identifier. Determines the Kafka topic events are routed to (events_{clientId})."
+
+    # ---------------------------------------------------------------------
+    # PII hashing
+    # ---------------------------------------------------------------------
+    secretKey:
+      type: string
+      description: "Optional. HMAC-SHA256 key used to hash source IP and Authorization headers. If omitted, the policy fetches it from {backendUrl}/api/secret-key at startup. If neither is set, PII is emitted raw with a one-time warning log (matches Django middleware fallback)."
+      "@context":
+        "@characteristics":
+          - "security:sensitive"
+    backendUrl:
+      type: string
+      format: uri
+      description: "Optional. Base URL to fetch the HMAC secret from at startup (e.g. https://cerberus.example.com). Fetched once on policy load with a 5s timeout; failure logs a warning and falls back to raw PII. Use https:// in production."
+
+    # ---------------------------------------------------------------------
+    # Request metadata extraction
+    # ---------------------------------------------------------------------
+    clientIpHeader:
+      type: string
+      default: "X-Forwarded-For"
+      description: "Request header to read the client IP from. The first hop is used (left-most value before any comma). Falls back to the connection source address if the header is absent."
+    userIdHeader:
+      type: string
+      description: "Optional. Request header to read end-user identity from (e.g. X-User-Id, X-End-User). The customer's upstream auth/JWT policy must populate the header pre-Cerberus. Required for per-end-user anomaly detection. Left intentionally configurable rather than defaulted so each deployment can pick its own header name."
+
+    # ---------------------------------------------------------------------
+    # Path scoping (the primary lever for high-RPS deployments)
+    # ---------------------------------------------------------------------
+    capturePaths:
+      type: array
+      items:
+        type: string
+      description: "Optional glob patterns (e.g. /api/v1/**, /users/*). If non-empty, ONLY matching request paths generate events. Non-matching requests pass through with no buffering, no sanitization, and no event — pure latency-free. Empty/unset = capture everything. Health endpoints (/health, /health_check, /ready) are always skipped regardless."
+    excludePaths:
+      type: array
+      items:
+        type: string
+      description: "Optional glob patterns. Matching paths are skipped. Applied AFTER capturePaths — useful for exempting noisy subroutes within an otherwise-captured prefix. Glob syntax is the `globset` crate's: `*` matches one path segment, `**` matches any number of segments."
+
+    # ---------------------------------------------------------------------
+    # Body capture
+    # ---------------------------------------------------------------------
+    captureRequestBody:
+      type: boolean
+      default: true
+      description: "Buffer + sanitize JSON request bodies (POST/PUT/PATCH, application/json content-type, 1MB cap). On by default for Django middleware parity. Disable on high-RPS routes where the request-body buffering latency matters."
+
+    # NOTE: captureResponseBody is intentionally absent in v1.
+    # Response-body mutation interacts badly with Content-Length /
+    # Content-Encoding / streaming bodies / signed responses, and the
+    # `_cerberus_metrics` extraction it would enable is unlikely to be
+    # exercised by Cerberus customers who install at the gateway layer
+    # (those who care set _cerberus_metrics from their app code, in which
+    # case they'd install cerberus-django at the app layer instead).
+    # See README "Known gaps in v1" and flex_gateway_plan.md §7.
+    # If we add it later: bump endpoint version to /v2/ingest/batch.
+
+    # ---------------------------------------------------------------------
+    # Buffering / batching
+    # ---------------------------------------------------------------------
+    batchSize:
+      type: integer
+      default: 50
+      minimum: 1
+      maximum: 1000
+      description: "Max events per outbound POST to ingestService. Server-side cap is 1000 (MAX_BATCH_SIZE on event_ingest); larger values would 413."
+    flushIntervalMs:
+      type: integer
+      default: 2000
+      minimum: 100
+      maximum: 60000
+      description: "How often (ms) the buffered events are flushed to ingestService. Lower values reduce in-memory loss on pod churn at the cost of more request frequency. 100ms minimum prevents tight-loop misconfigurations."
+    queueCapacity:
+      type: integer
+      default: 10000
+      minimum: 100
+      maximum: 1000000
+      description: "Per-WORKER bounded queue capacity. Total memory usage = workers × queueCapacity × per-event size (~2-10 KB). Drop-on-full with a counter included in the next batch payload — never blocks the request path."
+
+    # ---------------------------------------------------------------------
+    # Operational
+    # ---------------------------------------------------------------------
+    logLevel:
+      type: string
+      default: "info"
+      description: "Log verbosity. One of: debug, info, warn, error. Equivalent to Django middleware's CERBERUS_DEBUG env var. Increase to debug to trace per-request capture decisions and outbound POST traffic."
+
+  required:
+    - ingestService
+    - token
+    - clientId

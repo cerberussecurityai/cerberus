@@ -1,0 +1,47 @@
+[package]
+name = "cerberus-flex-gateway"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+resolver = "2"
+description = "Cerberus custom policy for MuleSoft Flex Gateway"
+license = "MIT"
+
+# Anypoint Exchange identifiers used by `make publish` / `make release`.
+# Replace placeholders with real IDs before running publish — see README
+# "Connected mode setup". Local-mode (`make run`) does not need them.
+[package.metadata.anypoint]
+group_id = "REPLACE-WITH-ANYPOINT-ORG-GROUP-ID"
+definition_asset_id = "cerberus-flex-gateway"
+implementation_asset_id = "cerberus-flex-gateway-impl"
+
+[lib]
+# `cdylib` produces the .wasm artifact for Flex Gateway. `rlib` is added
+# so integration tests under tests/ (e.g. parity_runner.rs) can import
+# the crate as a normal Rust library — without it, `cargo test` can't
+# link the test binary against the crate.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pdk = "1.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+anyhow = "1.0"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+futures = "0.3"
+globset = "0.4"
+url = "2.5"
+
+[dev-dependencies]
+pdk-test = "1.8.0"
+pdk-unit = "1.8.0"
+serde_yaml = "0.9"
+
+[profile.release]
+# Standard PDK release profile — minimize wasm size for faster cold load
+# in Flex Gateway.
+lto = true
+opt-level = 'z'
+strip = "debuginfo"

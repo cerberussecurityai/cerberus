@@ -1,0 +1,32 @@
+# Local Flex Gateway harness for `make run`.
+#
+# Boots a Flex Gateway in front of a dummy upstream (httpbin) plus a
+# trace-enabled ingest mock that records what the policy POSTs. Useful
+# for iterating on request/response handling without standing up a full
+# Cerberus stack.
+#
+# When you want to point at a real Cerberus event_ingest service
+# instead, set ingestService in playground/config/api.yaml to your
+# event_ingest URL and remove the `mock-ingest` service from this file.
+
+version: "3.3"
+
+services:
+  local-flex:
+    image: mulesoft/flex-gateway:1.10.0
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./config:/usr/local/share/mulesoft/flex-gateway/conf.d/
+
+  backend:
+    # Dummy upstream — Flex routes traffic here so the policy has
+    # something to inspect.
+    image: kennethreitz/httpbin
+
+  mock-ingest:
+    # Tiny mock that prints whatever the policy POSTs to /v1/ingest/batch.
+    # Replace with your real event_ingest in CI / dev-cluster runs.
+    image: mendhak/http-https-echo:33
+    environment:
+      - HTTP_PORT=8080
