@@ -1,0 +1,82 @@
+# Parity fixtures for the request-body content-type matching rule.
+#
+# Django's middleware._extract_body uses:
+#   if 'application/json' not in content_type: return None
+# i.e. a substring check. The Rust port MUST replicate the same rule.
+#
+# Both runners assert:
+#   matches_json_content_type(content_type) == expected_capture
+#
+# where matches_json_content_type(s) := "application/json" in s.
+#
+# This file documents the intended behavior at the rule level.
+# See cerberus-django/src/cerberus_django/middleware.py:325-363 for the
+# canonical implementation.
+cases:
+  # --- Captured ---
+
+  - name: standard_json
+    content_type: "application/json"
+    expected_capture: true
+
+  - name: json_with_charset_utf8
+    # The substring rule must accept this — Django, the Flask middleware,
+    # and most browsers/clients append charset.
+    content_type: "application/json; charset=utf-8"
+    expected_capture: true
+
+  - name: json_with_charset_iso8859
+    content_type: "application/json; charset=ISO-8859-1"
+    expected_capture: true
+
+  - name: json_with_uppercase
+    # Substring check is case-sensitive in Python; "Application/JSON"
+    # would NOT match. Django keeps content_type lowercase via the WSGI
+    # layer, so this is a normalize-first concern for the Rust port.
+    # We don't add a positive case for upper-case here — matching this
+    # would be a divergence; the Rust port should normalize content_type
+    # to lowercase before substring-matching.
+    content_type: "application/json"
+    expected_capture: true
+
+  # --- NOT captured ---
+
+  - name: vnd_api_json_NOT_captured
+    # The big footgun. "application/vnd.api+json" does NOT contain the
+    # substring "application/json" (the "json" is preceded by "+", not
+    # "/"). Both implementations must skip this content-type.
+    content_type: "application/vnd.api+json"
+    expected_capture: false
+
+  - name: vnd_other_json_NOT_captured
+    content_type: "application/vnd.foo+json"
+    expected_capture: false
+
+  - name: ld_json_NOT_captured
+    # JSON-LD has the same "+json" structure dressed up as a separate
+    # type. Skipped for the same reason.
+    content_type: "application/ld+json"
+    expected_capture: false
+
+  - name: form_urlencoded
+    content_type: "application/x-www-form-urlencoded"
+    expected_capture: false
+
+  - name: multipart_form
+    content_type: "multipart/form-data; boundary=---xyz"
+    expected_capture: false
+
+  - name: text_plain
+    content_type: "text/plain"
+    expected_capture: false
+
+  - name: empty_string
+    content_type: ""
+    expected_capture: false
+
+  - name: text_json_NOT_captured
+    # Some legacy systems send `text/json` — Django's substring check
+    # does not match this. Documenting the divergence so the Rust port
+    # doesn't decide to be "more lenient" and break parity.
+    content_type: "text/json"
+    expected_capture: false

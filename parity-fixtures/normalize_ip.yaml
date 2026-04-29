@@ -1,0 +1,84 @@
+# Parity fixtures for cerberus_core.normalize_ip.
+#
+# normalize_ip(ip_string) → str:
+#   1. Splits off any IPv6 zone identifier (`%eth0`, `%25en0`).
+#   2. Parses with ipaddress.ip_address (Python) / corresponding parser.
+#   3. Returns the canonical compressed form.
+#   4. On parse failure: returns the input unchanged.
+#   5. None → None.
+#
+# Both runners assert: `normalize_ip(input) == expected`.
+#
+# See cerberus-core/src/cerberus_core/sanitization.py:37-55 for the
+# canonical implementation.
+cases:
+  # --- IPv4 ---
+
+  - name: ipv4_passthrough
+    input: "192.168.1.1"
+    expected: "192.168.1.1"
+
+  - name: ipv4_loopback
+    input: "127.0.0.1"
+    expected: "127.0.0.1"
+
+  - name: ipv4_zero
+    input: "0.0.0.0"
+    expected: "0.0.0.0"
+
+  # --- IPv6 canonicalization ---
+
+  - name: ipv6_already_compressed_loopback
+    input: "::1"
+    expected: "::1"
+
+  - name: ipv6_long_form_compressed
+    input: "0000:0000:0000:0000:0000:0000:0000:0001"
+    expected: "::1"
+
+  - name: ipv6_link_local
+    input: "fe80::1"
+    expected: "fe80::1"
+
+  # --- IPv6 zone IDs ---
+  # Cerberus strips zone IDs so the same logical address always hashes
+  # the same way regardless of which interface routed it.
+
+  - name: ipv6_zone_eth0_stripped
+    input: "fe80::1%eth0"
+    expected: "fe80::1"
+
+  - name: ipv6_zone_url_encoded_stripped
+    input: "fe80::1%25en0"
+    expected: "fe80::1"
+
+  - name: ipv6_zone_numeric_stripped
+    input: "fe80::1%2"
+    expected: "fe80::1"
+
+  # --- IPv4-mapped IPv6 ---
+
+  - name: ipv4_mapped_ipv6_canonical_hex
+    # Python's ipaddress canonicalizes `::ffff:1.2.3.4` to `::ffff:102:304`.
+    # Rust's `std::net::Ipv6Addr::to_string` may produce the dotted form;
+    # the Rust port must canonicalize to match Python's output here.
+    input: "::ffff:192.168.1.1"
+    expected: "::ffff:c0a8:101"
+
+  # --- Failure / passthrough ---
+
+  - name: empty_string_passthrough
+    input: ""
+    expected: ""
+
+  - name: invalid_string_passthrough
+    input: "not-an-ip"
+    expected: "not-an-ip"
+
+  - name: garbage_passthrough
+    input: "12.foo.3.4"
+    expected: "12.foo.3.4"
+
+  - name: null_returns_null
+    input: null
+    expected: null

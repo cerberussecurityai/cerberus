@@ -1,0 +1,201 @@
+# Parity fixtures for cerberus_core.sanitize_dict.
+#
+# Each case has:
+#   name:     human label
+#   input:    dict or list to sanitize (the function takes either)
+#   expected: deep-equal expected return value
+#
+# Both runners assert: `sanitize_dict(input) == expected` (deep equality
+# on parsed values, not byte-equal serialization).
+#
+# See cerberus-core/src/cerberus_core/sanitization.py:83-117 for the
+# canonical implementation. SENSITIVE_KEYS lives at lines 28-34.
+cases:
+  # --- Single-level redaction over the full SENSITIVE_KEYS set ---
+  # Each key in SENSITIVE_KEYS must redact regardless of casing. Cover
+  # one representative casing per key plus a couple of weird ones (the
+  # function is supposed to .lower() the key before matching).
+
+  - name: password_redacted
+    input: { username: alice, password: hunter2 }
+    expected: { username: alice, password: "[REDACTED]" }
+
+  - name: passwd_redacted
+    input: { passwd: hunter2 }
+    expected: { passwd: "[REDACTED]" }
+
+  - name: secret_redacted
+    input: { secret: shh }
+    expected: { secret: "[REDACTED]" }
+
+  - name: token_redacted
+    input: { token: abc }
+    expected: { token: "[REDACTED]" }
+
+  - name: api_key_redacted
+    input: { api_key: sk_123 }
+    expected: { api_key: "[REDACTED]" }
+
+  - name: apikey_redacted
+    input: { apikey: sk_123 }
+    expected: { apikey: "[REDACTED]" }
+
+  - name: api_secret_redacted
+    input: { api_secret: shh }
+    expected: { api_secret: "[REDACTED]" }
+
+  - name: access_token_redacted
+    input: { access_token: tok }
+    expected: { access_token: "[REDACTED]" }
+
+  - name: refresh_token_redacted
+    input: { refresh_token: tok }
+    expected: { refresh_token: "[REDACTED]" }
+
+  - name: authorization_redacted
+    input: { authorization: "Bearer abc" }
+    expected: { authorization: "[REDACTED]" }
+
+  - name: auth_redacted
+    input: { auth: "Bearer abc" }
+    expected: { auth: "[REDACTED]" }
+
+  - name: credential_singular_redacted
+    input: { credential: shh }
+    expected: { credential: "[REDACTED]" }
+
+  - name: credentials_plural_redacted
+    input: { credentials: shh }
+    expected: { credentials: "[REDACTED]" }
+
+  - name: private_key_redacted
+    input: { private_key: "-----BEGIN..." }
+    expected: { private_key: "[REDACTED]" }
+
+  - name: ssh_key_redacted
+    input: { ssh_key: "ssh-rsa AAA..." }
+    expected: { ssh_key: "[REDACTED]" }
+
+  - name: session_id_redacted
+    input: { session_id: sid_abc }
+    expected: { session_id: "[REDACTED]" }
+
+  - name: session_token_redacted
+    input: { session_token: tok }
+    expected: { session_token: "[REDACTED]" }
+
+  - name: cookie_redacted
+    input: { cookie: "sessionid=abc" }
+    expected: { cookie: "[REDACTED]" }
+
+  - name: credit_card_redacted
+    input: { credit_card: "4111111111111111" }
+    expected: { credit_card: "[REDACTED]" }
+
+  - name: card_number_redacted
+    input: { card_number: "4111111111111111" }
+    expected: { card_number: "[REDACTED]" }
+
+  - name: cvv_redacted
+    input: { cvv: "123" }
+    expected: { cvv: "[REDACTED]" }
+
+  - name: ssn_redacted
+    input: { ssn: "123-45-6789" }
+    expected: { ssn: "[REDACTED]" }
+
+  # --- Casing ---
+
+  - name: case_insensitive_uppercase
+    input: { Password: hunter2, API_KEY: sk_123 }
+    expected: { Password: "[REDACTED]", API_KEY: "[REDACTED]" }
+
+  - name: case_insensitive_mixed
+    input: { PaSsWoRd: hunter2 }
+    expected: { PaSsWoRd: "[REDACTED]" }
+
+  # --- Nesting ---
+
+  - name: nested_redaction_replaces_subtree
+    # When a key matches SENSITIVE_KEYS, its entire value (dict, list,
+    # primitive) is replaced wholesale — recursion does NOT descend.
+    input:
+      user:
+        name: alice
+        credentials:
+          token: abc
+          role: admin
+    expected:
+      user:
+        name: alice
+        credentials: "[REDACTED]"
+
+  - name: deeply_nested_sensitive_key
+    input:
+      level1:
+        level2:
+          password: secret
+          value: 42
+    expected:
+      level1:
+        level2:
+          password: "[REDACTED]"
+          value: 42
+
+  # --- Lists ---
+
+  - name: list_of_dicts_each_sanitized
+    input:
+      - { username: alice, password: hunter2 }
+      - { username: bob, password: pass123 }
+    expected:
+      - { username: alice, password: "[REDACTED]" }
+      - { username: bob, password: "[REDACTED]" }
+
+  - name: dict_with_list_of_dicts_value
+    input:
+      users:
+        - { name: alice, api_key: key1 }
+        - { name: bob, api_key: key2 }
+    expected:
+      users:
+        - { name: alice, api_key: "[REDACTED]" }
+        - { name: bob, api_key: "[REDACTED]" }
+
+  - name: list_of_primitives_passthrough
+    input: [1, "hello", true, null]
+    expected: [1, "hello", true, null]
+
+  - name: mixed_list
+    input:
+      - { password: hunter2 }
+      - "plain_string"
+      - { safe_key: value }
+    expected:
+      - { password: "[REDACTED]" }
+      - "plain_string"
+      - { safe_key: value }
+
+  - name: nested_list_of_lists
+    input:
+      matrix:
+        - - { secret: x }
+        - - { value: y }
+    expected:
+      matrix:
+        - - { secret: "[REDACTED]" }
+        - - { value: y }
+
+  # --- Empty / passthrough ---
+
+  - name: empty_dict
+    input: {}
+    expected: {}
+
+  - name: empty_list
+    input: []
+    expected: []
+
+  - name: preserves_non_sensitive_values
+    input: { name: alice, age: 30, active: true, score: 9.5 }
+    expected: { name: alice, age: 30, active: true, score: 9.5 }
