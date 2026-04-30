@@ -24,8 +24,8 @@
 //
 //   on_tick (every flushIntervalMs):
 //     - drain up to batchSize events into a batch envelope with
-//       {api_key, client_id, token, events: [...]}
-//     - POST to ingestService/v1/ingest/batch
+//       {events: [...]}
+//     - POST to ingestService/v1/ingest/batch with X-API-Key header
 //     - on failure: drop the batch (at-most-once per §7 of plan)
 //
 // Implementation references for PDK shapes used here:
@@ -463,8 +463,7 @@ async fn configure(
         );
     }
     logger::info!(
-        "cerberus-flex-gateway: configured with clientId='{}' token_len={} ingestService='{}'",
-        config.client_id,
+        "cerberus-flex-gateway: configured with token_len={} ingestService='{}'",
         trimmed_token.len(),
         config.ingest_service
     );

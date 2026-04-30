@@ -19,11 +19,9 @@ pub struct Config {
     /// Cerberus event_ingest upstream — Envoy cluster reference.
     pub ingest_service: String,
 
-    /// Cerberus API key. Sent as both api_key and token in the wire payload.
+    /// Cerberus API key. Sent as the X-API-Key header on outbound
+    /// requests; the server resolves client_id from the key.
     pub token: String,
-
-    /// Cerberus client identifier — derives Kafka topic events_{clientId}.
-    pub client_id: String,
 
     /// Optional. HMAC-SHA256 key for PII hashing.
     pub secret_key: Option<String>,

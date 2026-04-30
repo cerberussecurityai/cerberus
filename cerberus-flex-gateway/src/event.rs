@@ -2,9 +2,10 @@
 //
 // Field naming and presence rules match
 // cerberus-django/src/cerberus_django/middleware.py:88-107 (the WS-side
-// payload). Credentials (api_key, client_id, token) are NOT serialized
-// here — they live at the batch envelope level (see sink.rs) and are
-// fanned into each Kafka message server-side by event_ingest.
+// payload). The api_key is NOT serialized here — it rides as the
+// X-API-Key header on the batch POST (see sink.rs), and the server
+// stamps client_id and token onto each Kafka message after resolving
+// them from the key.
 //
 // `custom_data` is intentionally absent in v1. See README "Known gaps in
 // v1" — the response-body mutation needed to extract `_cerberus_metrics`

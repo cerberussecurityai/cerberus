@@ -19,13 +19,10 @@ spec:
       description: "Cerberus event_ingest URL (e.g. https://ingest.cerberus.example.com). The policy POSTs to {ingestService}/v1/ingest/batch. Plain URL string rather than format:service so operators get the same 'paste a URL' UX as the Django middleware — see flex_gateway_plan.md §0 row 6."
     token:
       type: string
-      description: "Cerberus API key. Sent as both api_key and token in the batch envelope (token field is a back-compat duplicate retained for the WS-path wire shape)."
+      description: "Cerberus API key. Sent as the X-API-Key header on outbound requests to event_ingest; the server resolves client_id from the key (1:1)."
       "@context":
         "@characteristics":
           - "security:sensitive"
-    clientId:
-      type: string
-      description: "Cerberus client identifier. Determines the Kafka topic events are routed to (events_{clientId})."
 
     # ---------------------------------------------------------------------
     # PII hashing
@@ -117,4 +114,3 @@ spec:
   required:
     - ingestService
     - token
-    - clientId

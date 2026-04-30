@@ -55,8 +55,7 @@ each.
 | Property | Required | Default | Purpose |
 |---|:---:|---|---|
 | `ingestService` | ✓ | — | Cerberus `event_ingest` upstream (`format: service`). The policy POSTs to `<ingestService>/v1/ingest/batch`. |
-| `token` | ✓ | — | Cerberus API key. Sent at the batch-envelope level + duplicated as `token` for back-compat. Trimmed at config-parse time. |
-| `clientId` | ✓ | — | Cerberus client identifier. Determines the Kafka topic. |
+| `token` | ✓ | — | Cerberus API key. Sent as the `X-API-Key` header on outbound requests; the server resolves `client_id` from the key (1:1). Trimmed at config-parse time. |
 | `secretKey` | | — | HMAC key for PII hashing. Inline alternative to `backendUrl`. |
 | `backendUrl` | | — | Base URL to fetch HMAC key from at startup. 5-second timeout; failure logs and falls back to raw PII. Use `https://` in production. |
 | `clientIpHeader` | | `X-Forwarded-For` | Header to read the client IP from (first hop). Falls back to Envoy connection source if absent. |
@@ -167,7 +166,7 @@ Reference:
    anypoint-cli-v4 api-mgr policy apply \
      --apiInstanceId <id> \
      --policyId <exchange-asset-id> \
-     --config '{"ingestService":"...","token":"...","clientId":"..."}'
+     --config '{"ingestService":"...","token":"..."}'
    ```
 4. Verify in API Manager + gateway pod logs.
 
@@ -183,14 +182,14 @@ curl -X POST https://your-flex-gateway/api/v1/users \
      -H 'Content-Type: application/json' \
      -d '{"username": "alice", "password": "hunter2"}'
 
-# Confirm Kafka topic received the event
+# Confirm Kafka topic received the event (client_id is resolved server-side from the api_key)
 kubectl exec -it -n cerberus deployment/cerberus-event-ingest -- \
-  kafka-console-consumer.sh --bootstrap-server <bootstrap> --topic events_<clientId>
+  kafka-console-consumer.sh --bootstrap-server <bootstrap> --topic events_<your-client-id>
 
 # Confirm event_process wrote to Postgres
 psql ... -c "SELECT method, endpoint, headers->>'Authorization' AS auth_redacted
               FROM processed_events
-              WHERE client_id = '<clientId>'
+              WHERE client_id = '<your-client-id>'
               ORDER BY timestamp DESC LIMIT 5;"
 ```
 

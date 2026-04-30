@@ -20,7 +20,6 @@ spec:
       config:
         ingestService: http://mock-ingest:8080
         token: dev-token
-        clientId: dev-client
         # Local-mode hashing: comment out secretKey to test the
         # "no secret → raw PII + warn log" fallback path.
         secretKey: cerberus-parity-test-key-v1

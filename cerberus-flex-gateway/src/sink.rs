@@ -4,16 +4,16 @@
 // event_ingest's POST /v1/ingest/batch endpoint:
 //
 //   {
-//     "api_key":   "<token>",
-//     "client_id": "<clientId>",
-//     "token":     "<token>",        // back-compat duplicate
-//     "events":    [...]
+//     "events": [...]
 //   }
 //
-// The server fans the credentials back into each individual event before
-// publishing to Kafka so the resulting message is byte-compatible with
-// the WS path's output. See cerberus-int/services/event_ingest/main.py
-// (ingest_batch handler) for the contract.
+// Auth is via the X-API-Key HTTP header (same scheme as /api/secret-key).
+// The server looks up client_id from the api_key (1:1) and stamps both
+// client_id and token onto each event server-side before publishing to
+// Kafka, so the resulting message is byte-compatible with the WS path's
+// output. Missing/invalid header → 401; valid header but unknown key →
+// 403. See cerberus-int/services/event_ingest/main.py (ingest_batch
+// handler) for the contract.
 //
 // Delivery semantics: at-most-once (per flex_gateway_plan.md §7). On
 // HTTP failure the batch is dropped — we log and move on. The plan
@@ -35,9 +35,6 @@ const POST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Serialize)]
 struct BatchEnvelope<'a> {
-    api_key: &'a str,
-    client_id: &'a str,
-    token: &'a str,
     events: &'a [CerberusEvent],
 }
 
@@ -51,12 +48,7 @@ pub async fn post_batch(
         return Ok(());
     }
 
-    let envelope = BatchEnvelope {
-        api_key: &config.token,
-        client_id: &config.client_id,
-        token: &config.token,
-        events: &events,
-    };
+    let envelope = BatchEnvelope { events: &events };
 
     let body = serde_json::to_vec(&envelope)?;
 
@@ -76,7 +68,10 @@ pub async fn post_batch(
         .request(ingest_service)
         .path(BATCH_PATH)
         .timeout(POST_TIMEOUT)
-        .headers(vec![("content-type", "application/json")])
+        .headers(vec![
+            ("content-type", "application/json"),
+            ("x-api-key", &config.token),
+        ])
         .body(&body)
         .post()
         .await
