@@ -5,7 +5,7 @@
 # The Rust runner asserts:
 #   should_capture(endpoint, capture_paths, exclude_paths) == expected
 #
-# Rules (per flex_gateway_plan.md §0 row 13 + §2.3):
+# Rules:
 #   1. Health endpoints (/health, /health_check, /ready) are filtered
 #      OUTSIDE this function — they're skipped before path_filter runs.
 #      This file does NOT cover them; runner tests them separately.

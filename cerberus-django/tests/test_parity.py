@@ -3,13 +3,8 @@
 The same YAML fixtures consumed by these tests are the source of truth for
 the Rust port of the same primitives in ``cerberus-flex-gateway`` (which
 duplicates the constants and reimplements the logic for the Flex Gateway
-WASM target).
-
-If a case fails here AND in the Rust runner: a constant has drifted between
-implementations and one of them needs to update.
-
-If a case fails only here: the Python implementation has regressed and
-the Rust port now diverges.
+WASM target). These tests exist to ensure the two implementations don't
+drift silently.
 
 Fixtures live at ``cerberus/parity-fixtures/``. See the README there for
 the file format and how to add cases.
@@ -20,7 +15,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cerberus_core import hash_pii, normalize_ip, sanitize_dict
+from cerberus_core import SENSITIVE_HEADERS, hash_pii, normalize_ip, sanitize_dict
+from cerberus_django.middleware import _matches_json_content_type
 
 # parity-fixtures is a sibling of cerberus-django/, so we resolve relative
 # to this file: cerberus/cerberus-django/tests/test_parity.py
@@ -35,6 +31,8 @@ def _load(filename):
     output keyed by its ``name`` field.
     """
     path = FIXTURES_DIR / filename
+    if not path.exists():
+        pytest.fail(f"Fixture file not found: {path}", pytrace=False)
     with path.open() as f:
         doc = yaml.safe_load(f)
     return [pytest.param(c, id=c["name"]) for c in doc["cases"]]
@@ -66,14 +64,22 @@ def test_hash_pii_parity(case):
 
 @pytest.mark.parametrize("case", _load("content_type.yaml"))
 def test_content_type_parity(case):
-    """Replicate Django's ``_extract_body`` substring check.
-
-    Django uses ``'application/json' not in content_type`` to decide
-    whether to parse the body. The Rust port must match this exactly,
-    including the negative case for ``application/vnd.api+json``.
-    """
-    matches = "application/json" in case["content_type"]
-    assert matches == case["expected_capture"], (
-        f"{case['name']!r}: matches={matches}, "
-        f"expected_capture={case['expected_capture']}"
+    actual = _matches_json_content_type(case["content_type"])
+    assert actual == case["expected_capture"], (
+        f"{case['name']!r}: got {actual!r}, "
+        f"expected {case['expected_capture']!r}"
     )
+
+
+@pytest.mark.parametrize("case", _load("sensitive_headers.yaml"))
+def test_sensitive_headers_parity(case):
+    actual = case["header"] in SENSITIVE_HEADERS
+    assert actual == case["expected_sensitive"], (
+        f"{case['name']!r}: got {actual!r}, "
+        f"expected {case['expected_sensitive']!r}"
+    )
+
+
+def test_path_filter_yaml_is_valid():
+    """Rust-only fixture; parse it here so a YAML syntax error fails fast."""
+    _load("path_filter.yaml")

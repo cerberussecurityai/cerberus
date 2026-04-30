@@ -14,11 +14,12 @@ fail and force the Rust port to update. **Don't skip these tests.**
 
 | File | Tested by Python | Tested by Rust | Notes |
 |------|:---:|:---:|---|
-| `sanitize_dict.yaml`   | ✅ | ✅ | Body / query-param redaction (`SENSITIVE_KEYS`). |
-| `normalize_ip.yaml`    | ✅ | ✅ | IPv6 zone stripping, IPv4-mapped IPv6, etc. |
-| `hash_pii.yaml`        | ✅ | ✅ | HMAC-SHA256 hex digests with a fixed test secret. |
-| `content_type.yaml`    | ✅ | ✅ | `application/json` substring matching for body capture. |
-| `path_filter.yaml`     | ✗  | ✅ | Rust-only. Django scopes per-app via middleware inclusion. |
+| `sanitize_dict.yaml`     | ✅ | ✅ | Body / query-param redaction (`SENSITIVE_KEYS`). |
+| `normalize_ip.yaml`      | ✅ | ✅ | IPv6 zone stripping, IPv4-mapped IPv6, etc. |
+| `hash_pii.yaml`          | ✅ | ✅ | HMAC-SHA256 hex digests with a fixed test secret. |
+| `content_type.yaml`      | ✅ | ✅ | `application/json` substring matching for body capture. |
+| `sensitive_headers.yaml` | ✅ | ✅ | `SENSITIVE_HEADERS` set membership. |
+| `path_filter.yaml`       | ✗  | ✅ | Rust-only. Django scopes per-app via middleware inclusion. |
 
 The Python runner lives at `cerberus-django/tests/test_parity.py`. The Rust
 runner is in `cerberus-flex-gateway/tests/parity/` (added when the Rust
