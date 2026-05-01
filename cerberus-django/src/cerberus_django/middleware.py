@@ -322,6 +322,15 @@ def _extract_query_params(request):
     return params
 
 
+def _matches_json_content_type(content_type):
+    """Return True if content_type contains the substring ``application/json``.
+
+    ``application/vnd.api+json`` does NOT match — it has no ``application/json``
+    substring; the ``json`` token follows ``+``, not ``/``.
+    """
+    return 'application/json' in content_type
+
+
 def _extract_body(request):
     """Extract request body from Django request.
 
@@ -338,7 +347,7 @@ def _extract_body(request):
         return None
 
     content_type = request.content_type or ''
-    if 'application/json' not in content_type:
+    if not _matches_json_content_type(content_type):
         return None
 
     try:

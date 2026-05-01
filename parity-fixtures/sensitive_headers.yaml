@@ -1,0 +1,63 @@
+# Parity fixtures for cerberus_core.SENSITIVE_HEADERS membership.
+#
+# Both runners assert: `header in SENSITIVE_HEADERS == expected_sensitive`.
+#
+# Header names use the Python WSGI convention (`HTTP_` prefix, underscores,
+# uppercase). The Rust port translates raw header names into this form
+# before checking — this file pins the canonical set so neither side can
+# add or drop a header silently.
+#
+# See cerberus-core/src/cerberus_core/sanitization.py:17-24 for the
+# canonical definition.
+cases:
+  # --- Sensitive (must redact) ---
+
+  - name: authorization_is_sensitive
+    header: HTTP_AUTHORIZATION
+    expected_sensitive: true
+
+  - name: cookie_is_sensitive
+    header: HTTP_COOKIE
+    expected_sensitive: true
+
+  - name: set_cookie_is_sensitive
+    header: HTTP_SET_COOKIE
+    expected_sensitive: true
+
+  - name: x_api_key_is_sensitive
+    header: HTTP_X_API_KEY
+    expected_sensitive: true
+
+  - name: x_auth_token_is_sensitive
+    header: HTTP_X_AUTH_TOKEN
+    expected_sensitive: true
+
+  - name: proxy_authorization_is_sensitive
+    header: HTTP_PROXY_AUTHORIZATION
+    expected_sensitive: true
+
+  # --- NOT sensitive (passthrough) ---
+
+  - name: user_agent_passthrough
+    header: HTTP_USER_AGENT
+    expected_sensitive: false
+
+  - name: accept_passthrough
+    header: HTTP_ACCEPT
+    expected_sensitive: false
+
+  - name: host_passthrough
+    header: HTTP_HOST
+    expected_sensitive: false
+
+  # --- Casing matters: membership check is exact-string ---
+
+  - name: lowercase_authorization_NOT_in_set
+    # The set uses upper-case keys; lowercase wouldn't match without
+    # normalization. Pinning the contract.
+    header: http_authorization
+    expected_sensitive: false
+
+  - name: bare_authorization_NOT_in_set
+    header: AUTHORIZATION
+    expected_sensitive: false

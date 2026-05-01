@@ -1,0 +1,118 @@
+# Parity fixtures for the Flex Gateway path filter (capturePaths /
+# excludePaths). **Rust-only** — Django scopes per-app via middleware
+# inclusion in MIDDLEWARE settings, so there is no Python equivalent.
+#
+# The Rust runner asserts:
+#   should_capture(endpoint, capture_paths, exclude_paths) == expected
+#
+# Rules:
+#   1. Health endpoints (/health, /health_check, /ready) are filtered
+#      OUTSIDE this function — they're skipped before path_filter runs.
+#      This file does NOT cover them; runner tests them separately.
+#   2. capturePaths is an allowlist. Empty = capture-everything.
+#   3. excludePaths is a denylist. Empty = exclude-nothing.
+#   4. excludePaths wins over capturePaths on overlap.
+#   5. Glob syntax: globset crate semantics.
+#      `*`  matches one path segment (no slashes);
+#      `**` matches any number of path segments (recursive).
+#
+# See cerberus-flex-gateway/src/path_filter.rs for the canonical impl.
+cases:
+  # --- Default: empty filters capture everything ---
+
+  - name: empty_filters_capture_root
+    endpoint: "/"
+    capture_paths: []
+    exclude_paths: []
+    expected: true
+
+  - name: empty_filters_capture_arbitrary
+    endpoint: "/api/v1/users/42/profile"
+    capture_paths: []
+    exclude_paths: []
+    expected: true
+
+  # --- capturePaths allowlist ---
+
+  - name: allowlist_match
+    endpoint: "/api/v1/users"
+    capture_paths: ["/api/**"]
+    exclude_paths: []
+    expected: true
+
+  - name: allowlist_no_match
+    endpoint: "/admin/dashboard"
+    capture_paths: ["/api/**"]
+    exclude_paths: []
+    expected: false
+
+  - name: allowlist_single_segment_glob_match
+    endpoint: "/users/alice"
+    capture_paths: ["/users/*"]
+    exclude_paths: []
+    expected: true
+
+  - name: allowlist_single_segment_glob_no_recurse
+    # `/users/*` should match `/users/alice` but NOT `/users/alice/profile`
+    endpoint: "/users/alice/profile"
+    capture_paths: ["/users/*"]
+    exclude_paths: []
+    expected: false
+
+  - name: allowlist_recursive_glob_match
+    endpoint: "/users/alice/profile/avatar"
+    capture_paths: ["/users/**"]
+    exclude_paths: []
+    expected: true
+
+  - name: allowlist_multiple_patterns_one_matches
+    endpoint: "/billing/invoices"
+    capture_paths: ["/api/**", "/billing/**"]
+    exclude_paths: []
+    expected: true
+
+  # --- excludePaths denylist ---
+
+  - name: denylist_match_skipped
+    endpoint: "/internal/debug"
+    capture_paths: []
+    exclude_paths: ["/internal/**"]
+    expected: false
+
+  - name: denylist_no_match_captured
+    endpoint: "/api/v1/users"
+    capture_paths: []
+    exclude_paths: ["/internal/**"]
+    expected: true
+
+  # --- excludePaths overrides capturePaths ---
+
+  - name: exclude_wins_over_capture_on_overlap
+    # capturePaths says "/api/**" but excludePaths says "/api/internal/**".
+    # The latter is more specific and should win.
+    endpoint: "/api/internal/secret"
+    capture_paths: ["/api/**"]
+    exclude_paths: ["/api/internal/**"]
+    expected: false
+
+  - name: capture_holds_when_exclude_doesnt_match
+    endpoint: "/api/v1/users"
+    capture_paths: ["/api/**"]
+    exclude_paths: ["/api/internal/**"]
+    expected: true
+
+  # --- Trailing-slash sensitivity ---
+  # Globset matches as exact path strings — no auto-stripping. Operators
+  # who care about trailing slashes need to add both patterns explicitly.
+
+  - name: trailing_slash_no_implicit_match_with_pattern
+    endpoint: "/api/v1/users/"
+    capture_paths: ["/api/v1/users"]  # no trailing slash
+    exclude_paths: []
+    expected: false
+
+  - name: trailing_slash_explicit_match
+    endpoint: "/api/v1/users/"
+    capture_paths: ["/api/v1/users/"]  # exact pattern with slash
+    exclude_paths: []
+    expected: true
