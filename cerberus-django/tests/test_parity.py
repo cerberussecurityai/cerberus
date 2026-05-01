@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cerberus_core import SENSITIVE_HEADERS, hash_pii, normalize_ip, sanitize_dict
+from cerberus_core import REDACTED, SENSITIVE_HEADERS, SENSITIVE_KEYS, hash_pii, normalize_ip, sanitize_dict
 from cerberus_django.middleware import _matches_json_content_type
 
 # parity-fixtures is a sibling of cerberus-django/, so we resolve relative
@@ -83,3 +83,51 @@ def test_sensitive_headers_parity(case):
 def test_path_filter_yaml_is_valid():
     """Rust-only fixture; parse it here so a YAML syntax error fails fast."""
     _load("path_filter.yaml")
+
+
+def _walk_redacted_keys(input_obj, expected_obj):
+    """Yield (lowercased) keys whose value in ``expected_obj`` is REDACTED."""
+    if isinstance(input_obj, dict) and isinstance(expected_obj, dict):
+        for key in input_obj:
+            if key not in expected_obj:
+                continue
+            if expected_obj[key] == REDACTED and not isinstance(input_obj[key], (dict, list)):
+                if isinstance(key, str):
+                    yield key.lower()
+            else:
+                yield from _walk_redacted_keys(input_obj[key], expected_obj[key])
+    elif isinstance(input_obj, list) and isinstance(expected_obj, list):
+        for inp_item, exp_item in zip(input_obj, expected_obj):
+            yield from _walk_redacted_keys(inp_item, exp_item)
+
+
+def test_sensitive_keys_fully_covered_by_fixture():
+    """Every SENSITIVE_KEYS entry must have a redaction case in sanitize_dict.yaml.
+
+    Catches the case where a new key is added to SENSITIVE_KEYS without a
+    corresponding fixture, which would otherwise silently leave the Rust
+    port's parity unverified for that key.
+    """
+    covered = set()
+    for param in _load("sanitize_dict.yaml"):
+        case = param.values[0]
+        covered.update(_walk_redacted_keys(case["input"], case["expected"]))
+    missing = SENSITIVE_KEYS - covered
+    assert not missing, (
+        f"SENSITIVE_KEYS without a redaction case in sanitize_dict.yaml: "
+        f"{sorted(missing)}"
+    )
+
+
+def test_sensitive_headers_fully_covered_by_fixture():
+    """Every SENSITIVE_HEADERS entry must have a positive case in sensitive_headers.yaml."""
+    covered = set()
+    for param in _load("sensitive_headers.yaml"):
+        case = param.values[0]
+        if case["expected_sensitive"]:
+            covered.add(case["header"])
+    missing = SENSITIVE_HEADERS - covered
+    assert not missing, (
+        f"SENSITIVE_HEADERS without a fixture case in sensitive_headers.yaml: "
+        f"{sorted(missing)}"
+    )
