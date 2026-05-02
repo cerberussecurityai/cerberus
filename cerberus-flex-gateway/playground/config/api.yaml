@@ -15,7 +15,7 @@ spec:
     - policyRef:
         # Patched by `make run` from $(POLICY_REF_NAME) — the value
         # below is a placeholder so this file is valid as committed.
-        name: cerberus-flex-gateway-v1-0-impl
+        name: cerberus-flex-gateway-flex-v0-1
         namespace: default
       config:
         ingestService: http://echo:8080

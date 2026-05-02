@@ -40,6 +40,15 @@ mod secret;
 mod sink;
 mod source_ip;
 
+// Toolchain-generated module. Produced by `cargo anypoint config-gen`
+// from definition/gcl.yaml. We don't use the generated `Config` struct
+// (we use our hand-written typed wrapper in `mod config` instead, which
+// applies serde defaults), but the module must be compiled in because
+// it contains a `#[pdk::hl::entrypoint_flex] fn init(...)` hook the
+// PDK runtime relies on.
+#[allow(dead_code)]
+mod generated;
+
 /// Re-exports for the cross-impl parity test runner at
 /// tests/parity_runner.rs. Marked `#[doc(hidden)]` so it doesn't
 /// show up in operator-facing rustdoc; the internal modules are
@@ -52,7 +61,6 @@ pub mod __test_exports {
     pub use super::content_type_is_json;
 }
 
-use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -77,11 +85,6 @@ const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
 struct PolicyContext {
     config: Config,
     secret_key: Option<String>,
-    /// PDK Service constructed from config.ingest_service URL at startup.
-    /// We declare ingestService as a plain URL string (rather than
-    /// format:service); HttpClient requires a Service so we manufacture
-    /// one here.
-    ingest_service: Service,
     path_filter: PathFilter,
     queue: EventQueue,
 }
@@ -93,18 +96,9 @@ impl PolicyContext {
             config.exclude_paths.as_deref().unwrap_or(&[]),
         )?;
         let queue = EventQueue::new(config.queue_capacity as usize);
-        let ingest_uri = Uri::from_str(&config.ingest_service).map_err(|e| {
-            anyhow!(
-                "cerberus-flex-gateway: invalid ingestService URL {:?}: {}",
-                config.ingest_service,
-                e
-            )
-        })?;
-        let ingest_service = Service::from("cerberus-ingest", "default", ingest_uri);
         Ok(Self {
             config,
             secret_key,
-            ingest_service,
             path_filter,
             queue,
         })
@@ -206,7 +200,7 @@ async fn request_filter(
         && matches!(method.as_str(), "POST" | "PUT" | "PATCH")
         && content_type_is_json(headers_state.handler().header("content-type").as_deref());
 
-    let timestamp = current_timestamp_iso8601(&stream);
+    let timestamp = current_timestamp_iso8601();
     let endpoint_for_event = endpoint.clone();
 
     if should_capture_body {
@@ -272,7 +266,7 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
             );
         }
 
-        if let Err(err) = sink::post_batch(client, &ctx.ingest_service, &ctx.config, &drained).await {
+        if let Err(err) = sink::post_batch(client, &ctx.config.ingest_service, &ctx.config, &drained).await {
             // At-most-once. We log and move on — the next tick will try
             // a fresh batch with whatever has accumulated.
             //
@@ -400,26 +394,55 @@ pub fn content_type_is_json(content_type: Option<&str>) -> bool {
     ct.to_ascii_lowercase().contains("application/json")
 }
 
-/// Build an ISO 8601 UTC timestamp.
+/// Build an ISO 8601 UTC timestamp for the current moment.
 ///
-/// PDK does not currently expose a host wall clock to WASM filters
-/// directly. We read Envoy's `request.time` attribute (microseconds since
-/// epoch) and format it ourselves. If the attribute is absent we fall
-/// back to "1970-01-01T00:00:00.000000+00:00" with a warn log — this is
-/// almost certainly a misconfiguration (Envoy always sets request.time)
-/// and the dashboard side will surface it.
-fn current_timestamp_iso8601(stream: &StreamProperties) -> String {
-    // TODO(v1.1): confirm the exact Envoy attribute name + encoding for
-    // request time on PDK 1.8.0.
-    if let Some(bytes) = stream.read_property(&["request", "time"]) {
-        if let Ok(s) = std::str::from_utf8(&bytes) {
-            if !s.is_empty() {
-                return s.to_string();
-            }
-        }
-    }
-    logger::warn!("cerberus-flex-gateway: request.time unavailable; emitting epoch");
-    "1970-01-01T00:00:00.000000+00:00".to_string()
+/// We previously tried Envoy's `request.time` stream property, but it
+/// isn't reliably exposed via PDK 1.8's `read_property` bridge — the
+/// official examples (e.g. `data-storage-stats/`) capture wall-clock
+/// time inside the filter instead. We use proxy-wasm's
+/// `get_current_time` hostcall directly, which returns a `SystemTime`
+/// from the host (Envoy) clock and works from WASM where a syscall-
+/// based `SystemTime::now()` would not.
+///
+/// The returned string follows RFC 3339 / ISO 8601 with microsecond
+/// precision and a literal `+00:00` suffix
+/// (e.g. `2026-05-02T23:14:05.123456+00:00`).
+fn current_timestamp_iso8601() -> String {
+    use pdk::classy::proxy_wasm::hostcalls;
+    use std::time::UNIX_EPOCH;
+
+    let t = hostcalls::get_current_time().unwrap_or(UNIX_EPOCH);
+    let dur = t.duration_since(UNIX_EPOCH).unwrap_or_default();
+    format_epoch(dur.as_secs() as i64, dur.subsec_micros())
+}
+
+/// Format `(seconds-since-epoch, microseconds)` as ISO 8601 UTC. Pure
+/// arithmetic — no chrono/time dep, keeps the wasm artifact small.
+/// Uses Howard Hinnant's `civil_from_days` algorithm (see
+/// http://howardhinnant.github.io/date_algorithms.html#civil_from_days).
+fn format_epoch(secs: i64, micros: u32) -> String {
+    let days = secs.div_euclid(86_400);
+    let secs_of_day = secs.rem_euclid(86_400) as u64;
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day / 60) % 60;
+    let second = secs_of_day % 60;
+
+    // civil_from_days: days since 1970-01-01 → (year, month, day).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}+00:00",
+        y, m, d, hour, minute, second, micros
+    )
 }
 
 #[entrypoint]
@@ -446,9 +469,8 @@ async fn configure(
         );
     }
     logger::info!(
-        "cerberus-flex-gateway: configured with token_len={} ingestService='{}'",
-        trimmed_token.len(),
-        config.ingest_service
+        "cerberus-flex-gateway: configured with token_len={}",
+        trimmed_token.len()
     );
 
     if config.user_id_header.is_none() {
@@ -513,6 +535,23 @@ mod tests {
         assert!(!content_type_is_json(Some("text/plain")));
         assert!(!content_type_is_json(None));
         assert!(!content_type_is_json(Some("")));
+    }
+
+    #[test]
+    fn format_epoch_known_values() {
+        // Unix epoch.
+        assert_eq!(format_epoch(0, 0), "1970-01-01T00:00:00.000000+00:00");
+        // 2024-02-29 leap day, 12:34:56.789012 UTC. Day count cross-
+        // checked via `date -j -f '%Y-%m-%d' '2024-02-29' +%s` → 1709164800.
+        assert_eq!(
+            format_epoch(1_709_164_800 + 12 * 3600 + 34 * 60 + 56, 789_012),
+            "2024-02-29T12:34:56.789012+00:00"
+        );
+        // 2000-01-01 00:00:00 (century leap year).
+        assert_eq!(
+            format_epoch(946_684_800, 0),
+            "2000-01-01T00:00:00.000000+00:00"
+        );
     }
 
     #[test]

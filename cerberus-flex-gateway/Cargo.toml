@@ -1,5 +1,11 @@
 [package]
-name = "cerberus-flex-gateway"
+# Cargo crate name uses underscores to match the wasm artifact filename
+# (cargo always converts hyphens → underscores in produced binaries, but
+# the PDK Makefile uses `cargo anypoint get-name` verbatim — keeping
+# them aligned avoids "file not found" errors during `make build`).
+# The Anypoint Exchange asset IDs in [package.metadata.anypoint] keep
+# hyphens, since those are the user-facing identifiers in Exchange.
+name = "cerberus_flex_gateway"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88.0"
@@ -11,9 +17,9 @@ license = "MIT"
 # Replace placeholders with real IDs before running publish — see README
 # "Connected mode setup". Local-mode (`make run`) does not need them.
 [package.metadata.anypoint]
-group_id = "REPLACE-WITH-ANYPOINT-ORG-GROUP-ID"
+group_id = "bfb16c88-b6af-4644-bdb4-08d9929bfc91"
 definition_asset_id = "cerberus-flex-gateway"
-implementation_asset_id = "cerberus-flex-gateway-impl"
+implementation_asset_id = "cerberus-flex-gateway-flex"
 
 [lib]
 # `cdylib` produces the .wasm artifact for Flex Gateway. `rlib` is added

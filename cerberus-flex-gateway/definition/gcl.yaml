@@ -3,9 +3,10 @@ apiVersion: gateway.mulesoft.com/v1alpha1
 kind: Extension
 metadata:
   labels:
-    title: "Cerberus Flex Gateway Policy"
+    title: cerberus-flex-gateway
     description: "Captures HTTP request metadata, sanitizes PII, and ships events to the Cerberus backend."
     category: Custom
+    metadata/interfaceScope: api,resource
 spec:
   extends:
     - name: extension-definition
@@ -16,7 +17,8 @@ spec:
     # ---------------------------------------------------------------------
     ingestService:
       type: string
-      description: "Cerberus backend URL (e.g. https://ingest.cerberus.example.com). The policy POSTs to {ingestService}/v1/ingest/batch."
+      format: service
+      description: "Cerberus backend URL (e.g. https://ingest.cerberus.example.com). The policy POSTs to {ingestService}/v1/ingest/batch. `format: service` causes Flex Gateway to register an Envoy cluster for this URL at policy load — required for outbound dispatch from the WASM filter."
     token:
       type: string
       description: "Cerberus API key. Sent as the X-API-Key header on outbound requests to the Cerberus backend."
