@@ -1,10 +1,9 @@
 // Source IP resolution.
 //
-// Strategy (per flex_gateway_plan.md §0 row 5):
+// Strategy:
 //   1. Read the configured `clientIpHeader` (default X-Forwarded-For).
 //      If present and non-empty, take the first hop (everything left of
-//      the first comma) and trim. This is the externally-observed client
-//      IP behind any number of LBs / proxies.
+//      the first comma), trim, and strip a trailing port if present.
 //   2. Otherwise, fall back to Envoy's source.address stream property.
 //      That gives "host:port" form ("1.2.3.4:54321" or "[::1]:54321") —
 //      strip the port.
@@ -27,7 +26,11 @@ pub fn resolve(client_ip_header_value: Option<String>, stream: &StreamProperties
     if let Some(value) = client_ip_header_value {
         let first_hop = value.split(',').next().unwrap_or("").trim();
         if !first_hop.is_empty() {
-            return Some(first_hop.to_string());
+            // XFF values normally don't carry a port, but some
+            // upstreams do append one. Strip defensively so the
+            // hashed/stored value is consistent with the connection-
+            // source path.
+            return Some(strip_port(first_hop));
         }
     }
     let bytes = stream.read_property(&["source", "address"])?;
@@ -40,23 +43,23 @@ pub fn resolve(client_ip_header_value: Option<String>, stream: &StreamProperties
 /// "1.2.3.4"      → "1.2.3.4"  (passthrough — no port)
 fn strip_port(s: &str) -> String {
     let s = s.trim();
+    // IPv6 in bracketed form: `[addr]:port` or `[addr]`.
     if let Some(stripped) = s.strip_prefix('[') {
-        // IPv6 form `[addr]:port`
         if let Some(end) = stripped.find(']') {
             return stripped[..end].to_string();
         }
-        return stripped.to_string();
+        // Malformed: leading `[` with no closing `]`. Fall through and
+        // treat as opaque rather than mangle by stripping the bracket.
     }
-    // IPv4 form. Only strip if there's exactly one colon AND the colon
-    // isn't part of an IPv6 address with no brackets (some Envoy builds
-    // emit `::1:5678` without brackets — hard to disambiguate).
+    // IPv4 form. Only strip if there's exactly one colon — multi-colon
+    // input is almost certainly IPv6 without brackets, and stripping
+    // would corrupt the address.
     let colon_count = s.bytes().filter(|b| *b == b':').count();
     if colon_count == 1 {
         if let Some((host, _port)) = s.rsplit_once(':') {
             return host.to_string();
         }
     }
-    // Multi-colon and no brackets — assume IPv6 without port.
     s.to_string()
 }
 

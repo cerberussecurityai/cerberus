@@ -1,12 +1,5 @@
 // Cerberus Flex Gateway custom policy.
 //
-// Mirrors the Django middleware in cerberus/cerberus-django/ for HTTP
-// metadata capture, with the constraint that Flex Gateway WASM filters
-// can speak HTTP only (no WebSockets — proxy-wasm exposes
-// dispatch_http_call, not raw sockets). The Cerberus event_ingest service
-// gained a /v1/ingest/batch HTTP endpoint to receive batches from this
-// policy; the WS path remains for the Django middleware.
-//
 // Architectural overview:
 //
 //   Request → request_filter:
@@ -26,7 +19,7 @@
 //     - drain up to batchSize events into a batch envelope with
 //       {events: [...]}
 //     - POST to ingestService/v1/ingest/batch with X-API-Key header
-//     - on failure: drop the batch (at-most-once per §7 of plan)
+//     - on failure: drop the batch (at-most-once)
 //
 // Implementation references for PDK shapes used here:
 //   - metrics/         (on_tick + outbound POST batching)
@@ -35,11 +28,7 @@
 //   - simple-oauth-2-validation/ (init-time outbound HTTP via HttpClient)
 //
 // See README.md for the operator-facing config and deployment guide.
-// See flex_gateway_plan.md for the design rationale and §7 for the
-// scoped-out-of-v1 items (response body mutation, retry/backoff, circuit
-// breaker, observability metrics) — search for "TODO(v1.1)" in the source.
-
-#![allow(clippy::too_many_arguments)]
+// Search for "TODO(v1.1)" in the source for scoped-out-of-v1 items.
 
 mod config;
 mod event;
@@ -59,7 +48,8 @@ mod source_ip;
 pub mod __test_exports {
     pub use crate::hash::{hash_pii, normalize_ip};
     pub use crate::path_filter::PathFilter;
-    pub use crate::sanitize::sanitize_value;
+    pub use crate::sanitize::{is_sensitive_header_lower, sanitize_value};
+    pub use super::content_type_is_json;
 }
 
 use std::str::FromStr;
@@ -88,9 +78,9 @@ struct PolicyContext {
     config: Config,
     secret_key: Option<String>,
     /// PDK Service constructed from config.ingest_service URL at startup.
-    /// We declare ingestService as a plain URL string (not format:service)
-    /// to keep the operator UX matching Django middleware; HttpClient
-    /// requires a Service so we manufacture one here.
+    /// We declare ingestService as a plain URL string (rather than
+    /// format:service); HttpClient requires a Service so we manufacture
+    /// one here.
     ingest_service: Service,
     path_filter: PathFilter,
     queue: EventQueue,
@@ -120,10 +110,24 @@ impl PolicyContext {
         })
     }
 
+    /// HMAC-hash a value if a secret is configured; otherwise return
+    /// the raw value. Used for fields where pseudoanonymization is
+    /// useful but raw passthrough is acceptable when no secret is set
+    /// (e.g. source IP).
     fn maybe_hash(&self, value: &str) -> String {
         match &self.secret_key {
             Some(key) => crate::hash::hash_pii(value, key),
             None => value.to_string(),
+        }
+    }
+
+    /// Like `maybe_hash` but redacts when no secret is configured.
+    /// Used for high-sensitivity fields (e.g. Authorization header)
+    /// that must never ship raw.
+    fn hash_or_redact(&self, value: &str) -> String {
+        match &self.secret_key {
+            Some(key) => crate::hash::hash_pii(value, key),
+            None => REDACTED.to_string(),
         }
     }
 }
@@ -169,7 +173,6 @@ async fn request_filter(
     let scheme_https = headers_state.scheme().eq_ignore_ascii_case("https");
     let user_agent = headers_state.handler().header("user-agent");
 
-    // Headers — extracted with same sensitive/redact rules as Django.
     let headers = extract_headers(headers_state.handler().headers(), ctx);
 
     // Query params — sanitized for SENSITIVE_KEYS.
@@ -211,8 +214,7 @@ async fn request_filter(
         let body_bytes = body_state.handler().body();
         if !body_bytes.is_empty() {
             // Parse and sanitize. Bare-primitive JSON (string, number, bool,
-            // null) → None per Django middleware behavior — only objects
-            // and arrays are captured.
+            // null) → None — only objects and arrays are captured.
             if let Ok(parsed) = serde_json::from_slice::<Value>(&body_bytes) {
                 body_value = match parsed {
                     Value::Object(_) | Value::Array(_) => Some(sanitize_value(parsed)),
@@ -243,14 +245,10 @@ async fn response_filter(_state: ResponseState, data: RequestData<RequestSlot>, 
         RequestData::Continue(RequestSlot::Capture(ev)) => ev,
         _ => return,
     };
-    // TODO(v1.1): capture status_code and latency_ms here. Plan §7
-    // ("status_code / latency_ms reconsideration") flagged this as
-    // essentially free once the response filter is wired up; deferred
-    // to keep CoreData parity strict in v1.
+    // TODO(v1.1): capture status_code and latency_ms here.
     if let Err(()) = ctx.queue.push(event) {
         // Queue full — already counted by EventQueue::push.
-        // TODO(v1.1): emit a Prometheus / Envoy stat here. Plan §6
-        // covers the broader observability story.
+        // TODO(v1.1): emit a Prometheus / Envoy stat here.
     }
 }
 
@@ -265,24 +263,22 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
         }
 
         if dropped > 0 {
-            // Surface the drop count in policy logs for now. Plan §7
-            // open question on observability — TODO(v1.1) emit as a
-            // proper metric or stuff into the next batch payload as
-            // a synthetic _cerberus_policy_health event.
+            // Surface the drop count in policy logs for now.
+            // TODO(v1.1) emit as a proper metric or include it as a
+            // synthetic health event in the next batch payload.
             logger::warn!(
                 "cerberus-flex-gateway: dropped {} events (queue full)",
                 dropped
             );
         }
 
-        if let Err(err) = sink::post_batch(client, &ctx.ingest_service, &ctx.config, drained).await {
-            // At-most-once per §7. We log and move on — the next tick
-            // will try a fresh batch with whatever has accumulated.
+        if let Err(err) = sink::post_batch(client, &ctx.ingest_service, &ctx.config, &drained).await {
+            // At-most-once. We log and move on — the next tick will try
+            // a fresh batch with whatever has accumulated.
             //
             // TODO(v1.1): retry policy + circuit breaker. Currently a
-            // long ingest outage means every flush hits the same
-            // failure mode and we silently lose every batch. Plan §7
-            // calls these out explicitly as future improvements.
+            // long backend outage means every flush hits the same
+            // failure mode and we silently lose every batch.
             logger::warn!(
                 "cerberus-flex-gateway: failed to post batch: {}",
                 err
@@ -293,8 +289,7 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
 
 /// Extract and sanitize request headers.
 ///
-/// Rules (Django parity, see cerberus-django/src/cerberus_django/middleware.py
-/// _extract_headers and the SENSITIVE_HEADERS_LOWER set):
+/// Rules:
 ///   * Iterate (name, value) pairs as Envoy presents them.
 ///   * Lowercase the name once for sensitivity matching.
 ///   * Authorization → HMAC-SHA256(secret, value) if secret is configured;
@@ -304,9 +299,8 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
 ///
 /// Multi-valued headers (e.g. comma-folded X-Forwarded-For, repeated
 /// Set-Cookie): Envoy may surface these as multiple (name, value) tuples
-/// with the same name. We collapse with `, ` separator after sanitization
-/// — this matches the single-string view Django sees from WSGI's META
-/// dict. Documented in README "Header semantics".
+/// with the same name. We collapse with `, ` separator after sanitization.
+/// Documented in README "Header semantics".
 fn extract_headers(
     pairs: Vec<(String, String)>,
     ctx: &PolicyContext,
@@ -328,17 +322,15 @@ fn extract_headers(
 
         let name_lower = name.to_lowercase();
         let entry_value: String = if name_lower == "authorization" {
-            ctx.maybe_hash(&value)
+            ctx.hash_or_redact(&value)
         } else if is_sensitive_header_lower(&name_lower) {
             REDACTED.to_string()
         } else {
             value
         };
 
-        // Title-case canonical form — Django serves keys like "User-Agent"
-        // and "Authorization" rather than the lowercase HTTP/2-native
-        // form Envoy provides. Match Django's view so dashboard-side
-        // consumers see identical shapes from both transports.
+        // Title-case canonical form ("User-Agent", "Authorization")
+        // rather than the lowercase HTTP/2-native form Envoy provides.
         let canonical = title_case_header(&name);
         out.entry(canonical).or_default().push(entry_value);
     }
@@ -354,8 +346,7 @@ fn extract_headers(
 }
 
 /// Title-case an HTTP header name (`x-api-key` → `X-Api-Key`,
-/// `user-agent` → `User-Agent`). Mirrors Django's
-/// `key[5:].replace('_', '-').title()` post HTTP_ prefix strip.
+/// `user-agent` → `User-Agent`).
 fn title_case_header(name: &str) -> String {
     name.split('-')
         .map(|seg| {
@@ -377,8 +368,8 @@ fn title_case_header(name: &str) -> String {
 }
 
 /// Parse a query string into a sanitized object map. SENSITIVE_KEYS
-/// values get redacted; multi-valued keys collapse to the first value
-/// (matches Django's `request.GET.getlist(key)[0] if len==1 else list`).
+/// values get redacted; single-valued keys serialize as strings,
+/// multi-valued as arrays.
 fn parse_query_string(qs: &str) -> Option<serde_json::Map<String, Value>> {
     let pairs = url::form_urlencoded::parse(qs.as_bytes());
     let mut grouped: std::collections::BTreeMap<String, Vec<String>> = Default::default();
@@ -400,21 +391,16 @@ fn parse_query_string(qs: &str) -> Option<serde_json::Map<String, Value>> {
     Some(out)
 }
 
-/// Replicates the Django middleware's content-type substring check:
-///     "application/json" in content_type
-fn content_type_is_json(content_type: Option<&str>) -> bool {
+/// Substring check for `application/json` in the Content-Type header.
+/// Case-insensitive — pinned by parity-fixtures/content_type.yaml.
+pub fn content_type_is_json(content_type: Option<&str>) -> bool {
     let Some(ct) = content_type else {
         return false;
     };
-    // Lowercase before substring match — Envoy serves header values as
-    // they were sent (mixed case allowed) but we want to be tolerant.
-    // Note: Django doesn't lowercase, so this is a deliberate small
-    // divergence in favor of robustness. Documented in
-    // parity-fixtures/content_type.yaml json_with_uppercase case.
     ct.to_ascii_lowercase().contains("application/json")
 }
 
-/// Build an ISO 8601 UTC timestamp matching what Django emits.
+/// Build an ISO 8601 UTC timestamp.
 ///
 /// PDK does not currently expose a host wall clock to WASM filters
 /// directly. We read Envoy's `request.time` attribute (microseconds since
@@ -424,8 +410,7 @@ fn content_type_is_json(content_type: Option<&str>) -> bool {
 /// and the dashboard side will surface it.
 fn current_timestamp_iso8601(stream: &StreamProperties) -> String {
     // TODO(v1.1): confirm the exact Envoy attribute name + encoding for
-    // request time on PDK 1.8.0. Plan §7 flagged this as an open item.
-    // The format below matches Django's datetime.now(timezone.utc).isoformat().
+    // request time on PDK 1.8.0.
     if let Some(bytes) = stream.read_property(&["request", "time"]) {
         if let Ok(s) = std::str::from_utf8(&bytes) {
             if !s.is_empty() {
@@ -454,8 +439,6 @@ async fn configure(
 
     // Token normalization — trim whitespace defensively. A pasted token
     // with a trailing newline silently 403s every batch otherwise.
-    // (Plan §7 "Token normalisation" — partial implementation; the
-    // length-log-on-startup recommendation is below.)
     let trimmed_token = config.token.trim().to_string();
     if trimmed_token.len() != config.token.len() {
         logger::warn!(
@@ -520,6 +503,7 @@ mod tests {
     fn content_type_substring_match_positive() {
         assert!(content_type_is_json(Some("application/json")));
         assert!(content_type_is_json(Some("application/json; charset=utf-8")));
+        // Case-insensitive: mixed-case must match.
         assert!(content_type_is_json(Some("Application/JSON")));
     }
 

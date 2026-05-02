@@ -2,67 +2,45 @@
 
 A MuleSoft Flex Gateway custom policy (Rust → WASM, built with the PDK)
 that captures HTTP request metadata, sanitizes PII, and ships events to
-the Cerberus `event_ingest` service.
-
-This is the gateway-side counterpart to the
-[`cerberus-django`](../cerberus-django/) middleware. Both produce the
-same `CoreData`-shaped payload; both end up on the same Kafka topic
-(`events_{client_id}`); both are consumed identically by `event_process`.
-
-## Why this exists
-
-Flex Gateway WASM filters cannot open WebSockets — proxy-wasm only
-exposes `dispatch_http_call`, and `wasm32-wasip1` has no usable socket
-stdlib. Cerberus's existing `event_ingest` was WebSocket-only. Two
-things changed to make this policy possible:
-
-1. `event_ingest` gained a `POST /v1/ingest/batch` HTTP endpoint
-   (see `cerberus-int/services/event_ingest/main.py`).
-2. This crate ships the policy that consumes that endpoint via PDK's
-   `HttpClient`, with an `on_tick`-driven flush loop.
+the Cerberus backend.
 
 ## Status: **scaffold (v1)**
 
 The Rust source compiles with PDK 1.8.0 (`make build` requires the
 toolchain — see [Setup](#setup) below). The shipped policy provides:
 
-- Request metadata capture parity with `cerberus-django` (header /
-  query / body sanitization, IP normalization + HMAC, source IP
-  resolution, health-endpoint filter).
-- Path scoping via `capturePaths` / `excludePaths` globs (Flex-only;
-  Django scopes per-app via middleware inclusion).
+- Request metadata capture (header / query / body sanitization, IP
+  normalization + HMAC, source IP resolution, health-endpoint filter).
+- Path scoping via `capturePaths` / `excludePaths` globs.
 - Per-worker bounded queue with drop-on-full counter.
-- Batched outbound POST to `event_ingest` every `flushIntervalMs`.
+- Batched outbound POST to the Cerberus backend every `flushIntervalMs`.
 - Init-time HMAC secret fetch with 5-second timeout.
 
 ### Known gaps in v1
 
-| Gap | Why | Tracking |
-|---|---|---|
-| `_cerberus_metrics` extraction (response body inspection) | Mutating response bodies interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer (cerberus-django). | Search `TODO(v1.1)` in src/ |
-| Retry / backoff on `event_ingest` failures | Decision deferred per plan §7. Currently at-most-once: failed batches are dropped. | Search `TODO(v1.1)` in src/sink.rs |
-| Circuit breaker for sustained `event_ingest` outages | Without one, every flush during an outage posts into a black hole. Currently logs and moves on. | Search `TODO(v1.1)` in src/sink.rs |
-| Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. | Search `TODO(v1.1)` in src/lib.rs |
-| `status_code` / `latency_ms` capture | Strict `CoreData` parity for v1; trivially addable in `response_filter`. | Search `TODO(v1.1)` in src/lib.rs |
-| Streaming-body capture for >1MB JSON payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large payloads. | Track separately. |
-| Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. | N/A |
-
-See `flex_gateway_plan.md` (repo root) §7 for the full discussion of
-each.
+| Gap | Why |
+|---|---|
+| `_cerberus_metrics` extraction (response body inspection) | Mutating response bodies interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
+| Retry / backoff on backend failures | Currently at-most-once: failed batches are dropped. |
+| Circuit breaker for sustained backend outages | Without one, every flush during an outage posts into a black hole. Currently logs and moves on. |
+| Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. |
+| `status_code` / `latency_ms` capture | Trivially addable in `response_filter`. |
+| Streaming-body capture for >1MB JSON payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large payloads. |
+| Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
 
 ## Configuration (`gcl.yaml`)
 
 | Property | Required | Default | Purpose |
 |---|:---:|---|---|
-| `ingestService` | ✓ | — | Cerberus `event_ingest` upstream (`format: service`). The policy POSTs to `<ingestService>/v1/ingest/batch`. |
-| `token` | ✓ | — | Cerberus API key. Sent as the `X-API-Key` header on outbound requests; the server resolves `client_id` from the key (1:1). Trimmed at config-parse time. |
+| `ingestService` | ✓ | — | Cerberus backend URL. The policy POSTs to `<ingestService>/v1/ingest/batch`. |
+| `token` | ✓ | — | Cerberus API key. Sent as the `X-API-Key` header on outbound requests. Trimmed at config-parse time. |
 | `secretKey` | | — | HMAC key for PII hashing. Inline alternative to `backendUrl`. |
 | `backendUrl` | | — | Base URL to fetch HMAC key from at startup. 5-second timeout; failure logs and falls back to raw PII. Use `https://` in production. |
 | `clientIpHeader` | | `X-Forwarded-For` | Header to read the client IP from (first hop). Falls back to Envoy connection source if absent. |
 | `userIdHeader` | | unset | Header to read end-user identity from (e.g. `X-User-Id`). Required for per-end-user analytics; intentionally not defaulted so each deployment picks its own header. |
 | `capturePaths` | | `[]` | Glob allowlist. Empty = capture everything. Primary lever for high-RPS scoping. |
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
-| `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable on hot routes to skip the buffering cost. |
+| `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
 | `flushIntervalMs` | | `2000` | Flush cadence. Min 100ms (prevents tight-loop misconfig). |
 | `queueCapacity` | | `10000` | Per-worker queue. Total memory ~ `workers × queueCapacity × ~5KB`. |
@@ -75,13 +53,9 @@ HTTP/2 conventions, and multi-valued headers (e.g. `Set-Cookie`,
 comma-folded `X-Forwarded-For`) appear as multiple entries with the
 same name. The policy:
 
-1. Title-cases header names (`x-api-key` → `X-Api-Key`) so the captured
-   shape matches what Django middleware emits from WSGI.
+1. Title-cases header names (`x-api-key` → `X-Api-Key`).
 2. Collapses multi-valued headers with `, ` separator before storing
    in the event payload.
-
-If your customers rely on a specific case for header keys in dashboards
-this is the place to change it.
 
 ### Path scoping
 
@@ -182,15 +156,7 @@ curl -X POST https://your-flex-gateway/api/v1/users \
      -H 'Content-Type: application/json' \
      -d '{"username": "alice", "password": "hunter2"}'
 
-# Confirm Kafka topic received the event (client_id is resolved server-side from the api_key)
-kubectl exec -it -n cerberus deployment/cerberus-event-ingest -- \
-  kafka-console-consumer.sh --bootstrap-server <bootstrap> --topic events_<your-client-id>
-
-# Confirm event_process wrote to Postgres
-psql ... -c "SELECT method, endpoint, headers->>'Authorization' AS auth_redacted
-              FROM processed_events
-              WHERE client_id = '<your-client-id>'
-              ORDER BY timestamp DESC LIMIT 5;"
+# Verify the event landed in the Cerberus dashboard for your client_id.
 ```
 
 The `Authorization` header value should be either `[REDACTED]` (no
@@ -199,12 +165,10 @@ The body should have `password` replaced by `[REDACTED]`.
 
 ## Parity testing
 
-The Rust port duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` /
+The crate duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` /
 `REDACTED` and reimplements `sanitize_dict` / `normalize_ip` /
-`hash_pii`. Drift from the Python originals would silently leak PII or
-double-count hashes.
-
-Both implementations consume the same YAML fixtures from
+`hash_pii` so the WASM target has no Python dependency. The Cerberus
+implementations all consume the same YAML fixtures from
 `../parity-fixtures/`:
 
 - `cerberus-django/tests/test_parity.py` runs them against `cerberus_core`.
@@ -212,8 +176,8 @@ Both implementations consume the same YAML fixtures from
   Rust ports.
 
 If you change a constant in `cerberus-core/src/cerberus_core/sanitization.py`,
-update the fixture file in the **same PR** so the Rust port is forced
-to follow.
+update the fixture file in the **same PR** so the other implementations
+are forced to follow.
 
 ## Layout
 
@@ -247,6 +211,4 @@ cerberus-flex-gateway/
 
 ## Architecture references
 
-- [`flex_gateway_integration.md`](../../flex_gateway_integration.md) — design contract.
-- [`flex_gateway_plan.md`](../../flex_gateway_plan.md) — change-by-change plan with §7 scope decisions.
 - [`pdk-custom-policy-examples`](https://github.com/mulesoft/pdk-custom-policy-examples) — `metrics/`, `certs/`, `ip-filter/`, `crypto/` are the closest stylistic precedents.

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend (event_ingest in cerberus-int). Three Python packages and one Rust crate:
+Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend. Three Python packages and one Rust crate:
 
 ```
 cerberus/
@@ -31,6 +31,7 @@ cerberus/
 │   ├── normalize_ip.yaml
 │   ├── hash_pii.yaml
 │   ├── content_type.yaml
+│   ├── sensitive_headers.yaml
 │   └── path_filter.yaml       # Rust-only (Django scopes per-app)
 ├── CLAUDE.md
 ├── LICENSE
@@ -92,9 +93,9 @@ Drop-in replacement for `FastMCP` that instruments MCP tool/resource/prompt call
 
 ### cerberus-flex-gateway
 
-Rust → WASM custom policy for MuleSoft Flex Gateway. Captures HTTP request metadata, sanitizes PII, batches events, and POSTs them to `event_ingest`'s `/v1/ingest/batch` endpoint (the HTTP-side counterpart to the WS path used by cerberus-django).
+Rust → WASM custom policy for MuleSoft Flex Gateway. Captures HTTP request metadata, sanitizes PII, batches events, and POSTs them to the Cerberus backend's batch ingest endpoint.
 
-**Why a separate crate, not a Python wheel:** Flex Gateway WASM filters cannot open WebSockets (proxy-wasm only exposes `dispatch_http_call`). The crate uses MuleSoft's PDK 1.8.0 toolchain, compiled to `wasm32-wasip1`.
+**Why a separate crate, not a Python wheel:** MuleSoft Flex Gateway custom policies must be written in Rust and compiled to WASM. The crate uses MuleSoft's PDK 1.8.0 toolchain, compiled to `wasm32-wasip1`.
 
 **Build/test:**
 ```bash

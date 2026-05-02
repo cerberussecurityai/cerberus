@@ -1,17 +1,14 @@
 // Init-time HMAC secret resolution.
 //
-// Mirrors the Django middleware's secret precedence
-// (cerberus-django/src/cerberus_django/utils.py:14-60):
-//
+// Precedence:
 //   1. If `secretKey` is configured → use it.
 //   2. Else if `backendUrl` is configured → GET {backendUrl}/api/secret-key
 //      with X-API-Key: {token}, parse {"secret_key": "..."}, cache.
 //   3. Else → return None (PII emitted raw, with one-time warn log).
 //
-// Failure of step 2 is non-fatal: log a warn and degrade to "no hashing"
-// (matches Django parity). Five-second timeout on the outbound call so
-// a misconfigured backendUrl doesn't deadlock the gateway on policy
-// load — see flex_gateway_plan.md §2.3.
+// Failure of step 2 is non-fatal: log a warn and degrade to "no
+// hashing". Five-second timeout on the outbound call so a misconfigured
+// backendUrl doesn't deadlock the gateway on policy load.
 
 use std::str::FromStr;
 use std::time::Duration;

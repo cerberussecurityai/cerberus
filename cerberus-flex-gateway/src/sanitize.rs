@@ -1,12 +1,12 @@
-// Rust port of cerberus-core's sanitization primitives. Constants are
-// duplicated here on purpose — sharing a Rust crate with cerberus-core
-// would force us to translate Python types and add a build-time
-// dependency the WASM target doesn't need. Drift between the two is
-// caught by the parity test runner (tests/parity/) which consumes the
-// shared YAML fixtures at parity-fixtures/.
-//
-// See cerberus-core/src/cerberus_core/sanitization.py:14-117 for the
-// canonical Python implementation.
+// Sanitization primitives. Constants are duplicated from cerberus-core
+// on purpose — a shared Rust crate would force translating Python
+// types and add a build-time dependency the WASM target doesn't need.
+// Drift between implementations is caught by the parity test runner
+// (tests/parity_runner.rs) which consumes the shared YAML fixtures at
+// parity-fixtures/.
+
+use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 
@@ -31,7 +31,6 @@ pub const SENSITIVE_HEADERS_LOWER: &[&str] = &[
 
 /// Keys (case-insensitive) whose values get redacted in JSON bodies,
 /// query params, and any other dict-like structure we sanitize.
-/// Mirrors cerberus_core.sanitization.SENSITIVE_KEYS exactly.
 pub const SENSITIVE_KEYS_LOWER: &[&str] = &[
     "password",
     "passwd",
@@ -59,25 +58,30 @@ pub const SENSITIVE_KEYS_LOWER: &[&str] = &[
 
 const MAX_DEPTH: usize = 20;
 
+fn sensitive_keys_set() -> &'static HashSet<&'static str> {
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| SENSITIVE_KEYS_LOWER.iter().copied().collect())
+}
+
+fn sensitive_headers_set() -> &'static HashSet<&'static str> {
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| SENSITIVE_HEADERS_LOWER.iter().copied().collect())
+}
+
 pub fn is_sensitive_key(key: &str) -> bool {
-    let lower = key.to_lowercase();
-    SENSITIVE_KEYS_LOWER.iter().any(|k| *k == lower)
+    sensitive_keys_set().contains(key.to_lowercase().as_str())
 }
 
 pub fn is_sensitive_header_lower(header_lower: &str) -> bool {
-    SENSITIVE_HEADERS_LOWER.iter().any(|h| *h == header_lower)
+    sensitive_headers_set().contains(header_lower)
 }
 
-/// Recursive sanitize for a serde_json::Value tree. Mirrors
-/// cerberus_core.sanitize_dict including:
+/// Recursive sanitize for a serde_json::Value tree:
 ///   - case-insensitive key matching against SENSITIVE_KEYS
 ///   - REDACTED replacement happens at the value level (the entire
 ///     subtree under a sensitive key is replaced, not recursed into)
 ///   - depth-capped at MAX_DEPTH; deeper subtrees become REDACTED
-///     wholesale. Matches Python's `_max_depth=20` default.
-///   - non-string keys get passed through (Python ignores them with
-///     `if isinstance(key, str)`); JSON has no non-string keys so
-///     this is moot — included for shape parity only.
+///     wholesale.
 pub fn sanitize_value(value: Value) -> Value {
     sanitize_inner(value, 0)
 }
@@ -134,6 +138,17 @@ mod tests {
         assert!(is_sensitive_header_lower("authorization"));
         assert!(is_sensitive_header_lower("cookie"));
         assert!(!is_sensitive_header_lower("user-agent"));
+    }
+
+    #[test]
+    fn sensitive_header_wrong_casing_not_matched() {
+        // The contract is that the caller lowercases before calling
+        // is_sensitive_header_lower; non-lowercase inputs must NOT be
+        // treated as sensitive (otherwise it'd hide caller bugs).
+        assert!(!is_sensitive_header_lower("Authorization"));
+        assert!(!is_sensitive_header_lower("AUTHORIZATION"));
+        assert!(!is_sensitive_header_lower("Cookie"));
+        assert!(!is_sensitive_header_lower("Set-Cookie"));
     }
 
     #[test]

@@ -1,17 +1,16 @@
 // Cross-implementation parity test runner.
 //
 // Reads YAML fixtures from ../parity-fixtures/ (sibling to this crate
-// at the repo root) and asserts that the Rust ports of the cerberus_core
-// primitives produce the same outputs as the Python originals.
+// at the repo root) and asserts that this crate's sanitization
+// primitives produce the same outputs as the other Cerberus
+// implementations.
 //
 // `make sync-fixtures` creates `tests/fixtures -> ../../parity-fixtures`,
 // which lets this file reference the fixtures via a stable relative path
 // even when `cargo test` is run from a workspace root.
 //
-// If any case fails here AND in cerberus-django/tests/test_parity.py:
-// a sensitive constant has drifted between implementations.
-//
-// If any case fails ONLY here: the Rust port has regressed.
+// These tests detect drift between the various Cerberus implementations
+// of the shared sanitization contract.
 //
 // See parity-fixtures/README.md for the fixture format.
 
@@ -20,7 +19,8 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use cerberus_flex_gateway::__test_exports::{
-    hash_pii, normalize_ip, sanitize_value, PathFilter,
+    content_type_is_json, hash_pii, is_sensitive_header_lower, normalize_ip, sanitize_value,
+    PathFilter,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -166,16 +166,61 @@ struct ContentTypeCase {
 fn parity_content_type() {
     let cases: Vec<ContentTypeCase> = load("content_type.yaml");
     for case in cases {
-        let actual = case
-            .content_type
-            .to_ascii_lowercase()
-            .contains("application/json");
+        let actual = content_type_is_json(Some(&case.content_type));
         assert_eq!(
             actual, case.expected_capture,
             "case {:?}: matches={}, expected={}",
             case.name, actual, case.expected_capture
         );
     }
+}
+
+// ============================================================================
+// sensitive_headers
+// ============================================================================
+
+#[derive(Deserialize)]
+struct SensitiveHeaderCase {
+    name: String,
+    header: String,
+    expected_sensitive: bool,
+}
+
+/// Translate Python's WSGI key form (`HTTP_X_API_KEY`) to the wire-form
+/// the Rust sanitizer sees from Envoy (`x-api-key`). Returns None for
+/// inputs that aren't in canonical Python WSGI form — those test
+/// Python-specific encoding quirks and don't translate to Rust.
+fn python_wsgi_to_wire_name(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("HTTP_")?;
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+        return None;
+    }
+    Some(rest.to_ascii_lowercase().replace('_', "-"))
+}
+
+#[test]
+fn parity_sensitive_headers() {
+    let cases: Vec<SensitiveHeaderCase> = load("sensitive_headers.yaml");
+    let mut covered = 0;
+    for case in cases {
+        // Skip cases that exercise Python's WSGI-encoding casing quirks
+        // (e.g. lowercase `http_authorization`, bare `AUTHORIZATION`).
+        // The shared contract is "is this header name in the sensitive
+        // set"; the encoding layer is per-implementation.
+        let Some(rust_form) = python_wsgi_to_wire_name(&case.header) else {
+            continue;
+        };
+        let actual = is_sensitive_header_lower(&rust_form);
+        assert_eq!(
+            actual, case.expected_sensitive,
+            "case {:?}: header={:?} (rust form {:?}) sensitive={}, expected={}",
+            case.name, case.header, rust_form, actual, case.expected_sensitive
+        );
+        covered += 1;
+    }
+    // Sanity check: don't silently turn into a no-op if all cases get
+    // skipped by the translator.
+    assert!(covered > 0, "no sensitive_headers cases survived translation");
 }
 
 // ============================================================================

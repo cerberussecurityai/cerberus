@@ -7,7 +7,7 @@ spec:
   address: http://0.0.0.0:8081
   services:
     upstream:
-      address: http://backend
+      address: http://echo:8080
       routes:
         - config:
             destinationPath: /anything/echo/
@@ -18,7 +18,7 @@ spec:
         name: cerberus-flex-gateway-v1-0-impl
         namespace: default
       config:
-        ingestService: http://mock-ingest:8080
+        ingestService: http://echo:8080
         token: dev-token
         # Local-mode hashing: comment out secretKey to test the
         # "no secret → raw PII + warn log" fallback path.

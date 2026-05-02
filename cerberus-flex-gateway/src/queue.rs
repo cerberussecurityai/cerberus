@@ -9,8 +9,8 @@
 // Drop-on-full semantics: when push() encounters a full queue we
 // increment a `dropped` counter and return Err(()). The flush loop
 // reads the counter via take_dropped() each tick and surfaces it in
-// logs (and, in v1.1, would emit it as a synthetic _cerberus_policy_health
-// event in the next batch). Documented in flex_gateway_plan.md §6.
+// logs (and, in v1.1, will emit it as a synthetic health event in the
+// next batch).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -32,6 +32,9 @@ impl EventQueue {
         Self {
             capacity,
             inner: RefCell::new(Inner {
+                // Cap initial alloc at 1024 to avoid eagerly reserving
+                // ~10MB on default config (queueCapacity=10_000 ×
+                // ~5KB/event); the bound is enforced in push() instead.
                 deque: VecDeque::with_capacity(capacity.min(1024)),
                 dropped: 0,
             }),

@@ -325,10 +325,11 @@ def _extract_query_params(request):
 def _matches_json_content_type(content_type):
     """Return True if content_type contains the substring ``application/json``.
 
+    Case-insensitive: ``Application/JSON`` matches.
     ``application/vnd.api+json`` does NOT match — it has no ``application/json``
     substring; the ``json`` token follows ``+``, not ``/``.
     """
-    return 'application/json' in content_type
+    return 'application/json' in content_type.lower()
 
 
 def _extract_body(request):

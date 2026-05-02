@@ -1,24 +1,17 @@
 // Outbound batch sender.
 //
 // Wraps a drained Vec<CerberusEvent> in the batch envelope expected by
-// event_ingest's POST /v1/ingest/batch endpoint:
+// the Cerberus backend's POST /v1/ingest/batch endpoint:
 //
 //   {
 //     "events": [...]
 //   }
 //
-// Auth is via the X-API-Key HTTP header (same scheme as /api/secret-key).
-// The server looks up client_id from the api_key (1:1) and stamps both
-// client_id and token onto each event server-side before publishing to
-// Kafka, so the resulting message is byte-compatible with the WS path's
-// output. Missing/invalid header → 401; valid header but unknown key →
-// 403. See cerberus-int/services/event_ingest/main.py (ingest_batch
-// handler) for the contract.
+// Auth is via the X-API-Key HTTP header.
 //
-// Delivery semantics: at-most-once (per flex_gateway_plan.md §7). On
-// HTTP failure the batch is dropped — we log and move on. The plan
-// flagged retry+backoff and a circuit breaker as v1.1 work; the comments
-// below mark where they'd land.
+// Delivery semantics: at-most-once. On HTTP failure the batch is
+// dropped — we log and move on. Retry+backoff and a circuit breaker
+// are v1.1 work; the comments below mark where they'd land.
 
 use std::time::Duration;
 
@@ -42,28 +35,19 @@ pub async fn post_batch(
     client: &HttpClient,
     ingest_service: &Service,
     config: &Config,
-    events: Vec<CerberusEvent>,
+    events: &[CerberusEvent],
 ) -> Result<()> {
     if events.is_empty() {
         return Ok(());
     }
 
-    let envelope = BatchEnvelope { events: &events };
+    let envelope = BatchEnvelope { events };
 
     let body = serde_json::to_vec(&envelope)?;
 
-    // TODO(v1.1): retry with exponential backoff. flex_gateway_plan.md
-    // §7 explicitly leaves the retry policy unspecified ("ignore
-    // retries for now ... figure out later"). Need to decide:
-    //   - max attempts
-    //   - backoff curve (exponential? jittered?)
-    //   - what happens to the batch on persistent failure (currently
-    //     drop; could re-enqueue at the head of the queue with a TTL)
-    //
-    // TODO(v1.1): circuit breaker. Without one, every flush during an
-    // ingest outage posts into a black hole. Suggested behavior: skip
-    // the next N flushes after K consecutive failures, exponentially
-    // backing off. Plan §7 calls this out as a future improvement.
+    // TODO(v1.1): retry with exponential backoff and circuit breaker.
+    // Without these, every flush during a backend outage posts into a
+    // black hole.
     let response = client
         .request(ingest_service)
         .path(BATCH_PATH)

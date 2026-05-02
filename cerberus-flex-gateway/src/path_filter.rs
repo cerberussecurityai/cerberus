@@ -5,7 +5,7 @@
 // can scope themselves to business-relevant endpoints in high-RPS
 // deployments without buffering or sanitizing the bypassed traffic.
 //
-// Rules (per flex_gateway_plan.md §0 row 13 + §2.3):
+// Rules:
 //   1. Empty capture_paths → match anything.
 //   2. Non-empty capture_paths → only matches generate events.
 //   3. Non-empty exclude_paths → matches are skipped.

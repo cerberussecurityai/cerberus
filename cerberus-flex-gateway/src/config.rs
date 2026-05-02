@@ -14,9 +14,9 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
-    /// Cerberus event_ingest upstream — Envoy cluster reference.
+    /// Cerberus backend URL — Envoy cluster reference.
     pub ingest_service: String,
 
     /// Cerberus API key. Sent as the X-API-Key header on outbound
@@ -62,8 +62,7 @@ pub struct Config {
     /// TODO(v1.1): wire this through to PDK's logger. As of PDK 1.8.0
     /// there is no public API to set per-policy log verbosity at
     /// runtime — the gateway pod's global LOG_LEVEL env var dominates.
-    /// We accept the field anyway so config remains forward-compatible
-    /// (and matches Django's CERBERUS_DEBUG knob in the docs).
+    /// We accept the field anyway so config remains forward-compatible.
     #[serde(default = "default_log_level")]
     #[allow(dead_code)]
     pub log_level: String,
