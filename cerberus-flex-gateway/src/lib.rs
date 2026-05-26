@@ -40,6 +40,9 @@ mod secret;
 mod sink;
 mod source_ip;
 
+#[cfg(test)]
+mod pipeline_tests;
+
 // Toolchain-generated module. Produced by `cargo anypoint config-gen`
 // from definition/gcl.yaml. We don't use the generated `Config` struct
 // (we use our hand-written typed wrapper in `mod config` instead, which
@@ -109,20 +112,34 @@ impl PolicyContext {
     /// useful but raw passthrough is acceptable when no secret is set
     /// (e.g. source IP).
     fn maybe_hash(&self, value: &str) -> String {
-        match &self.secret_key {
-            Some(key) => crate::hash::hash_pii(value, key),
-            None => value.to_string(),
-        }
+        pseudonymize_or_passthrough(self.secret_key.as_deref(), value)
     }
 
     /// Like `maybe_hash` but redacts when no secret is configured.
     /// Used for high-sensitivity fields (e.g. Authorization header)
     /// that must never ship raw.
     fn hash_or_redact(&self, value: &str) -> String {
-        match &self.secret_key {
-            Some(key) => crate::hash::hash_pii(value, key),
-            None => REDACTED.to_string(),
-        }
+        pseudonymize_or_redact(self.secret_key.as_deref(), value)
+    }
+}
+
+/// HMAC-hash with the secret if present, otherwise pass the value
+/// through raw. Backs `PolicyContext::maybe_hash`; a free function so
+/// the secret-present/absent policy is unit-testable without a full
+/// `Config`.
+fn pseudonymize_or_passthrough(secret_key: Option<&str>, value: &str) -> String {
+    match secret_key {
+        Some(key) => crate::hash::hash_pii(value, key),
+        None => value.to_string(),
+    }
+}
+
+/// HMAC-hash with the secret if present, otherwise redact entirely.
+/// Backs `PolicyContext::hash_or_redact`.
+fn pseudonymize_or_redact(secret_key: Option<&str>, value: &str) -> String {
+    match secret_key {
+        Some(key) => crate::hash::hash_pii(value, key),
+        None => REDACTED.to_string(),
     }
 }
 
@@ -398,11 +415,13 @@ pub fn content_type_is_json(content_type: Option<&str>) -> bool {
 ///
 /// We previously tried Envoy's `request.time` stream property, but it
 /// isn't reliably exposed via PDK 1.8's `read_property` bridge — the
-/// official examples (e.g. `data-storage-stats/`) capture wall-clock
-/// time inside the filter instead. We use proxy-wasm's
-/// `get_current_time` hostcall directly, which returns a `SystemTime`
-/// from the host (Envoy) clock and works from WASM where a syscall-
-/// based `SystemTime::now()` would not.
+/// official examples capture wall-clock time inside the filter instead.
+/// We use proxy-wasm's `get_current_time` hostcall, which returns a
+/// `SystemTime` from the host (Envoy) clock and works from WASM where a
+/// syscall-based `SystemTime::now()` would not. This is the same
+/// hostcall the PDK's own `Clock::now()` uses; we call it directly
+/// because `request_filter` has no `Clock` handle (the single `Clock`
+/// is consumed building the flush timer).
 ///
 /// The returned string follows RFC 3339 / ISO 8601 with microsecond
 /// precision and a literal `+00:00` suffix
@@ -416,33 +435,13 @@ fn current_timestamp_iso8601() -> String {
     format_epoch(dur.as_secs() as i64, dur.subsec_micros())
 }
 
-/// Format `(seconds-since-epoch, microseconds)` as ISO 8601 UTC. Pure
-/// arithmetic — no chrono/time dep, keeps the wasm artifact small.
-/// Uses Howard Hinnant's `civil_from_days` algorithm (see
-/// http://howardhinnant.github.io/date_algorithms.html#civil_from_days).
+/// Format `(seconds-since-epoch, microseconds)` as ISO 8601 UTC with a
+/// literal `+00:00` suffix.
 fn format_epoch(secs: i64, micros: u32) -> String {
-    let days = secs.div_euclid(86_400);
-    let secs_of_day = secs.rem_euclid(86_400) as u64;
-    let hour = secs_of_day / 3600;
-    let minute = (secs_of_day / 60) % 60;
-    let second = secs_of_day % 60;
-
-    // civil_from_days: days since 1970-01-01 → (year, month, day).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}+00:00",
-        y, m, d, hour, minute, second, micros
-    )
+    chrono::DateTime::from_timestamp(secs, micros * 1_000)
+        .unwrap_or_default()
+        .format("%Y-%m-%dT%H:%M:%S%.6f+00:00")
+        .to_string()
 }
 
 #[entrypoint]
@@ -551,6 +550,32 @@ mod tests {
         assert_eq!(
             format_epoch(946_684_800, 0),
             "2000-01-01T00:00:00.000000+00:00"
+        );
+    }
+
+    #[test]
+    fn hash_or_redact_redacts_when_no_secret() {
+        // Security-critical: Authorization must never ship raw. With no
+        // secret configured, the value is redacted, not passed through.
+        assert_eq!(pseudonymize_or_redact(None, "Bearer sk-live-abc"), REDACTED);
+    }
+
+    #[test]
+    fn hash_or_redact_hashes_when_secret_present() {
+        let out = pseudonymize_or_redact(Some("topsecret"), "Bearer sk-live-abc");
+        assert_ne!(out, "Bearer sk-live-abc");
+        assert_ne!(out, REDACTED);
+        assert_eq!(out, crate::hash::hash_pii("Bearer sk-live-abc", "topsecret"));
+    }
+
+    #[test]
+    fn maybe_hash_passes_through_when_no_secret() {
+        // Source IP is allowed to ship raw when no secret is set
+        // (parity with cerberus-django) — verify the passthrough branch.
+        assert_eq!(pseudonymize_or_passthrough(None, "1.2.3.4"), "1.2.3.4");
+        assert_eq!(
+            pseudonymize_or_passthrough(Some("topsecret"), "1.2.3.4"),
+            crate::hash::hash_pii("1.2.3.4", "topsecret")
         );
     }
 

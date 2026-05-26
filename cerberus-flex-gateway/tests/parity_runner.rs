@@ -253,6 +253,5 @@ fn parity_path_filter() {
 
 // Header iteration / multi-value handling and full event JSON round-trips
 // are not covered by parity-fixtures/ — they require harness state that
-// only PDK's UnitTestBuilder provides. Add them under
-// tests/integration/*.rs alongside other PDK integration tests once
-// `make build` produces a usable .wasm.
+// only PDK's UnitTestBuilder provides. Those live in src/pipeline_tests.rs
+// (in-crate, since the harness needs the private `configure` entrypoint).

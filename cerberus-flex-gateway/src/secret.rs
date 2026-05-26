@@ -43,18 +43,6 @@ pub async fn resolve_secret(config: &Config, client: &HttpClient) -> Option<Stri
         return None;
     }
 
-    if !backend_url.starts_with("https://") {
-        logger::warn!(
-            "cerberus-flex-gateway: backendUrl does not use https:// — token will be transmitted unencrypted"
-        );
-    }
-
-    logger::info!(
-        "cerberus-flex-gateway: fetching secret from backendUrl ({}{})",
-        backend_url,
-        SECRET_KEY_PATH
-    );
-
     // PDK's HttpClient::request only accepts a Service handle (not a
     // raw URL — confirmed against PDK 1.8.0). Manufacture one from the
     // backendUrl string. The Service name/namespace are arbitrary
@@ -70,6 +58,21 @@ pub async fn resolve_secret(config: &Config, client: &HttpClient) -> Option<Stri
             return None;
         }
     };
+
+    // Scheme check on the parsed URI so casing (e.g. `HTTPS://`) doesn't
+    // slip a plaintext warning past us.
+    if !backend_uri.scheme().eq_ignore_ascii_case("https") {
+        logger::warn!(
+            "cerberus-flex-gateway: backendUrl does not use https:// — token will be transmitted unencrypted"
+        );
+    }
+
+    logger::info!(
+        "cerberus-flex-gateway: fetching secret from backendUrl ({}{})",
+        backend_url,
+        SECRET_KEY_PATH
+    );
+
     let backend_service = Service::from("cerberus-backend", "default", backend_uri);
 
     let response = client

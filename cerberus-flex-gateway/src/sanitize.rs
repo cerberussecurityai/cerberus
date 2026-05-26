@@ -58,14 +58,18 @@ pub const SENSITIVE_KEYS_LOWER: &[&str] = &[
 
 const MAX_DEPTH: usize = 20;
 
+// Lazily-built lookup sets. Each OnceLock is initialized exactly once on
+// first access and then lives for the rest of the program — the slices
+// above are the source of truth; these are just O(1)-lookup views.
+static SENSITIVE_KEYS_SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+static SENSITIVE_HEADERS_SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+
 fn sensitive_keys_set() -> &'static HashSet<&'static str> {
-    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| SENSITIVE_KEYS_LOWER.iter().copied().collect())
+    SENSITIVE_KEYS_SET.get_or_init(|| SENSITIVE_KEYS_LOWER.iter().copied().collect())
 }
 
 fn sensitive_headers_set() -> &'static HashSet<&'static str> {
-    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| SENSITIVE_HEADERS_LOWER.iter().copied().collect())
+    SENSITIVE_HEADERS_SET.get_or_init(|| SENSITIVE_HEADERS_LOWER.iter().copied().collect())
 }
 
 pub fn is_sensitive_key(key: &str) -> bool {

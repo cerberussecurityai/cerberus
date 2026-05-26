@@ -39,6 +39,10 @@ hex = "0.4"
 futures = "0.3"
 globset = "0.4"
 url = "2.5"
+# Already in the dependency graph via pdk → pdk-jwt-lib → jwt-compact, so
+# declaring it directly adds no artifact weight. Used only for ISO 8601
+# formatting; the wasmbind/js-sys path is cfg-gated off for wasm32-wasip1.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 pdk-test = "1.8.0"
