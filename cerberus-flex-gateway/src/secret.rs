@@ -6,14 +6,20 @@
 //      with X-API-Key: {token}, parse {"secret_key": "..."}, cache.
 //   3. Else → return None (PII emitted raw, with one-time warn log).
 //
+// `backendUrl` is declared `format: service` in `definition/gcl.yaml`, so
+// the PDK registers an Envoy cluster for it at policy load (see the init
+// hook in `src/generated/config.rs`) and hands us a `Service` handle.
+// proxy-wasm `dispatch_http_call` only dispatches to registered clusters,
+// so we must use that handle — a runtime-manufactured `Service` has no
+// backing cluster and every fetch silently fails.
+//
 // Failure of step 2 is non-fatal: log a warn and degrade to "no
 // hashing". Five-second timeout on the outbound call so a misconfigured
 // backendUrl doesn't deadlock the gateway on policy load.
 
-use std::str::FromStr;
 use std::time::Duration;
 
-use pdk::hl::{HttpClient, Service, Uri};
+use pdk::hl::HttpClient;
 use pdk::logger;
 use serde::Deserialize;
 
@@ -35,33 +41,11 @@ pub async fn resolve_secret(config: &Config, client: &HttpClient) -> Option<Stri
         }
     }
 
-    let Some(backend_url) = config.backend_url.as_ref() else {
-        return None;
-    };
-
-    if backend_url.is_empty() {
-        return None;
-    }
-
-    // PDK's HttpClient::request only accepts a Service handle (not a
-    // raw URL — confirmed against PDK 1.8.0). Manufacture one from the
-    // backendUrl string. The Service name/namespace are arbitrary
-    // labels Envoy uses for the upstream cluster; we make them static.
-    let backend_uri = match Uri::from_str(backend_url) {
-        Ok(u) => u,
-        Err(err) => {
-            logger::warn!(
-                "cerberus-flex-gateway: invalid backendUrl {:?}: {} — falling back to raw PII",
-                backend_url,
-                err
-            );
-            return None;
-        }
-    };
+    let backend_service = config.backend_url.as_ref()?;
 
     // Scheme check on the parsed URI so casing (e.g. `HTTPS://`) doesn't
     // slip a plaintext warning past us.
-    if !backend_uri.scheme().eq_ignore_ascii_case("https") {
+    if !backend_service.uri().scheme().eq_ignore_ascii_case("https") {
         logger::warn!(
             "cerberus-flex-gateway: backendUrl does not use https:// — token will be transmitted unencrypted"
         );
@@ -69,14 +53,12 @@ pub async fn resolve_secret(config: &Config, client: &HttpClient) -> Option<Stri
 
     logger::info!(
         "cerberus-flex-gateway: fetching secret from backendUrl ({}{})",
-        backend_url,
+        backend_service.uri().authority(),
         SECRET_KEY_PATH
     );
 
-    let backend_service = Service::from("cerberus-backend", "default", backend_uri);
-
     let response = client
-        .request(&backend_service)
+        .request(backend_service)
         .path(SECRET_KEY_PATH)
         .timeout(FETCH_TIMEOUT)
         .headers(vec![("X-API-Key", config.token.as_str())])

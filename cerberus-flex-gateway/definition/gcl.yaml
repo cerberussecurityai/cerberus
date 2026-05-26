@@ -37,8 +37,8 @@ spec:
           - "security:sensitive"
     backendUrl:
       type: string
-      format: uri
-      description: "Optional. Base URL to fetch the HMAC secret from at startup (e.g. https://cerberus.example.com). Fetched once on policy load with a 5s timeout; failure logs a warning and falls back to raw PII. Use https:// in production."
+      format: service
+      description: "Optional. Cerberus backend to fetch the HMAC secret from at startup; the policy GETs {backendUrl}/api/secret-key. `format: service` registers an Envoy cluster for this URL at policy load — required for the init-time outbound fetch, since proxy-wasm only dispatches to registered clusters. Fetched once with a 5s timeout; failure logs a warning and falls back to raw PII. Use https:// in production. Typically the same host as ingestService."
 
     # ---------------------------------------------------------------------
     # Request metadata extraction

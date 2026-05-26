@@ -1,8 +1,12 @@
 use serde::Deserialize;
 #[derive(Deserialize, Clone, Debug)]
 pub struct Config {
-    #[serde(alias = "backendUrl")]
-    pub backend_url: Option<String>,
+    #[serde(
+        alias = "backendUrl",
+        default,
+        deserialize_with = "pdk::serde::deserialize_service_opt"
+    )]
+    pub backend_url: Option<pdk::hl::Service>,
     #[serde(alias = "batchSize")]
     pub batch_size: Option<i64>,
     #[serde(alias = "capturePaths")]
@@ -40,6 +44,10 @@ fn init(abi: &dyn pdk::flex_abi::api::FlexAbi) -> Result<(), anyhow::Error> {
                 String::from_utf8_lossy(abi.get_configuration()), err
             )
         })?;
+    if config.backend_url.is_some() {
+        let service = config.backend_url.unwrap();
+        abi.service_create(service)?;
+    }
     abi.service_create(config.ingest_service)?;
     abi.setup()?;
     Ok(())

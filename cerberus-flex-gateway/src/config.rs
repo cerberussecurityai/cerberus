@@ -35,8 +35,14 @@ pub struct Config {
     /// Optional. HMAC-SHA256 key for PII hashing.
     pub secret_key: Option<String>,
 
-    /// Optional. Base URL to fetch the HMAC key from at startup.
-    pub backend_url: Option<String>,
+    /// Optional. Cerberus backend to fetch the HMAC key from at startup.
+    /// Declared as `format: service` in `definition/gcl.yaml` so Flex
+    /// Gateway registers an Envoy cluster for it at policy load and hands
+    /// us a `Service` handle — required for the init-time outbound GET,
+    /// since proxy-wasm `dispatch_http_call` only accepts registered
+    /// cluster names (a runtime-manufactured `Service` is never wired up).
+    #[serde(default, deserialize_with = "pdk::serde::deserialize_service_opt")]
+    pub backend_url: Option<pdk::hl::Service>,
 
     /// Header to read client IP from. Default: X-Forwarded-For.
     #[serde(default = "default_client_ip_header")]
