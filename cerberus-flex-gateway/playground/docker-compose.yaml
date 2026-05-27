@@ -1,0 +1,27 @@
+# Local Flex Gateway harness for `make run`.
+#
+# Boots a Flex Gateway in front of a single echo service that doubles
+# as both the upstream the policy is wrapping and the mock backend it
+# POSTs events to. Useful for iterating on request/response handling
+# without standing up a full Cerberus stack.
+#
+# When you want to point at a real Cerberus backend, set ingestService
+# in playground/config/api.yaml to your backend URL.
+
+version: "3.3"
+
+services:
+  local-flex:
+    image: mulesoft/flex-gateway:1.10.0
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./config:/usr/local/share/mulesoft/flex-gateway/conf.d/
+
+  echo:
+    # Single echo service: serves both as the dummy upstream Flex routes
+    # to AND as the mock backend that prints whatever the policy POSTs
+    # to /v1/ingest/batch.
+    image: mendhak/http-https-echo:33
+    environment:
+      - HTTP_PORT=8080

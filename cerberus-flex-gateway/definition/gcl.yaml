@@ -1,0 +1,114 @@
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: Extension
+metadata:
+  labels:
+    title: cerberus-flex-gateway
+    description: "Captures HTTP request metadata, sanitizes PII, and ships events to the Cerberus backend."
+    category: Custom
+    metadata/interfaceScope: api,resource
+spec:
+  extends:
+    - name: extension-definition
+      namespace: default
+  properties:
+    # ---------------------------------------------------------------------
+    # Required
+    # ---------------------------------------------------------------------
+    ingestService:
+      type: string
+      format: service
+      description: "Cerberus backend URL (e.g. https://ingest.cerberus.example.com). The policy POSTs to {ingestService}/v1/ingest/batch. `format: service` causes Flex Gateway to register an Envoy cluster for this URL at policy load — required for outbound dispatch from the WASM filter."
+    token:
+      type: string
+      description: "Cerberus API key. Sent as the X-API-Key header on outbound requests to the Cerberus backend."
+      "@context":
+        "@characteristics":
+          - "security:sensitive"
+
+    # ---------------------------------------------------------------------
+    # PII hashing
+    # ---------------------------------------------------------------------
+    secretKey:
+      type: string
+      description: "Optional. HMAC-SHA256 key used to hash source IP and Authorization headers. If omitted, the policy fetches it from {backendUrl}/api/secret-key at startup. If neither is set, PII is emitted raw with a one-time warning log."
+      "@context":
+        "@characteristics":
+          - "security:sensitive"
+    backendUrl:
+      type: string
+      format: service
+      description: "Optional. Cerberus backend to fetch the HMAC secret from at startup; the policy GETs {backendUrl}/api/secret-key. `format: service` registers an Envoy cluster for this URL at policy load — required for the init-time outbound fetch, since proxy-wasm only dispatches to registered clusters. Fetched once with a 5s timeout; failure logs a warning and falls back to raw PII. Use https:// in production. Typically the same host as ingestService."
+
+    # ---------------------------------------------------------------------
+    # Request metadata extraction
+    # ---------------------------------------------------------------------
+    clientIpHeader:
+      type: string
+      default: "X-Forwarded-For"
+      description: "Request header to read the client IP from. The first hop is used (left-most value before any comma). Falls back to the connection source address if the header is absent."
+    userIdHeader:
+      type: string
+      description: "Optional. Request header to read end-user identity from (e.g. X-User-Id, X-End-User). The customer's upstream auth/JWT policy must populate the header pre-Cerberus. Required for per-end-user anomaly detection. Left intentionally configurable rather than defaulted so each deployment can pick its own header name."
+
+    # ---------------------------------------------------------------------
+    # Path scoping (the primary lever for high-RPS deployments)
+    # ---------------------------------------------------------------------
+    capturePaths:
+      type: array
+      items:
+        type: string
+      description: "Optional glob patterns (e.g. /api/v1/**, /users/*). If non-empty, ONLY matching request paths generate events. Non-matching requests pass through with no buffering, no sanitization, and no event — pure latency-free. Empty/unset = capture everything. Health endpoints (/health, /health_check, /ready) are always skipped regardless."
+    excludePaths:
+      type: array
+      items:
+        type: string
+      description: "Optional glob patterns. Matching paths are skipped. Applied AFTER capturePaths — useful for exempting noisy subroutes within an otherwise-captured prefix. Glob syntax is the `globset` crate's: `*` matches one path segment, `**` matches any number of segments."
+
+    # ---------------------------------------------------------------------
+    # Body capture
+    # ---------------------------------------------------------------------
+    captureRequestBody:
+      type: boolean
+      default: true
+      description: "Buffer + sanitize JSON request bodies (POST/PUT/PATCH, application/json content-type, 1MB cap). Disable globally to skip the buffering cost; for per-route scoping use capturePaths / excludePaths."
+
+    # NOTE: captureResponseBody is intentionally absent in v1.
+    # Response-body mutation interacts badly with Content-Length /
+    # Content-Encoding / streaming bodies / signed responses.
+    # See README "Known gaps in v1".
+    # If we add it later: bump endpoint version to /v2/ingest/batch.
+
+    # ---------------------------------------------------------------------
+    # Buffering / batching
+    # ---------------------------------------------------------------------
+    batchSize:
+      type: integer
+      default: 50
+      minimum: 1
+      maximum: 1000
+      description: "Max events per outbound POST to ingestService. Server-side cap is 1000; larger values would 413."
+    flushIntervalMs:
+      type: integer
+      default: 2000
+      minimum: 100
+      maximum: 60000
+      description: "How often (ms) the buffered events are flushed to ingestService. Lower values reduce in-memory loss on pod churn at the cost of more request frequency. 100ms minimum prevents tight-loop misconfigurations."
+    queueCapacity:
+      type: integer
+      default: 10000
+      minimum: 100
+      maximum: 1000000
+      description: "Per-WORKER bounded queue capacity. Total memory usage = workers × queueCapacity × per-event size (~2-10 KB). Drop-on-full with a counter included in the next batch payload — never blocks the request path."
+
+    # ---------------------------------------------------------------------
+    # Operational
+    # ---------------------------------------------------------------------
+    logLevel:
+      type: string
+      default: "info"
+      description: "Log verbosity. One of: debug, info, warn, error. Increase to debug to trace per-request capture decisions and outbound POST traffic."
+
+  required:
+    - ingestService
+    - token

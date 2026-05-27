@@ -1,0 +1,57 @@
+[package]
+# Cargo crate name uses underscores to match the wasm artifact filename
+# (cargo always converts hyphens → underscores in produced binaries, but
+# the PDK Makefile uses `cargo anypoint get-name` verbatim — keeping
+# them aligned avoids "file not found" errors during `make build`).
+# The Anypoint Exchange asset IDs in [package.metadata.anypoint] keep
+# hyphens, since those are the user-facing identifiers in Exchange.
+name = "cerberus_flex_gateway"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+resolver = "2"
+description = "Cerberus custom policy for MuleSoft Flex Gateway"
+license = "MIT"
+
+# Anypoint Exchange identifiers used by `make publish` / `make release`.
+# Replace placeholders with real IDs before running publish — see README
+# "Connected mode setup". Local-mode (`make run`) does not need them.
+[package.metadata.anypoint]
+group_id = "bfb16c88-b6af-4644-bdb4-08d9929bfc91"
+definition_asset_id = "cerberus-flex-gateway"
+implementation_asset_id = "cerberus-flex-gateway-flex"
+
+[lib]
+# `cdylib` produces the .wasm artifact for Flex Gateway. `rlib` is added
+# so integration tests under tests/ (e.g. parity_runner.rs) can import
+# the crate as a normal Rust library — without it, `cargo test` can't
+# link the test binary against the crate.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pdk = "1.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+anyhow = "1.0"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+futures = "0.3"
+globset = "0.4"
+url = "2.5"
+# Already in the dependency graph via pdk → pdk-jwt-lib → jwt-compact, so
+# declaring it directly adds no artifact weight. Used only for ISO 8601
+# formatting; the wasmbind/js-sys path is cfg-gated off for wasm32-wasip1.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+pdk-test = "1.8.0"
+pdk-unit = "1.8.0"
+serde_yaml = "0.9"
+
+[profile.release]
+# Standard PDK release profile — minimize wasm size for faster cold load
+# in Flex Gateway.
+lto = true
+opt-level = 'z'
+strip = "debuginfo"
