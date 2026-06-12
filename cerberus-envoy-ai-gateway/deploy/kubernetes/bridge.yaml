@@ -1,0 +1,118 @@
+# Cerberus bridge for Envoy AI Gateway — drop-in deployment.
+#
+# Edit all FOUR CHANGE-ME values:
+#   1. CERBERUS_TOKEN          (in the Secret)        — Cerberus API key
+#   2. image                   (in the Deployment)    — your pushed image
+#   3. CERBERUS_INGEST_SERVICE (Deployment env)       — Cerberus backend URL
+#   4. CERBERUS_BACKEND_URL    (Deployment env)       — usually the same URL;
+#      if left unset/wrong the HMAC key fetch fails and source IPs ship
+#      UNHASHED (one-time warning in the logs — check after first deploy).
+# (Change the namespace too if you don't use "cerberus".)
+#
+# Then: kubectl apply -f bridge.yaml
+# And point the AI Gateway extproc's OTLP exporter at
+#   http://cerberus-bridge.<namespace>.svc.cluster.local:4318
+# (see ../ai-gateway/extproc-env.yaml).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cerberus-bridge-credentials
+  namespace: cerberus
+type: Opaque
+stringData:
+  CERBERUS_TOKEN: "CHANGE-ME"  # Cerberus API key (sk_live_...)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cerberus-envoy-ai-gateway
+  namespace: cerberus
+  labels:
+    app: cerberus-envoy-ai-gateway
+spec:
+  replicas: 1  # run a single replica in v1 (see README known gaps)
+  selector:
+    matchLabels:
+      app: cerberus-envoy-ai-gateway
+  template:
+    metadata:
+      labels:
+        app: cerberus-envoy-ai-gateway
+    spec:
+      containers:
+        - name: bridge
+          image: CHANGE-ME/cerberus-envoy-ai-gateway:0.1.0
+          ports:
+            - containerPort: 4318
+              name: otlp-http
+          envFrom:
+            - secretRef:
+                name: cerberus-bridge-credentials
+          env:
+            - name: CERBERUS_INGEST_SERVICE
+              value: "https://CHANGE-ME"  # Cerberus backend URL
+            - name: CERBERUS_BACKEND_URL
+              value: "https://CHANGE-ME"  # same host; enables HMAC key fetch
+            # Optional knobs — see README configuration table:
+            # - name: CERBERUS_USER_ID_ATTRIBUTE
+            #   value: "user.id"
+            # - name: CERBERUS_CAPTURE_LLM_CONTENT
+            #   value: "false"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: otlp-http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: otlp-http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cerberus-bridge
+  namespace: cerberus
+  labels:
+    app: cerberus-envoy-ai-gateway
+spec:
+  selector:
+    app: cerberus-envoy-ai-gateway
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+# ---
+# Recommended: restrict who can send the bridge spans. The OTLP receiver is
+# unauthenticated (standard for in-cluster collectors), and the bridge signs
+# everything it receives with your Cerberus API key — so without a
+# NetworkPolicy, any workload in the cluster can inject events. Uncomment and
+# set the namespace selector to wherever your Envoy proxy pods run.
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: cerberus-bridge-ingress
+#   namespace: cerberus
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: cerberus-envoy-ai-gateway
+#   policyTypes: ["Ingress"]
+#   ingress:
+#     - from:
+#         - namespaceSelector:
+#             matchLabels:
+#               kubernetes.io/metadata.name: envoy-gateway-system
+#       ports:
+#         - port: 4318

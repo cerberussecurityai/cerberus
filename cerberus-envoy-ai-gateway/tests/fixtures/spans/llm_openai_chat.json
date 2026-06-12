@@ -1,0 +1,43 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "ai-gateway"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {"name": "envoyproxy/ai-gateway"},
+          "spans": [
+            {
+              "traceId": "AQIDBAUGBwgJCgsMDQ4PEA==",
+              "spanId": "AQIDBAUGBwg=",
+              "name": "ChatCompletions",
+              "kind": "SPAN_KIND_INTERNAL",
+              "startTimeUnixNano": "1750000000000000000",
+              "endTimeUnixNano": "1750000001250000000",
+              "status": {},
+              "attributes": [
+                {"key": "openinference.span.kind", "value": {"stringValue": "LLM"}},
+                {"key": "llm.system", "value": {"stringValue": "openai"}},
+                {"key": "llm.model_name", "value": {"stringValue": "gpt-4o-mini"}},
+                {"key": "llm.invocation_parameters", "value": {"stringValue": "{\"stream\": false, \"temperature\": 0.7, \"max_tokens\": 256}"}},
+                {"key": "llm.token_count.prompt", "value": {"intValue": "42"}},
+                {"key": "llm.token_count.completion", "value": {"intValue": "128"}},
+                {"key": "llm.token_count.total", "value": {"intValue": "170"}},
+                {"key": "input.value", "value": {"stringValue": "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}], \"api_key\": \"sk-secret\"}"}},
+                {"key": "input.mime_type", "value": {"stringValue": "application/json"}},
+                {"key": "output.value", "value": {"stringValue": "{\"choices\": [{\"message\": {\"content\": \"hi\"}}]}"}},
+                {"key": "output.mime_type", "value": {"stringValue": "application/json"}},
+                {"key": "http.client_ip", "value": {"stringValue": "203.0.113.7, 10.0.0.1"}},
+                {"key": "http.user_agent", "value": {"stringValue": "test-agent/1.0"}},
+                {"key": "user.id", "value": {"stringValue": "user-123"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

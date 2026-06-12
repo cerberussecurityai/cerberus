@@ -1,0 +1,26 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "scope": {"name": "envoyproxy/ai-gateway/mcp"},
+          "spans": [
+            {
+              "traceId": "Q0NDQ0NDQ0NDQ0NDQ0NDQw==",
+              "spanId": "Q0NDQ0NDQ0M=",
+              "name": "tools/list",
+              "startTimeUnixNano": "1750000060000000000",
+              "endTimeUnixNano": "1750000060010000000",
+              "status": {},
+              "attributes": [
+                {"key": "mcp.method.name", "value": {"stringValue": "tools/list"}},
+                {"key": "mcp.backend.name", "value": {"stringValue": "weather-mcp"}},
+                {"key": "output.value", "value": {"stringValue": "{\"tools\": [{\"name\": \"get_weather\", \"description\": \"Get weather\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"location\": {\"type\": \"string\"}}}}]}"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

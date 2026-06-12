@@ -1,0 +1,29 @@
+# Expected mapper_llm output for spans/llm_anthropic_messages.json with
+# capture_llm_content=false (the default): no body even though the span
+# recorded input content.
+remote_addr: "2001:db8::1%eth0"
+endpoint: "llm://anthropic/claude-sonnet-4-6"
+scheme: "llm"
+method: "llm_messages"
+timestamp: "2025-06-15T15:07:00+00:00"
+headers: null
+query_params: null
+body: null
+user_agent: "claude-cli/2.0"
+user_id: null
+custom_data:
+  integration: "envoy-ai-gateway"
+  event_type: "llm_call"
+  provider: "anthropic"
+  model: "claude-sonnet-4-6"
+  response_model: null
+  duration_ms: 2500.0
+  status: "ok"
+  error: null
+  streaming: true
+  trace_id: "2122232425262728292a2b2c2d2e2f30"
+  span_id: "2122232425262728"
+  tokens_prompt: 350
+  tokens_completion: 97
+  tokens_cache_hit: 300
+  max_tokens: 1024

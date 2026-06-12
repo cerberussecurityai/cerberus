@@ -1,0 +1,28 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "scope": {"name": "envoyproxy/ai-gateway/mcp"},
+          "spans": [
+            {
+              "traceId": "QUFBQUFBQUFBQUFBQUFBQQ==",
+              "spanId": "QUFBQUFBQUE=",
+              "name": "resources/read",
+              "startTimeUnixNano": "1750000040000000000",
+              "endTimeUnixNano": "1750000040020000000",
+              "status": {},
+              "attributes": [
+                {"key": "mcp.method.name", "value": {"stringValue": "resources/read"}},
+                {"key": "mcp.resource.uri", "value": {"stringValue": "file:///docs/readme.md"}},
+                {"key": "mcp.backend.name", "value": {"stringValue": "docs-mcp"}},
+                {"key": "mcp.request.id", "value": {"stringValue": "43"}},
+                {"key": "mcp.transport", "value": {"stringValue": "http"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

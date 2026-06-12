@@ -1,0 +1,35 @@
+# Environment variables to add to the Envoy AI Gateway extproc so it exports
+# traces to the Cerberus bridge. How to inject them depends on your install
+# (verify against your chart version):
+#
+#   1. Helm values for oci://docker.io/envoyproxy/ai-gateway-helm
+#      (extproc env-var values, e.g. extProc.extraEnvVars).
+#   2. The GatewayConfig CRD's extproc Kubernetes spec, where exposed.
+#   3. Escape hatch: kubectl set env on the extproc workload.
+#
+# For `aigw run` (standalone mode), export these as process env vars instead.
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: http://cerberus-bridge.cerberus.svc.cluster.local:4318
+# REQUIRED: the OTel default protocol is gRPC; the bridge speaks OTLP/HTTP.
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: http/protobuf
+- name: OTEL_TRACES_EXPORTER
+  value: otlp
+# The bridge only consumes traces; don't export metrics at it.
+- name: OTEL_METRICS_EXPORTER
+  value: none
+- name: OTEL_TRACES_SAMPLER
+  value: parentbased_always_on
+- name: OTEL_SERVICE_NAME
+  value: ai-gateway
+# Map request headers onto span attributes so Cerberus gets client IP,
+# end-user id, and user agent. Format: "header:attribute,header:attribute".
+- name: OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES
+  value: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
+# Defense-in-depth: keep prompt/completion content out of spans entirely
+# while CERBERUS_CAPTURE_LLM_CONTENT=false on the bridge. Remove these two
+# only if you enable LLM content capture.
+- name: OPENINFERENCE_HIDE_INPUTS
+  value: "true"
+- name: OPENINFERENCE_HIDE_OUTPUTS
+  value: "true"

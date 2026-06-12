@@ -1,0 +1,28 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "scope": {"name": "envoyproxy/ai-gateway"},
+          "spans": [
+            {
+              "traceId": "MTIzNDU2Nzg5MDEyMzQ1Ng==",
+              "spanId": "MTIzNDU2Nzg=",
+              "name": "ChatCompletions",
+              "startTimeUnixNano": "1750000030000000000",
+              "endTimeUnixNano": "1750000030100000000",
+              "status": {"code": "STATUS_CODE_ERROR", "message": "upstream returned 429"},
+              "attributes": [
+                {"key": "openinference.span.kind", "value": {"stringValue": "LLM"}},
+                {"key": "gen_ai.system", "value": {"stringValue": "openai"}},
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o"}},
+                {"key": "error.type", "value": {"stringValue": "rate_limited"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
