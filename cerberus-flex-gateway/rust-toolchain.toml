@@ -1,0 +1,9 @@
+# Pin the build toolchain so CI (and any maintainer running `make bundle`)
+# reproduces a byte-identical wasm. BUILD-SIDE ONLY — this file is never
+# shipped in the customer bundle; customers do not install Rust at all
+# (see INSTALL.md). Keep `channel` aligned with
+# `rust-version` in Cargo.toml and the cargo-anypoint 1.8.0 PDK toolchain.
+[toolchain]
+channel = "1.88.0"
+targets = ["wasm32-wasip1"]
+components = ["rustfmt", "clippy"]

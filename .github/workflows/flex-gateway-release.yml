@@ -1,0 +1,107 @@
+name: Flex Gateway Policy Release
+
+# Builds the Rust→WASM policy, runs the test suite, assembles the customer
+# distribution bundle, and attaches it to a GitHub Release.
+#
+# Trigger: push a tag `flex-gateway-v<version>` where <version> matches the
+# crate `version` in cerberus-flex-gateway/Cargo.toml (bundle == crate version
+# == published Exchange asset version). Example:
+#   git tag flex-gateway-v0.1.0 && git push origin flex-gateway-v0.1.0
+#
+# This does NOT publish to Anypoint Exchange — customers do that in their own
+# org via the bundled install.sh (see cerberus-flex-gateway/INSTALL.md).
+
+on:
+  push:
+    tags:
+      - "flex-gateway-v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+defaults:
+  run:
+    working-directory: cerberus-flex-gateway
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # Pinned Rust toolchain comes from rust-toolchain.toml (1.88.0 +
+      # wasm32-wasip1) so the wasm is reproducible.
+      - name: Install Rust toolchain
+        run: rustup show && rustup target add wasm32-wasip1
+
+      - name: Cache cargo
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cerberus-flex-gateway/target
+          key: flex-gateway-${{ runner.os }}-cargo-${{ hashFiles('cerberus-flex-gateway/Cargo.lock') }}
+
+      - name: Install PDK toolchain (Node + anypoint-cli-v4 + cargo-anypoint)
+        run: |
+          node --version   # ubuntu-latest ships Node >= 18
+          # Pin every PDK tool: these produce the exact asset files that ship in
+          # the customer bundle, so an unpinned upgrade silently changes output.
+          npm install -g anypoint-cli-v4@1.6.14
+          anypoint-cli-v4 plugins:install anypoint-pdk-plugin@1.8.0
+          cargo install --locked cargo-anypoint@1.8.0
+
+      - name: Lint install.sh + bundle.sh
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck install.sh scripts/bundle.sh
+
+      - name: Verify tag matches crate version
+        if: startsWith(github.ref, 'refs/tags/flex-gateway-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#flex-gateway-v}"
+          crate_version="$(awk -F'\"' '/^\[package\]/{p=1} p&&/^version *=/{print $2; exit}' Cargo.toml)"
+          if [ "$tag_version" != "$crate_version" ]; then
+            echo "::error::tag version '$tag_version' != Cargo.toml version '$crate_version'"
+            exit 1
+          fi
+          echo "version $crate_version"
+
+      - name: Sync parity fixtures
+        run: make sync-fixtures
+
+      - name: Test
+        run: make test
+
+      - name: Bundle
+        run: make bundle
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/flex-gateway-v')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+        with:
+          files: |
+            cerberus-flex-gateway/dist/cerberus-flex-gateway-policy-*.tar.gz
+            cerberus-flex-gateway/dist/SHA256SUMS-*.txt
+          body: |
+            Cerberus Flex Gateway custom policy — customer distribution bundle.
+
+            Install into your own Anypoint org (no Rust required):
+            ```
+            tar -xzf cerberus-flex-gateway-policy-*.tar.gz
+            cd cerberus-flex-gateway-policy-*
+            ./install.sh --org-id <your-anypoint-org-uuid>
+            ```
+            See `INSTALL.md` inside the bundle for prerequisites and the full
+            walkthrough. Verify the download with the attached `SHA256SUMS-*.txt`.
+
+      # On manual dispatch (no tag) just keep the bundle as a workflow artifact.
+      - name: Upload bundle artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/flex-gateway-v') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cerberus-flex-gateway-policy
+          path: cerberus-flex-gateway/dist/*

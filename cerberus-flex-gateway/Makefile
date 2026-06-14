@@ -85,6 +85,10 @@ publish: build ## Publish a development version of the policy
 release: build ## Publish a release version
 	anypoint-cli-v4 pdk policy-project release --binary-path $(TARGET_DIR)/$(CRATE_NAME).wasm --implementation-gcl-path $(TARGET_DIR)/$(CRATE_NAME)_implementation.yaml
 
+.PHONY: bundle
+bundle: build ## Assemble the customer distribution tarball into dist/
+	@bash scripts/bundle.sh
+
 .PHONY: build-asset-files
 build-asset-files: $(DEFINITION_SRC_GCL_PATH)
 	@anypoint-cli-v4 pdk policy-project build-asset-files --metadata '$(ANYPOINT_METADATA_JSON)'
