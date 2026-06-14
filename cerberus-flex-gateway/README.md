@@ -114,12 +114,12 @@ a symlink to the repo-root `parity-fixtures/` directory.
 
 Two operator-facing modes are supported in v1.
 
-### Customer installation (Connected Mode) — **no Rust required**
+### Customer installation (Connected Mode)
 
 This is how an end customer installs the policy. Custom Flex Gateway policies
-can't be shared across Anypoint orgs, so each customer publishes the (identical,
-prebuilt) policy into **their own** org's Exchange. We ship a distribution
-bundle; the customer runs a one-line installer:
+can't be shared across Anypoint orgs, so each customer publishes the prebuilt
+policy into **their own** org's Exchange. We ship a distribution bundle; the
+customer runs a one-line installer:
 
 ```bash
 tar -xzf cerberus-flex-gateway-policy-<version>.tar.gz
@@ -127,10 +127,10 @@ cd cerberus-flex-gateway-policy-<version>
 ./install.sh --org-id <your-anypoint-org-uuid>     # try --dry-run first
 ```
 
-The installer needs only **Node ≥ 18** + `anypoint-cli-v4` (the PDK plugin) and
-an authenticated Anypoint session — **no `rustc`/`cargo`**. It stamps the
-customer's org id into the prebuilt artifacts and publishes an immutable
-Exchange release via `anypoint-cli-v4 pdk policy-project release`. Full
+The installer needs **Node ≥ 18** + `anypoint-cli-v4` (the PDK plugin) and an
+authenticated Anypoint session. It stamps the customer's org id into the
+prebuilt artifacts and publishes an immutable Exchange release via
+`anypoint-cli-v4 pdk policy-project release`. Full
 walkthrough (prerequisites, applying the policy in API Manager, upgrade,
 uninstall, troubleshooting): **[INSTALL.md](./INSTALL.md)**.
 

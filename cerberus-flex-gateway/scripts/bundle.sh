@@ -124,15 +124,12 @@ echo "bundle: wrote $(wc -l < "$stage/SHA256SUMS" | tr -d ' ') entries to SHA256
 
 # --- tarball + download-integrity sums ---------------------------------------
 tarball="$out/${name}.tar.gz"
-# --sort/--mtime/--owner/--group keep the archive reproducible across machines.
-if tar --version 2>/dev/null | grep -qi 'gnu tar'; then
-  tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
-      -czf "$tarball" -C "$out" "$name"
-else
-  # bsdtar (macOS) — no --sort; acceptable, the in-bundle SHA256SUMS is what
-  # install.sh verifies. CI runs on Linux/GNU tar for the reproducible artifact.
-  tar -czf "$tarball" -C "$out" "$name"
-fi
+# --owner=0 --group=0 --numeric-owner store ownership as root (0/0) regardless
+# of who runs the build, so our local username never leaks into the published
+# bundle and a root extract yields predictable ownership. All three are
+# supported by both GNU tar and bsdtar (macOS). Integrity is verified via the
+# two SHA256SUMS files (in-bundle payload + download), not tarball byte-identity.
+tar --owner=0 --group=0 --numeric-owner -czf "$tarball" -C "$out" "$name"
 
 ( cd "$out" && sha256 "$(basename "$tarball")" > "SHA256SUMS-${version}.txt" )
 

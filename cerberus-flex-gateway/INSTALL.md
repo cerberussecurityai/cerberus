@@ -5,17 +5,16 @@ Anypoint organization, then applies it to an API in API Manager. It ships with
 the distribution bundle (`cerberus-flex-gateway-policy-<version>.tar.gz`) and is
 also kept in the repo at `cerberus-flex-gateway/INSTALL.md`.
 
-> **No Rust required.** The policy is a prebuilt WebAssembly artifact. You only
-> need Node and the Anypoint CLI. You do **not** install `rustc`/`cargo`.
+> The policy ships as a prebuilt WebAssembly artifact — you only need Node and
+> the Anypoint CLI to install it.
 
 ## Why you publish it into your own org
 
 MuleSoft Exchange can't make a custom Flex Gateway policy applicable across
 organizations — a custom policy is only available to APIs in the org whose
-Exchange holds it. So each customer publishes the (identical, prebuilt) policy
-into their own org. `install.sh` wraps MuleSoft's supported PDK CLI to do this;
-the artifact is byte-for-byte the same for everyone, and your Anypoint org ID is
-the only per-customer value (stamped in at install time).
+Exchange holds it. So each customer publishes the prebuilt policy into their own
+org. `install.sh` wraps MuleSoft's supported PDK CLI to do this, stamping in your
+Anypoint org ID at install time.
 
 ## Prerequisites
 
@@ -64,10 +63,8 @@ shasum -a 256 -c ../SHA256SUMS-<version>.txt   # or sha256sum -c
 The installer:
 
 1. **Preflights** — verifies Node ≥ 18, the Anypoint CLI + PDK plugin, an
-   authenticated session, and the bundle's `SHA256SUMS`. (It does **not** check
-   for Rust — none is needed.)
-2. **Stages** a temp copy of the policy project and stamps your org id into it
-   (the bundle is never modified in place).
+   authenticated session, and the bundle's `SHA256SUMS`.
+2. **Stages** a temp copy of the policy project and stamps your org id into it.
 3. **Checks** whether this version is already in your Exchange — if so it prints
    "already installed" and exits cleanly (Exchange versions are immutable).
 4. **Publishes** an immutable release into your org's Exchange via
@@ -129,9 +126,9 @@ in API Manager.
 | `Node >= 18 required` | The PDK plugin crashes on older Node with `Unexpected token '{'`. Install Node ≥ 18. |
 | Publish fails with a permissions/403 error | Your account lacks **Exchange Contributor** in the target org, or `--org-id` points at an org where you don't have it. |
 | Publish says the version already exists | It's already installed — Exchange versions are immutable. Nothing to do (the installer treats this as success). |
-| Every batch 403s **after** applying the policy | The Cerberus `token` you entered in API Manager has surrounding whitespace (e.g. a trailing newline from copy-paste). The policy trims it defensively, but double-check the value. |
+| Every batch 403s **after** applying the policy | The Cerberus `token` you entered in API Manager has surrounding whitespace (e.g. a trailing newline from copy-paste). The policy trims whitespace, but double-check the value. |
 | `SHA256SUMS verification failed` | The extracted bundle is incomplete or modified — re-download and re-extract. |
 
 For development/build details (Rust toolchain, local-mode, parity tests) see
 the `cerberus-flex-gateway` project repository (`README.md` and
-`DEVELOPMENT.md`) — none of that is needed to install from this bundle.
+`DEVELOPMENT.md`).

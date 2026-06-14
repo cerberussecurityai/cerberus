@@ -34,7 +34,7 @@ This repository is a monorepo of the **client-side** Cerberus integrations — t
 ## Development & publishing
 
 - The Python packages build with `uv build` and publish to PyPI via [`./publish_package.sh`](./publish_package.sh) `<package>` (e.g. `./publish_package.sh cerberus-core`).
-- [`cerberus-flex-gateway`](./cerberus-flex-gateway/README.md) compiles to WASM and is distributed as a prebuilt bundle each customer publishes into **their own** Anypoint Exchange via the bundled `install.sh` (no Rust needed — see [INSTALL.md](./cerberus-flex-gateway/INSTALL.md)). Maintainers build the bundle with `make bundle`; CI attaches it to a `flex-gateway-v*` GitHub Release. It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode).
+- [`cerberus-flex-gateway`](./cerberus-flex-gateway/README.md) compiles to WASM and is distributed as a prebuilt bundle each customer publishes into **their own** Anypoint Exchange via the bundled `install.sh` (see [INSTALL.md](./cerberus-flex-gateway/INSTALL.md)). Maintainers build the bundle with `make bundle`; CI attaches it to a `flex-gateway-v*` GitHub Release. It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode).
 - Repo-wide guidance (architecture, commands, conventions) for contributors and AI assistants: [CLAUDE.md](./CLAUDE.md).
 
 ## License

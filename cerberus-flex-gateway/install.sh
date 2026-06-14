@@ -7,8 +7,8 @@
 #
 # Custom Flex Gateway policies can't be shared across orgs through Exchange, so
 # the policy must live in your own org. This wraps MuleSoft's supported PDK CLI
-# to do exactly that, using the PREBUILT artifacts in this bundle. No Rust /
-# cargo is required or used — only Node + the Anypoint CLI (see INSTALL.md).
+# to do exactly that, using the prebuilt artifacts in this bundle — it needs
+# only Node + the Anypoint CLI (see INSTALL.md).
 #
 # What it does: verifies the bundle, stamps your org id into a TEMP copy of the
 # policy project (never edits the bundle in place), and runs
@@ -55,7 +55,7 @@ Options:
   -h, --help              Show this help.
 
 Prerequisites (see INSTALL.md): Node >= 18, anypoint-cli-v4 with the
-anypoint-pdk-plugin, and an authenticated Anypoint session. NO Rust required.
+anypoint-pdk-plugin, and an authenticated Anypoint session.
 EOF
 }
 
@@ -131,7 +131,7 @@ else
 fi
 
 # Node >= 18 (the anypoint-pdk-plugin needs >=16.11 for class static blocks;
-# we pin >=18). NB: Rust is intentionally NOT checked — it is not needed.
+# we pin >=18).
 command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node >= 18 (see INSTALL.md)."
 node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 [[ "$node_major" -ge 18 ]] || die "Node >= 18 required (found $(node --version)). The Anypoint PDK plugin breaks on older Node."
