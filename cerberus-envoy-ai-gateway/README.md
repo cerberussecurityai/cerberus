@@ -230,6 +230,7 @@ cerberus-envoy-ai-gateway/
 
 ## Architecture references
 
+- **Internal design / maintainer guide: [ARCHITECTURE.md](./ARCHITECTURE.md)** — data flow, why an OTLP bridge, module map, the span→event mapping spec, and the cross-repo backend contract.
 - Envoy AI Gateway tracing: <https://aigateway.envoyproxy.io/docs/capabilities/observability/tracing>
 - MCP gateway: <https://aigateway.envoyproxy.io/docs/capabilities/mcp/>
 - Span attribute sources (gateway code): `internal/tracing/openinference/`,
