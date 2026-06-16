@@ -20,7 +20,11 @@ cerberus/
 │   └── src/cerberus_mcp/
 ├── cerberus-flex-gateway/     # Rust → WASM custom policy for MuleSoft Flex Gateway
 │   ├── Cargo.toml
-│   ├── Makefile
+│   ├── Makefile               # incl. `make bundle` (customer tarball)
+│   ├── rust-toolchain.toml    # pinned build toolchain (build-side only)
+│   ├── install.sh             # customer installer → their own org's Exchange
+│   ├── INSTALL.md             # customer install guide (ships in the bundle)
+│   ├── scripts/bundle.sh      # `make bundle` staging logic
 │   ├── definition/gcl.yaml    # operator-facing config schema
 │   ├── src/                   # lib.rs, sanitize.rs, hash.rs, etc.
 │   ├── tests/parity_runner.rs # consumes parity-fixtures/
@@ -43,7 +47,7 @@ The three Python packages are published independently to PyPI:
 - `cerberus-django` — Django middleware (depends on cerberus-core)
 - `cerberus-mcp` — MCP server wrapper (depends on cerberus-core)
 
-`cerberus-flex-gateway` is **not** published to PyPI — it's a Rust crate that compiles to a `.wasm` artifact and is distributed via MuleSoft Anypoint Exchange (`make publish` / `make release`) or as a `.wasm` file dropped onto a Flex Gateway pod (Local mode). See `cerberus-flex-gateway/README.md`.
+`cerberus-flex-gateway` is **not** published to PyPI — it's a Rust crate that compiles to a `.wasm` artifact. Because custom Flex Gateway policies can't be shared across Anypoint orgs, distribution is **customer-side**: `make bundle` builds a prebuilt tarball (CI attaches it to a `flex-gateway-v*` GitHub Release), and each customer runs the bundled `install.sh --org-id <uuid>` to publish it into *their own* org's Exchange — no Rust required (see `cerberus-flex-gateway/INSTALL.md`). `make publish` / `make release` are the **maintainer** path into *our* org only. It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode). See `cerberus-flex-gateway/README.md`.
 
 ## Packages
 
@@ -104,9 +108,10 @@ make sync-fixtures   # symlink ../parity-fixtures into tests/fixtures (one-time)
 make build           # compile to wasm32-wasip1
 make test            # cargo test (parity + unit)
 make run             # local Flex Gateway in Docker for dev
+make bundle          # assemble the customer distribution tarball into dist/
 ```
 
-**Deployment:** see `cerberus-flex-gateway/README.md` for Local-mode (copy `.wasm` + `gcl.yaml` onto pod) and Connected-mode (publish to Anypoint Exchange via `make publish` / `make release`) walkthroughs.
+**Deployment:** see `cerberus-flex-gateway/README.md` for Local-mode (copy `.wasm` + `gcl.yaml` onto pod), customer Connected-mode install (`INSTALL.md` — prebuilt bundle + `install.sh` into the customer's own org, no Rust), and the maintainer publish path (`make publish` / `make release` into our org).
 
 **Parity guarantees:** the crate duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` / sanitize/hash/normalize logic from `cerberus-core` (no shared crate; would force translating Python types). Drift is caught by `tests/parity_runner.rs` which consumes the same `../parity-fixtures/*.yaml` as `cerberus-django/tests/test_parity.py`. **If you change `SENSITIVE_KEYS` in `cerberus-core/src/cerberus_core/sanitization.py`, update the matching fixture file in the same PR.**
 
