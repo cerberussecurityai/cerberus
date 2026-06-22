@@ -65,7 +65,11 @@ endif
 
 .PHONY: test
 test: build ## Run integration tests
-	@cargo test -- --nocapture
+	# --test-threads=1: the pdk-unit harness installs its proxy-wasm host stub
+	# thread-locally, so running the suite in parallel races a hostcall onto a
+	# thread whose stub is still the panicking `UnimplementedHost`, aborting the
+	# whole binary. See the note in src/pipeline_tests.rs.
+	@cargo test -- --test-threads=1 --nocapture
 
 FORMAT     ?=
 OUTPUT_PATH ?=
