@@ -10,10 +10,11 @@
 # to do exactly that, using the prebuilt artifacts in this bundle — it needs
 # only Node + the Anypoint CLI (see INSTALL.md).
 #
-# What it does: verifies the bundle, stamps your org id into a TEMP copy of the
-# policy project (never edits the bundle in place), and runs
-# `anypoint-cli-v4 pdk policy-project release` to publish an immutable Exchange
-# asset at the version in ./VERSION.
+# What it does: verifies the bundle, copies the policy project to a TEMP dir
+# (never edits the bundle in place), runs `anypoint-cli-v4 pdk policy-project
+# build-asset-files` to generate the Exchange asset files stamped with YOUR org
+# id, then `anypoint-cli-v4 pdk policy-project release` to publish an immutable
+# Exchange asset at the version in ./VERSION.
 #
 # Supported: macOS + Linux (Windows: run under WSL — see INSTALL.md).
 set -euo pipefail
@@ -109,12 +110,20 @@ fi
 step "1/4  Preflight"
 # =============================================================================
 
-# Bundle layout present?
+# Bundle layout present? We ship the prebuilt wasm + implementation GCL, the
+# definition *source* (gcl.yaml), the project descriptor, and an org-agnostic
+# publish-metadata template. The PDK regenerates everything else in step 2.
 [[ -d "$policy_src" ]] || die "missing ./policy/ — run this from the extracted bundle directory."
 wasm="$policy_src/$rel/${crate}.wasm"
 impl_gcl="$policy_src/$rel/${crate}_implementation.yaml"
-[[ -f "$wasm" ]]     || die "missing policy wasm at policy/$rel/${crate}.wasm"
-[[ -f "$impl_gcl" ]] || die "missing implementation GCL at policy/$rel/${crate}_implementation.yaml"
+proj_yaml="$policy_src/.project.yaml"
+defn_src_gcl="$policy_src/definition/gcl.yaml"
+metadata_tmpl="$here/anypoint-metadata.json"
+[[ -f "$wasm" ]]          || die "missing policy wasm at policy/$rel/${crate}.wasm"
+[[ -f "$impl_gcl" ]]      || die "missing implementation GCL at policy/$rel/${crate}_implementation.yaml"
+[[ -f "$proj_yaml" ]]     || die "missing policy/.project.yaml — bundle may be malformed."
+[[ -f "$defn_src_gcl" ]]  || die "missing policy/definition/gcl.yaml — bundle may be malformed."
+[[ -f "$metadata_tmpl" ]] || die "missing ./anypoint-metadata.json — bundle may be malformed."
 ok "bundle layout present"
 
 # Integrity: SHA256SUMS covers the extracted payload.
@@ -156,10 +165,10 @@ else
 fi
 
 # =============================================================================
-step "2/4  Stage a stamped copy of the policy project"
+step "2/4  Stage the project and build asset files for your org"
 # =============================================================================
-# Never edit the bundle in place: copy policy/ to a temp dir and stamp the org
-# id (and optional asset-id suffix) there.
+# Never edit the bundle in place: copy policy/ to a temp dir and let the PDK
+# regenerate the Exchange asset files there, stamped with YOUR org id.
 work="$(mktemp -d "${TMPDIR:-/tmp}/cerberus-flex-install.XXXXXX")"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
@@ -167,25 +176,38 @@ cp -R "$policy_src" "$work/policy"
 proj="$work/policy"
 ok "staged to $proj"
 
-# Stamp the org id into every exchange.json (replaces the placeholder).
-stamped=0
-while IFS= read -r -d '' f; do
-  if grep -q "$placeholder" "$f"; then
-    sed -i.bak "s/${placeholder}/${org_id}/g" "$f" && rm -f "$f.bak"
-    stamped=$((stamped + 1))
-  fi
-done < <(find "$proj" -name 'exchange.json' -print0)
-[[ "$stamped" -gt 0 ]] || die "no '$placeholder' placeholder found to stamp — bundle may be malformed."
-grep -rq "$placeholder" "$proj" && die "placeholder still present after stamping — aborting."
-ok "stamped org id into $stamped exchange.json file(s)"
-
-# Optional asset-id suffix (collision escape hatch): append to assetId fields.
+# Build the publish metadata from the shipped template: substitute YOUR org id
+# for the placeholder and (optionally) append the asset-id suffix to the asset
+# ids. The PDK reads these via --metadata and bakes them into the generated
+# exchange.json / definition.zip, so nothing generated needs hand-editing.
+metadata="$(sed "s/${placeholder}/${org_id}/g" "$metadata_tmpl")"
+grep -q "$placeholder" <<<"$metadata" && die "placeholder still present in metadata after stamping — aborting."
+grep -q "$org_id"      <<<"$metadata" || die "failed to stamp org id into the publish metadata — bundle may be malformed."
 if [[ -n "$asset_id_suffix" ]]; then
-  while IFS= read -r -d '' f; do
-    sed -i.bak -E "s/(\"assetId\"[[:space:]]*:[[:space:]]*\"[a-z0-9-]+)\"/\1-${asset_id_suffix}\"/g" "$f" && rm -f "$f.bak"
-  done < <(find "$proj" -name 'exchange.json' -print0)
+  metadata="$(sed -E "s/(\"(definition|implementation)-asset-id\"[[:space:]]*:[[:space:]]*\"[a-z0-9-]+)\"/\1-${asset_id_suffix}\"/g" <<<"$metadata")"
   ok "appended asset-id suffix '-$asset_id_suffix'"
 fi
+
+# Regenerate the definition + implementation asset files (definition.zip,
+# exchange.json, metadata.yaml, schema.json) under the staged project's target/
+# dirs, stamped for your org. This step does no network I/O and no publish — so
+# it runs in dry-run too (it only writes into the temp dir).
+#
+# --metadata accepts inline JSON (confirmed against PDK 1.8.0). If a future PDK
+# upgrade makes it expect a file path instead, write $metadata to a temp file
+# (e.g. "$work/metadata.json") and pass that path here.
+info "running: anypoint-cli-v4 pdk policy-project build-asset-files --metadata <stamped-json>"
+ba_log="$work/build-asset-files.log"
+if ! ( cd "$proj" && anypoint-cli-v4 pdk policy-project build-asset-files --metadata "$metadata" ) >"$ba_log" 2>&1; then
+  cat "$ba_log" >&2
+  die "failed to build asset files (pdk policy-project build-asset-files). See the CLI output above and INSTALL.md troubleshooting."
+fi
+defn_zip="$proj/definition/target/asset/definition.zip"
+impl_exchange="$proj/target/implementation/exchange.json"
+[[ -f "$defn_zip" ]]      || die "build-asset-files did not produce definition.zip — cannot publish."
+[[ -f "$impl_exchange" ]] || die "build-asset-files did not produce the implementation exchange.json — cannot publish."
+grep -q "$org_id" "$impl_exchange" || die "generated implementation exchange.json is missing your org id — aborting."
+ok "built asset files (definition.zip + exchange descriptors) stamped for org $org_id"
 
 # =============================================================================
 step "3/4  Check for an existing install (idempotency)"
