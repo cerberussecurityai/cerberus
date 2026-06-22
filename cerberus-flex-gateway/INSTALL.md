@@ -66,7 +66,7 @@ The installer:
    authenticated session, and the bundle's `SHA256SUMS`.
 2. **Stages** a temp copy of the policy project and runs `anypoint-cli-v4 pdk
    policy-project build-asset-files` to generate the Exchange asset files stamped
-   with your org id (pure Node/PDK — no Rust toolchain involved).
+   with your org id.
 3. **Checks** whether this version is already in your Exchange — if so it prints
    "already installed" and exits cleanly (Exchange versions are immutable).
 4. **Publishes** an immutable release into your org's Exchange via

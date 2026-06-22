@@ -14,8 +14,7 @@
 # (never edits the bundle in place), runs `anypoint-cli-v4 pdk policy-project
 # build-asset-files` to generate the Exchange asset files stamped with YOUR org
 # id, then `anypoint-cli-v4 pdk policy-project release` to publish an immutable
-# Exchange asset at the version in ./VERSION. Both steps are pure Node/PDK — no
-# Rust toolchain required.
+# Exchange asset at the version in ./VERSION.
 #
 # Supported: macOS + Linux (Windows: run under WSL — see INSTALL.md).
 set -euo pipefail
@@ -191,9 +190,13 @@ fi
 
 # Regenerate the definition + implementation asset files (definition.zip,
 # exchange.json, metadata.yaml, schema.json) under the staged project's target/
-# dirs, stamped for your org. This is a pure Node/PDK step — no Rust, no network,
-# no publish — so it runs in dry-run too (it only writes into the temp dir).
-info "running: anypoint-cli-v4 pdk policy-project build-asset-files --metadata '$metadata'"
+# dirs, stamped for your org. This step does no network I/O and no publish — so
+# it runs in dry-run too (it only writes into the temp dir).
+#
+# --metadata accepts inline JSON (confirmed against PDK 1.8.0). If a future PDK
+# upgrade makes it expect a file path instead, write $metadata to a temp file
+# (e.g. "$work/metadata.json") and pass that path here.
+info "running: anypoint-cli-v4 pdk policy-project build-asset-files --metadata <stamped-json>"
 ba_log="$work/build-asset-files.log"
 if ! ( cd "$proj" && anypoint-cli-v4 pdk policy-project build-asset-files --metadata "$metadata" ) >"$ba_log" 2>&1; then
   cat "$ba_log" >&2

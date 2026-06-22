@@ -129,11 +129,11 @@ cd cerberus-flex-gateway-policy-<version>
 
 The installer needs **Node ≥ 18** + `anypoint-cli-v4` (the PDK plugin) and an
 authenticated Anypoint session. It regenerates the Exchange asset files stamped
-with the customer's org id (`pdk policy-project build-asset-files`, pure
-Node/PDK — no Rust) from the prebuilt wasm + definition source, then publishes
-an immutable Exchange release via `anypoint-cli-v4 pdk policy-project release`. Full
-walkthrough (prerequisites, applying the policy in API Manager, upgrade,
-uninstall, troubleshooting): **[INSTALL.md](./INSTALL.md)**.
+with the customer's org id (`pdk policy-project build-asset-files`) from the
+prebuilt wasm + definition source, then publishes an immutable Exchange release
+via `anypoint-cli-v4 pdk policy-project release`. Full walkthrough
+(prerequisites, applying the policy in API Manager, upgrade, uninstall,
+troubleshooting): **[INSTALL.md](./INSTALL.md)**.
 
 Maintainers build the bundle with `make bundle`; CI attaches it to a GitHub
 Release on a `flex-gateway-v*` tag.
