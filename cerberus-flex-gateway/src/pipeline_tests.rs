@@ -16,12 +16,21 @@ use serde_json::Value;
 
 const INGEST_AUTHORITY: &str = "ingest.cerberus.test";
 
-// The pdk-unit harness installs a process-global proxy-wasm host stub, so
-// two harness-driven tests running concurrently clobber each other. Cargo
-// runs tests in parallel by default; this lock serializes harness use
-// (held for the lifetime of each `UnitTest`) without forcing the whole
-// suite single-threaded. Poison is ignored — a panicking test has already
-// reported its own failure.
+// The pdk-unit harness installs its proxy-wasm host stub *thread-locally*
+// (see `pdk-proxy-wasm-stub`), and the policy's async tasks log/read-the-clock
+// through that stub. Under `cargo test`'s default parallelism a hostcall can
+// land on a thread whose stub is still the default `UnimplementedHost` — every
+// method of which panics — which double-panics during unwind and aborts the
+// entire test binary, taking unrelated tests down with it. The suite is
+// therefore run single-threaded via `RUST_TEST_THREADS=1` in
+// `.cargo/config.toml` (a per-test lock can't fix this — the stray hostcall
+// races against whatever *other* test happens to be running).
+//
+// NOTE: with that config in place this lock is currently redundant — all tests
+// are already serialized. It is kept as a safeguard: if the thread count is
+// ever raised it still serializes the two harness-driven tests against each
+// other. Poison is ignored — a panicking test has already reported its own
+// failure.
 static HARNESS_LOCK: Mutex<()> = Mutex::new(());
 
 // No secretKey / backendUrl → secret resolves to None, so Authorization

@@ -63,6 +63,10 @@ endif
 	-docker compose -f ./playground/docker-compose.yaml down
 	docker compose -f ./playground/docker-compose.yaml up
 
+# Tests run single-threaded — pinned via .cargo/config.toml (RUST_TEST_THREADS),
+# so a direct `cargo test` is serialized too. The pdk-unit proxy-wasm host stub
+# is thread-local; parallel runs race a hostcall onto a thread whose stub still
+# panics, aborting the whole binary. See src/pipeline_tests.rs.
 .PHONY: test
 test: build ## Run integration tests
 	@cargo test -- --nocapture
