@@ -22,11 +22,13 @@ const INGEST_AUTHORITY: &str = "ingest.cerberus.test";
 // land on a thread whose stub is still the default `UnimplementedHost` — every
 // method of which panics — which double-panics during unwind and aborts the
 // entire test binary, taking unrelated tests down with it. The suite is
-// therefore run single-threaded; see `--test-threads=1` in the Makefile `test`
-// target (a per-test lock can't fix this — the stray hostcall races against
-// whatever *other* test happens to be running).
+// therefore run single-threaded via `RUST_TEST_THREADS=1` in
+// `.cargo/config.toml` (a per-test lock can't fix this — the stray hostcall
+// races against whatever *other* test happens to be running).
 //
-// This lock additionally serializes the two harness-driven tests against each
+// NOTE: with that config in place this lock is currently redundant — all tests
+// are already serialized. It is kept as a safeguard: if the thread count is
+// ever raised it still serializes the two harness-driven tests against each
 // other. Poison is ignored — a panicking test has already reported its own
 // failure.
 static HARNESS_LOCK: Mutex<()> = Mutex::new(());

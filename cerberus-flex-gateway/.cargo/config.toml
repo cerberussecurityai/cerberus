@@ -1,0 +1,8 @@
+# Run the test suite single-threaded so the constraint travels with the
+# crate, not just the Makefile. The pdk-unit proxy-wasm host stub is
+# thread-local; parallel `cargo test` races a hostcall onto a thread whose
+# stub is the panicking `UnimplementedHost`, aborting the whole binary.
+# See src/pipeline_tests.rs. `force = false` (default) lets an explicit
+# `RUST_TEST_THREADS=N cargo test` still override for debugging.
+[env]
+RUST_TEST_THREADS = "1"
