@@ -30,14 +30,16 @@ else
   exit 1
 fi
 
-# --- single source of truth: version + internal group_id from Cargo.toml -----
-# crate `version` and the `[package.metadata.anypoint]` group_id. Parsed with
-# awk so there is exactly one place these live.
+# --- single source of truth: version + anypoint metadata from Cargo.toml ------
+# crate `version` and the `[package.metadata.anypoint]` ids. Parsed with awk so
+# there is exactly one place these live.
 version="$(awk -F'"' '/^\[package\]/{p=1} p&&/^version *=/{print $2;exit}' Cargo.toml)"
 internal_group_id="$(awk -F'"' '/^\[package.metadata.anypoint\]/{p=1} p&&/^group_id *=/{print $2;exit}' Cargo.toml)"
+definition_asset_id="$(awk -F'"' '/^\[package.metadata.anypoint\]/{p=1} p&&/^definition_asset_id *=/{print $2;exit}' Cargo.toml)"
+implementation_asset_id="$(awk -F'"' '/^\[package.metadata.anypoint\]/{p=1} p&&/^implementation_asset_id *=/{print $2;exit}' Cargo.toml)"
 
-if [[ -z "$version" || -z "$internal_group_id" ]]; then
-  echo "bundle: failed to parse version ('$version') or group_id ('$internal_group_id') from Cargo.toml" >&2
+if [[ -z "$version" || -z "$internal_group_id" || -z "$definition_asset_id" || -z "$implementation_asset_id" ]]; then
+  echo "bundle: failed to parse version/group_id/asset ids from Cargo.toml [package.metadata.anypoint]" >&2
   exit 1
 fi
 
@@ -53,10 +55,7 @@ echo "bundle: version=$version  internal_group_id=$internal_group_id"
 require() { [[ -e "$1" ]] || { echo "bundle: missing build artifact '$1' — run 'make build' first" >&2; exit 1; }; }
 require "$wasm"
 require "$impl_gcl"
-require "definition/target/definition/exchange.json"
-require "definition/target/definition/gcl.yaml"
-require "target/implementation/exchange.json"
-require "target/implementation/metadata.yaml"
+require "definition/gcl.yaml"
 require ".project.yaml"
 
 # --- stage --------------------------------------------------------------------
@@ -66,45 +65,33 @@ stage="$out/$name"
 rm -rf "$out"
 mkdir -p "$stage/policy"
 
-# Mirror the real PDK project paths so `anypoint-cli-v4 pdk policy-project
-# release` discovers the asset files exactly as it does in-repo. We ship the
-# generated asset *files*, not the `asset/*.zip` archives — the CLI repackages
-# those at publish time, and a zip can't carry the org-id placeholder.
-mkdir -p "$stage/policy/$rel" \
-         "$stage/policy/definition/target/definition" \
-         "$stage/policy/target/implementation"
+# Ship a minimal, org-AGNOSTIC PDK project: the prebuilt wasm + implementation
+# GCL (so the customer needs no Rust), the definition *source* (gcl.yaml), and
+# the project descriptor. We deliberately DON'T ship any generated asset files
+# (exchange.json / definition.zip / metadata.yaml): those embed our org's
+# group_id, and `pdk policy-project release` uploads the definition zip as-is.
+# Instead install.sh runs `pdk policy-project build-asset-files --metadata` to
+# regenerate them all stamped with the CUSTOMER's org id (pure Node, no Rust).
+mkdir -p "$stage/policy/$rel" "$stage/policy/definition"
 
-cp "$wasm"                  "$stage/policy/$rel/"
-cp "$impl_gcl"              "$stage/policy/$rel/"
-cp .project.yaml            "$stage/policy/.project.yaml"
-cp target/policy-ref-name.txt "$stage/policy/target/policy-ref-name.txt" 2>/dev/null || true
+cp "$wasm"             "$stage/policy/$rel/"
+cp "$impl_gcl"         "$stage/policy/$rel/"
+cp .project.yaml       "$stage/policy/.project.yaml"
+cp definition/gcl.yaml "$stage/policy/definition/gcl.yaml"
 
-# Copy every generated definition asset file (exchange.json, gcl.yaml,
-# metadata.yaml, schema.json, gcl_src.yaml). Skip any asset/*.zip.
-find definition/target/definition -maxdepth 1 -type f \
-  -exec cp {} "$stage/policy/definition/target/definition/" \;
+# Org-agnostic publish-metadata template (group_id is the placeholder; asset ids
+# and version come from Cargo.toml). install.sh stamps the customer org id in and
+# passes it to `pdk policy-project build-asset-files --metadata`.
+printf '{"group-id":"%s","definition-asset-id":"%s","implementation-asset-id":"%s","version":"%s"}\n' \
+  "$placeholder" "$definition_asset_id" "$implementation_asset_id" "$version" \
+  > "$stage/anypoint-metadata.json"
+echo "bundle: wrote anypoint-metadata.json (def=$definition_asset_id impl=$implementation_asset_id v$version)"
 
-cp target/implementation/exchange.json \
-   target/implementation/metadata.yaml \
-   "$stage/policy/target/implementation/"
-
-# --- de-identify: internal group_id -> placeholder in every exchange.json -----
-# (group_id appears ONLY in the exchange.json files — verified: the wasm and
-# both GCLs carry no org identity.) Replace it everywhere so a `grep` for our
-# org in the bundle comes up empty.
-stamped=0
-while IFS= read -r -d '' f; do
-  if grep -q "$internal_group_id" "$f"; then
-    sed -i.bak "s/${internal_group_id}/${placeholder}/g" "$f" && rm -f "$f.bak"
-    stamped=$((stamped + 1))
-  fi
-done < <(find "$stage/policy" -name 'exchange.json' -print0)
-echo "bundle: rewrote internal group_id -> placeholder in $stamped exchange.json file(s)"
-
-# Safety net: our org id must not survive anywhere in the staged payload.
-if grep -rq "$internal_group_id" "$stage/policy"; then
-  echo "bundle: ERROR internal group_id still present in staged bundle:" >&2
-  grep -rl "$internal_group_id" "$stage/policy" >&2
+# Safety net: our org id must not survive anywhere in the staged payload (we ship
+# no generated descriptors, and the wasm + GCLs carry no org identity).
+if grep -rq "$internal_group_id" "$stage"; then
+  echo "bundle: ERROR internal group_id present in staged bundle:" >&2
+  grep -rl "$internal_group_id" "$stage" >&2
   exit 1
 fi
 
