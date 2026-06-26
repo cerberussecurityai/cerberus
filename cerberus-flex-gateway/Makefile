@@ -63,6 +63,10 @@ endif
 	-docker compose -f ./playground/docker-compose.yaml down
 	docker compose -f ./playground/docker-compose.yaml up
 
+# Tests run single-threaded — pinned via .cargo/config.toml (RUST_TEST_THREADS),
+# so a direct `cargo test` is serialized too. The pdk-unit proxy-wasm host stub
+# is thread-local; parallel runs race a hostcall onto a thread whose stub still
+# panics, aborting the whole binary. See src/pipeline_tests.rs.
 .PHONY: test
 test: build ## Run integration tests
 	@cargo test -- --nocapture
@@ -84,6 +88,10 @@ publish: build ## Publish a development version of the policy
 .PHONY: release
 release: build ## Publish a release version
 	anypoint-cli-v4 pdk policy-project release --binary-path $(TARGET_DIR)/$(CRATE_NAME).wasm --implementation-gcl-path $(TARGET_DIR)/$(CRATE_NAME)_implementation.yaml
+
+.PHONY: bundle
+bundle: build ## Assemble the customer distribution tarball into dist/
+	@bash scripts/bundle.sh
 
 .PHONY: build-asset-files
 build-asset-files: $(DEFINITION_SRC_GCL_PATH)

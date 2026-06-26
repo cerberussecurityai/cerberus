@@ -114,6 +114,38 @@ a symlink to the repo-root `parity-fixtures/` directory.
 
 Two operator-facing modes are supported in v1.
 
+### Customer installation (Connected Mode)
+
+This is how an end customer installs the policy. Custom Flex Gateway policies
+can't be shared across Anypoint orgs, so each customer publishes the prebuilt
+policy into **their own** org's Exchange. We ship a distribution bundle; the
+customer runs a one-line installer:
+
+```bash
+tar -xzf cerberus-flex-gateway-policy-<version>.tar.gz
+cd cerberus-flex-gateway-policy-<version>
+./install.sh --org-id <your-anypoint-org-uuid>     # try --dry-run first
+```
+
+The installer needs **Node ≥ 18** + `anypoint-cli-v4` (the PDK plugin) and an
+authenticated Anypoint session. It regenerates the Exchange asset files stamped
+with the customer's org id (`pdk policy-project build-asset-files`) from the
+prebuilt wasm + definition source, then publishes an immutable Exchange release
+via `anypoint-cli-v4 pdk policy-project release`. Full walkthrough
+(prerequisites, applying the policy in API Manager, upgrade, uninstall,
+troubleshooting): **[INSTALL.md](./INSTALL.md)**.
+
+Maintainers build the bundle with `make bundle`; CI attaches it to a GitHub
+Release on a `flex-gateway-v*` tag.
+
+### Maintainer publish (our own org)
+
+`make publish` / `make release` publish from this repo into **our** Anypoint org
+(the default `[package.metadata.anypoint] group_id` in `Cargo.toml`). These
+require the Rust toolchain (via `make build`) and target our org — they are
+**not** the customer path. ⚠️ `make release` is immutable; don't run it as a
+test.
+
 ### Local mode (development + air-gapped operators)
 
 1. `make build` → produces `bin/cerberus_flex_gateway.wasm` and the GCL
@@ -128,21 +160,21 @@ Two operator-facing modes are supported in v1.
 Reference:
 <https://docs.mulesoft.com/gateway/latest/flex-local-deploy-custom-policy>.
 
-### Connected mode (Anypoint Exchange + API Manager)
+### Applying the policy in API Manager
 
-1. `make publish` once per dev iteration → pushes a `*-dev` Exchange
-   asset (mutable). Set `[package.metadata.anypoint]` IDs in
-   `Cargo.toml` first.
-2. `make release` once stable → pushes an immutable Exchange release.
-3. Apply via API Manager UI (Custom tab → select policy → fill the
-   form rendered from `gcl.yaml`) or via CLI:
-   ```
-   anypoint-cli-v4 api-mgr policy apply \
-     --apiInstanceId <id> \
-     --policyId <exchange-asset-id> \
-     --config '{"ingestService":"...","token":"..."}'
-   ```
-4. Verify in API Manager + gateway pod logs.
+Once the policy is in an org's Exchange (customer install or maintainer
+publish, above), apply it to an API instance via the API Manager UI (Custom tab
+→ select policy → fill the form rendered from `gcl.yaml`) or via CLI:
+
+```
+anypoint-cli-v4 api-mgr policy apply \
+  --apiInstanceId <id> \
+  --policyId cerberus-flex-gateway \
+  --config '{"ingestService":"...","token":"..."}'
+```
+
+Then verify in API Manager + gateway pod logs. The customer-facing version of
+this walkthrough (with a config example) is in [INSTALL.md](./INSTALL.md).
 
 References:
 - Publishing: <https://docs.mulesoft.com/pdk/latest/policies-pdk-publish-policies>
@@ -184,8 +216,13 @@ are forced to follow.
 ```
 cerberus-flex-gateway/
 ├── Cargo.toml
-├── Makefile
+├── Makefile                  # `make bundle` assembles the customer tarball
 ├── README.md (this file)
+├── INSTALL.md                # customer install guide (also ships in the bundle)
+├── install.sh                # customer installer (publishes into their org)
+├── rust-toolchain.toml       # pinned build toolchain (build-side only)
+├── scripts/
+│   └── bundle.sh             # `make bundle` staging logic
 ├── definition/
 │   └── gcl.yaml              # operator-facing config schema
 ├── playground/

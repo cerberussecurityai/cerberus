@@ -13,7 +13,7 @@ This repository is a monorepo of the **client-side** Cerberus integrations — t
 | [**cerberus-core**](./cerberus-core/README.md) | Shared sanitization + PII-hashing utilities used by the Python integrations (`SENSITIVE_KEYS`, `sanitize_dict()`, `hash_pii()`) | Python | PyPI |
 | [**cerberus-django**](./cerberus-django/README.md) | Django middleware that captures HTTP request/response metadata and streams it over WebSocket — a one-line `MIDDLEWARE` addition | Python · Django | PyPI |
 | [**cerberus-mcp**](./cerberus-mcp/README.md) | Drop-in `FastMCP` replacement that instruments MCP tool / resource / prompt calls | Python · MCP (FastMCP) | PyPI |
-| [**cerberus-flex-gateway**](./cerberus-flex-gateway/README.md) | Custom policy for MuleSoft Anypoint Flex Gateway — captures and forwards request metadata with no application code changes | Rust → WASM (`wasm32-wasip1`) | Anypoint Exchange / `.wasm` |
+| [**cerberus-flex-gateway**](./cerberus-flex-gateway/README.md) | Custom policy for MuleSoft Anypoint Flex Gateway — captures and forwards request metadata with no application code changes | Rust → WASM (`wasm32-wasip1`) | Prebuilt bundle → customer's own Anypoint Exchange ([INSTALL.md](./cerberus-flex-gateway/INSTALL.md)) |
 | [**cerberus-envoy-ai-gateway**](./cerberus-envoy-ai-gateway/README.md) | OTLP trace bridge for Envoy AI Gateway — converts the gateway's LLM + MCP telemetry into Cerberus events, deployed beside the gateway with a few OTel env vars | Python · OTLP/HTTP | PyPI / container image |
 
 **Shared test fixtures:** [**parity-fixtures**](./parity-fixtures/README.md) — language-agnostic YAML cases that keep the Python and Rust sanitization logic byte-for-byte consistent.
@@ -36,7 +36,7 @@ This repository is a monorepo of the **client-side** Cerberus integrations — t
 ## Development & publishing
 
 - The Python packages build with `uv build` and publish to PyPI via [`./publish_package.sh`](./publish_package.sh) `<package>` (e.g. `./publish_package.sh cerberus-core`).
-- [`cerberus-flex-gateway`](./cerberus-flex-gateway/README.md) compiles to WASM and ships via Anypoint Exchange (`make publish` / `make release`) or as a `.wasm` file dropped onto a Flex Gateway pod — see its README.
+- [`cerberus-flex-gateway`](./cerberus-flex-gateway/README.md) compiles to WASM and is distributed as a prebuilt bundle each customer publishes into **their own** Anypoint Exchange via the bundled `install.sh` (see [INSTALL.md](./cerberus-flex-gateway/INSTALL.md)). Maintainers build the bundle with `make bundle`; CI attaches it to a `flex-gateway-v*` GitHub Release. It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode).
 - [`cerberus-envoy-ai-gateway`](./cerberus-envoy-ai-gateway/README.md) additionally ships as a container image (`make image`, push to your registry) with Kubernetes manifests in its `deploy/` directory.
 - Repo-wide guidance (architecture, commands, conventions) for contributors and AI assistants: [CLAUDE.md](./CLAUDE.md).
 

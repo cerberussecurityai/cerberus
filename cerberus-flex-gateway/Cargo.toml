@@ -14,8 +14,16 @@ description = "Cerberus custom policy for MuleSoft Flex Gateway"
 license = "MIT"
 
 # Anypoint Exchange identifiers used by `make publish` / `make release`.
-# Replace placeholders with real IDs before running publish — see README
-# "Connected mode setup". Local-mode (`make run`) does not need them.
+#
+# INTERNAL DEFAULT ONLY. `group_id` is *our* (Cerberus) Anypoint org — it is
+# the publish target for our own dev/release iterations and for `make bundle`'s
+# build step. Customers never use this value: `make bundle` rewrites it to the
+# `{{CERBERUS_ANYPOINT_GROUP_ID}}` placeholder in the shipped asset files, and
+# the customer's `install.sh --org-id <UUID>` stamps in *their* org at install
+# time (it also never reaches `rustc` — no build.rs / env! / include_*, so the
+# wasm is org-agnostic and built once for everyone).
+# The asset_id values are stable, user-facing Exchange identifiers and ship
+# unchanged to every org.
 [package.metadata.anypoint]
 group_id = "bfb16c88-b6af-4644-bdb4-08d9929bfc91"
 definition_asset_id = "cerberus-flex-gateway"

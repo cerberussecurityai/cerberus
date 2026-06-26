@@ -1,6 +1,11 @@
 # Cargo build artifacts
 /target/
 **/*.rs.bk
+
+# Customer distribution bundle staged by `make bundle` (wasm + asset files +
+# install.sh, tarball + SHA256SUMS). Reproduced from `make build` output and
+# attached to GitHub Releases by CI — never committed.
+/dist/
 # NOTE: Cargo.lock IS committed for this crate (it produces a wasm
 # artifact; Cargo.lock locks dependency versions for reproducible
 # builds — same convention as binary crates).
