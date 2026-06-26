@@ -81,6 +81,20 @@ def span_attributes(span: Span) -> dict[str, Any]:
     return {kv.key: any_value_to_python(kv.value) for kv in span.attributes}
 
 
+def span_event_attributes(span: Span) -> dict[str, Any]:
+    """Flatten attributes across all of a span's events into one dict.
+
+    Envoy AI Gateway records MCP route info (mcp.backend.name, mcp.session.id) as
+    span-event attributes via span.AddEvent, not top-level span.attributes, so a
+    real MCP span's backend/session live here. Later events win on key collision.
+    """
+    merged: dict[str, Any] = {}
+    for event in span.events:
+        for kv in event.attributes:
+            merged[kv.key] = any_value_to_python(kv.value)
+    return merged
+
+
 def iter_spans(request: ExportTraceServiceRequest) -> Iterator[tuple[str, Span]]:
     """Yield (instrumentation_scope_name, span) for every span in the request."""
     for resource_spans in request.resource_spans:

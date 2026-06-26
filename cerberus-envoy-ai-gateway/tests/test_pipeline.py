@@ -61,6 +61,19 @@ def test_mcp_arguments_flag_off(config):
     assert event["body"] is None
 
 
+def test_mcp_route_event_attributes_resolve_backend_and_session(config):
+    """Real ai-gateway MCP spans carry mcp.backend.name / mcp.session.id as span-
+    EVENT attributes (RecordRouteToBackend's span.AddEvent), not top-level. The
+    pipeline merges span-event attributes before mapping, so the span resolves the
+    real backend/session instead of the 'envoy-ai-gateway' fallback."""
+    _, queue, queued = _run("mcp_tool_call_route_events", config)
+    assert queued == 1
+    [event] = queue.drain(10)
+    assert event["endpoint"] == "mcp://weather-mcp/get_weather"
+    assert event["custom_data"]["mcp_server"] == "weather-mcp"
+    assert event["custom_data"]["session_id"] == "sess-1"
+
+
 def test_llm_content_sanitized_when_captured(config):
     config = replace(config, capture_llm_content=True)
     _, queue, _ = _run("llm_openai_chat", config)

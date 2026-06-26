@@ -19,7 +19,7 @@ from .classify import KIND_LLM, KIND_MCP, classify
 from .config import Config
 from .mapper_llm import map_llm_span
 from .mapper_mcp import map_mcp_span
-from .otlp import iter_spans, span_attributes
+from .otlp import iter_spans, span_attributes, span_event_attributes
 from .queue import BoundedQueue
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,14 @@ class Pipeline:
         queued = 0
         for _scope_name, span in iter_spans(request):
             attrs = span_attributes(span)
+            # Envoy AI Gateway records MCP route info (mcp.backend.name,
+            # mcp.session.id) as span-EVENT attributes via span.AddEvent, not
+            # top-level attributes; merge them so MCP spans resolve their
+            # backend/session instead of falling back to "unknown" (top-level
+            # attrs win on collision).
+            event_attrs = span_event_attributes(span)
+            if event_attrs:
+                attrs = {**event_attrs, **attrs}
             kind = classify(attrs)
             event: dict[str, Any] | None = None
             if kind == KIND_LLM:

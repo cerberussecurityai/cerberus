@@ -68,6 +68,9 @@ def test_undecodable_body_is_400(config):
             headers={"Content-Type": "application/x-protobuf"},
         )
         assert response.status_code == 400
+        # CodeQL: the decode-error detail must not be echoed to the caller —
+        # the response body is a fixed generic message.
+        assert response.text == "invalid OTLP request"
 
 
 def test_health_and_ready(config):

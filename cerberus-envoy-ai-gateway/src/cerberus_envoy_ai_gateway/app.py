@@ -83,8 +83,13 @@ def create_app(config: Config) -> FastAPI:
         try:
             export = decode_traces_request(body, content_type)
         except OTLPDecodeError as exc:
+            # Log the decode detail server-side but return a generic message, so
+            # the exception text (and any nested parser internals) isn't exposed
+            # to the unauthenticated caller.
             logger.warning("Rejecting undecodable OTLP request: %s", exc)
-            return Response(content=str(exc), status_code=400, media_type="text/plain")
+            return Response(
+                content="invalid OTLP request", status_code=400, media_type="text/plain"
+            )
 
         state["pipeline"].process_export(export)
 
