@@ -96,10 +96,15 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
     model = str(first_attr(attrs, _MODEL_KEYS) or "unknown")
     error = error_message(span, attrs)
     params = _invocation_params(attrs)
+    method = _method(span, attrs)
 
     custom_data: dict[str, Any] = {
         "integration": "envoy-ai-gateway",
-        "event_type": "llm_call",
+        # Short-form operation, mirroring mapper_mcp's custom_data event_type
+        # (tool_call / resource_read): the namespaced form is the top-level
+        # `method` (llm_chat_completion); strip the llm_ prefix here. Was
+        # previously hardcoded "llm_call" regardless of the actual operation.
+        "event_type": method.removeprefix("llm_"),
         "provider": provider,
         "model": model,
         "response_model": first_attr(attrs, _RESPONSE_MODEL_KEYS),
@@ -136,7 +141,7 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "remote_addr": raw_client_ip(attrs, config.client_ip_attribute),
         "endpoint": f"llm://{provider}/{model}",
         "scheme": "llm",
-        "method": _method(span, attrs),
+        "method": method,
         "timestamp": iso_timestamp(span),
         "custom_data": custom_data,
         "headers": None,

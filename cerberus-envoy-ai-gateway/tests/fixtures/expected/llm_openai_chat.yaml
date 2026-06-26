@@ -22,7 +22,7 @@ user_agent: "test-agent/1.0"
 user_id: "user-123"
 custom_data:
   integration: "envoy-ai-gateway"
-  event_type: "llm_call"
+  event_type: "chat_completion"
   provider: "openai"
   model: "gpt-4o-mini"
   response_model: null

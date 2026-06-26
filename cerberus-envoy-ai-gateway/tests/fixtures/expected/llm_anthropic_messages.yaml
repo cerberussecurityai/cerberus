@@ -13,7 +13,7 @@ user_agent: "claude-cli/2.0"
 user_id: null
 custom_data:
   integration: "envoy-ai-gateway"
-  event_type: "llm_call"
+  event_type: "messages"
   provider: "anthropic"
   model: "claude-sonnet-4-6"
   response_model: null

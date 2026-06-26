@@ -168,8 +168,8 @@ exactly the keys `event_process`'s `MCPDiscoveryUpdater` consumes:
 
 These events introduced two new vocabularies the backend hadn't seen — the
 `llm://` / `mcp://` endpoint schemes and the `llm_*` / `mcp_*` method names.
-Two guards in `cerberus-int` (branch `griff1/envoy-ai-gateway-backend-compat`)
-make them land correctly; **the bridge depends on them being deployed**:
+Two guards in the `cerberus-int` backend make them land correctly; **the bridge
+depends on them being deployed**:
 
 1. **Health-filter exemption** — `event_ingest`'s `is_health_endpoint` exempts
    `mcp://` and `llm://` endpoints. Their last path segment is a tool/model
