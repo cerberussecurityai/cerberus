@@ -19,6 +19,11 @@
 # (see ../ai-gateway/extproc-env.yaml).
 ---
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: cerberus
+---
+apiVersion: v1
 kind: Secret
 metadata:
   name: cerberus-bridge-credentials

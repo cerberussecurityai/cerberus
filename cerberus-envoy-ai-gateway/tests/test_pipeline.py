@@ -256,3 +256,19 @@ def test_schema_report_sanitized_regardless_of_capture_arguments_flag(config):
     event = _schema_report_event([{"name": "t", "input_schema": {"example": {"api_key": "sk-x"}}}])
     finalized = pipeline._finalize(event, KIND_MCP)
     assert finalized["custom_data"]["tools"][0]["input_schema"]["example"]["api_key"] == REDACTED
+
+
+def test_raw_malformed_ip_bounded(config):
+    # Raw-IP mode (no secret): a giant malformed XFF must be length-capped, not
+    # left to push the unsheddable remote_addr over the event cap.
+    queue = BoundedQueue(10)
+    pipeline = Pipeline(config, queue, None)
+    request = load_export("llm_openai_chat")
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    for kv in span.attributes:
+        if kv.key == "http.client_ip":
+            kv.value.string_value = "z" * 5000
+    pipeline.process_export(request)
+    [event] = queue.drain(10)
+    assert len(event["remote_addr"]) <= 64
+    assert pipeline.dropped_oversize == 0

@@ -95,6 +95,11 @@ class Config:
         ingest_service = (os.environ.get("CERBERUS_INGEST_SERVICE") or "").strip().rstrip("/")
         if not ingest_service:
             raise ConfigError("CERBERUS_INGEST_SERVICE is required (Cerberus backend URL)")
+        if not ingest_service.startswith(("http://", "https://")):
+            raise ConfigError(
+                "CERBERUS_INGEST_SERVICE must start with http:// or https:// "
+                f"(got {ingest_service!r})"
+            )
 
         token = (os.environ.get("CERBERUS_TOKEN") or "").strip()
         token_file = (os.environ.get("CERBERUS_TOKEN_FILE") or "").strip()

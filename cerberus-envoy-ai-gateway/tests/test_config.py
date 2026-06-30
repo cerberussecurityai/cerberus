@@ -122,3 +122,11 @@ def test_backend_url_with_https_ok(monkeypatch):
     _set_required(monkeypatch)
     monkeypatch.setenv("CERBERUS_BACKEND_URL", "https://backend.example.com/")
     assert Config.from_env().backend_url == "https://backend.example.com"
+
+
+def test_ingest_service_requires_scheme(monkeypatch):
+    # A schemeless URL otherwise starts fine but drops every batch at POST.
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_live_abc")
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "ingest.example.com")
+    with pytest.raises(ConfigError, match="CERBERUS_INGEST_SERVICE"):
+        Config.from_env()

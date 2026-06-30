@@ -60,6 +60,7 @@ _TOKEN_FIELDS = {
         "llm.token_count.prompt_details.cache_read",
         "llm.token_count.prompt_cache_hit",
     ),
+    "tokens_cache_write": ("llm.token_count.prompt_details.cache_creation",),
     "tokens_reasoning": (
         "llm.token_count.completion_details.reasoning",
         "llm.token_count.completion.reasoning",

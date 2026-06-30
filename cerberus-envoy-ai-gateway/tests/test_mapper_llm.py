@@ -118,10 +118,12 @@ def test_v07_cache_and_reasoning_token_keys(config):
     attrs = {
         "llm.model_name": "gpt-4o",
         "llm.token_count.prompt_details.cache_read": 12,
+        "llm.token_count.prompt_details.cache_creation": 56,
         "llm.token_count.completion_details.reasoning": 34,
     }
     event = map_llm_span(Span(name="ChatCompletion"), attrs, config)
     assert event["custom_data"]["tokens_cache_hit"] == 12
+    assert event["custom_data"]["tokens_cache_write"] == 56
     assert event["custom_data"]["tokens_reasoning"] == 34
 
 

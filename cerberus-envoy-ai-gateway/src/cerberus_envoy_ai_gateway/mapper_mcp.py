@@ -174,6 +174,11 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
     handler = str(first_attr(attrs, handler_keys) or "unknown")[:MAX_LABEL_CHARS]
     error = error_message(span, attrs)
     arguments = _arguments(attrs)
+    # JSON-RPC id may be a long client-supplied string; cap it — it feeds
+    # unsheddable custom_data, so an overlong one would drop the whole event.
+    request_id = attrs.get("mcp.request.id")
+    if isinstance(request_id, str):
+        request_id = request_id[:MAX_LABEL_CHARS]
 
     custom_data: dict[str, Any] = {
         "integration": "envoy-ai-gateway",
@@ -189,7 +194,7 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         # Recorded on initialize spans; usually absent on per-call spans.
         "client_name": first_attr(attrs, _CLIENT_NAME_KEYS),
         "client_version": first_attr(attrs, _CLIENT_VERSION_KEYS),
-        "request_id": attrs.get("mcp.request.id"),
+        "request_id": request_id,
         "mcp_transport": attrs.get("mcp.transport"),
         "mcp_protocol_version": attrs.get("mcp.protocol.version"),
         "trace_id": span.trace_id.hex(),

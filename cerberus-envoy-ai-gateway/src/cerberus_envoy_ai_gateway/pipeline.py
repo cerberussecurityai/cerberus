@@ -36,6 +36,8 @@ MAX_VALUE_CHARS = 8192
 MAX_USER_AGENT_CHARS = 1024
 MAX_USER_ID_CHARS = 256
 MAX_ERROR_CHARS = 2048
+# A valid IP (incl. IPv6 + zone) is <=45 chars; bound malformed raw values.
+MAX_IP_CHARS = 64
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
@@ -148,7 +150,10 @@ class Pipeline:
         normalized = normalize_ip(raw_ip)
         if self.secret_key:
             return str(hash_pii(normalized, self.secret_key))
-        return str(normalized)
+        # Raw-IP mode (no secret): normalize_ip passes malformed values through
+        # verbatim, and remote_addr is unsheddable — cap it so a giant malformed
+        # X-Forwarded-For hop can't push the event over the byte cap.
+        return str(normalized)[:MAX_IP_CHARS]
 
     def _enforce_size(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Drop captured content, then the whole event, to stay under the cap."""

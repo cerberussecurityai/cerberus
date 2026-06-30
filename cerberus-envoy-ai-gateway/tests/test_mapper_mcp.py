@@ -97,3 +97,12 @@ def test_arguments_drops_jsonrpc_envelope_without_arguments():
 
     attrs = {"input.value": '{"jsonrpc": "2.0", "method": "initialize", "params": {}}'}
     assert _arguments(attrs) == {}
+
+
+def test_long_request_id_capped(config):
+    request = load_export("mcp_tool_call")
+    span = single_span(request)
+    attrs = span_attributes(span)
+    attrs["mcp.request.id"] = "x" * 5000
+    event = map_mcp_span(span, attrs, config)
+    assert len(event["custom_data"]["request_id"]) <= 256
