@@ -112,6 +112,27 @@ def _as_bool(value: Any) -> bool | None:
     return None
 
 
+# Embedding spans omit the provider (per OpenInference spec, and the gateway
+# exposes none elsewhere — scope is shared and no route attr exists), so
+# best-effort map well-known embedding model names to their provider. These
+# names are few and stable; unknown models stay "unknown". Chat/completions are
+# unaffected (they carry llm.system).
+_EMBEDDING_PROVIDER_HINTS = (
+    ("text-embedding", "openai"),
+    ("titan-embed", "amazon"),
+    ("voyage", "voyage"),
+    ("embed-", "cohere"),
+)
+
+
+def _embedding_provider(model: str) -> str:
+    lowered = model.lower()
+    for hint, provider in _EMBEDDING_PROVIDER_HINTS:
+        if hint in lowered:
+            return provider
+    return "unknown"
+
+
 def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str, Any]:
     """Build a raw (pre-sanitization) CoreData-shaped event dict."""
     params = _invocation_params(attrs)
@@ -122,6 +143,8 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
     model = str(first_attr(attrs, MODEL_KEYS) or params.get("model") or "unknown")[:MAX_LABEL_CHARS]
     error = error_message(span, attrs)
     method = _method(span, attrs)
+    if provider == "unknown" and method == "llm_embeddings":
+        provider = _embedding_provider(model)
 
     custom_data: dict[str, Any] = {
         "integration": "envoy-ai-gateway",

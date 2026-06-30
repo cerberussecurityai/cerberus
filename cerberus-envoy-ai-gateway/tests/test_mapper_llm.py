@@ -63,7 +63,9 @@ def test_embedding_span_classified_and_model_from_embedding_attrs(config):
     event = map_llm_span(Span(name="Embeddings"), attrs, config)
     assert event["method"] == "llm_embeddings"
     assert event["custom_data"]["model"] == "text-embedding-3-small"
-    assert event["endpoint"] == "llm://unknown/text-embedding-3-small"
+    # provider inferred from the embedding model name (the gateway omits it)
+    assert event["custom_data"]["provider"] == "openai"
+    assert event["endpoint"] == "llm://openai/text-embedding-3-small"
 
 
 def test_embedding_model_falls_back_to_invocation_parameters(config):
@@ -75,6 +77,19 @@ def test_embedding_model_falls_back_to_invocation_parameters(config):
     }
     event = map_llm_span(Span(name="Embeddings"), attrs, config)
     assert event["custom_data"]["model"] == "text-embedding-3-large"
+
+
+def test_embedding_provider_inferred_else_unknown(config):
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    def provider(model: str) -> str:
+        attrs = {"openinference.span.kind": "EMBEDDING", "embedding.model_name": model}
+        return map_llm_span(Span(name="Embeddings"), attrs, config)["custom_data"]["provider"]
+
+    assert provider("text-embedding-3-large") == "openai"
+    assert provider("embed-english-v3.0") == "cohere"
+    assert provider("voyage-2") == "voyage"
+    assert provider("some-unknown-model") == "unknown"
 
 
 def test_v07_cache_and_reasoning_token_keys(config):
