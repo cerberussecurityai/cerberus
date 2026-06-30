@@ -92,6 +92,25 @@ def test_embedding_provider_inferred_else_unknown(config):
     assert provider("some-unknown-model") == "unknown"
 
 
+def test_chat_output_reconstructs_tool_calls(config):
+    # v0.7 chat completions set no output.value; tool-call outputs live in
+    # flattened llm.output_messages.*.tool_calls.* — capture them, not just text.
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    config = replace(config, capture_llm_content=True)
+    attrs = {
+        "llm.model_name": "gpt-4o",
+        "input.value": '{"messages": []}',
+        "llm.output_messages.0.message.role": "assistant",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "get_weather",
+        "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": '{"q": 1}',
+    }
+    event = map_llm_span(Span(name="ChatCompletion"), attrs, config)
+    [msg] = event["body"]["output"]
+    assert msg["role"] == "assistant"
+    assert msg["tool_calls"] == [{"name": "get_weather", "arguments": {"q": 1}}]
+
+
 def test_v07_cache_and_reasoning_token_keys(config):
     # ai-gateway v0.7 uses prompt_details.cache_read / completion_details.reasoning.
     from opentelemetry.proto.trace.v1.trace_pb2 import Span

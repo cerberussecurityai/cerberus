@@ -28,8 +28,8 @@
                 {"key": "llm.token_count.total", "value": {"intValue": "170"}},
                 {"key": "input.value", "value": {"stringValue": "{\"messages\": [{\"role\": \"user\", \"content\": \"hello\"}], \"api_key\": \"sk-secret\"}"}},
                 {"key": "input.mime_type", "value": {"stringValue": "application/json"}},
-                {"key": "output.value", "value": {"stringValue": "{\"choices\": [{\"message\": {\"content\": \"hi\"}}]}"}},
-                {"key": "output.mime_type", "value": {"stringValue": "application/json"}},
+                {"key": "llm.output_messages.0.message.role", "value": {"stringValue": "assistant"}},
+                {"key": "llm.output_messages.0.message.content", "value": {"stringValue": "hi"}},
                 {"key": "http.client_ip", "value": {"stringValue": "203.0.113.7, 10.0.0.1"}},
                 {"key": "http.user_agent", "value": {"stringValue": "test-agent/1.0"}},
                 {"key": "user.id", "value": {"stringValue": "user-123"}}

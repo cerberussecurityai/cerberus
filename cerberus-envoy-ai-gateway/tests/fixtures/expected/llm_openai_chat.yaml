@@ -15,9 +15,8 @@ body:
         content: "hello"
     api_key: "sk-secret"
   output:
-    choices:
-      - message:
-          content: "hi"
+    - role: "assistant"
+      content: "hi"
 user_agent: "test-agent/1.0"
 user_id: "user-123"
 custom_data:

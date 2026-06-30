@@ -133,6 +133,45 @@ def _embedding_provider(model: str) -> str:
     return "unknown"
 
 
+def _indices_under(attrs: dict[str, Any], prefix: str) -> list[int]:
+    """Sorted integer indices i present as ``{prefix}.{i}...`` attribute keys."""
+    marker = prefix + "."
+    indices: set[int] = set()
+    for key in attrs:
+        if key.startswith(marker):
+            head = key[len(marker) :].split(".", 1)[0]
+            if head.isdigit():
+                indices.add(int(head))
+    return sorted(indices)
+
+
+def _flattened_messages(attrs: dict[str, Any], prefix: str) -> list[dict[str, Any]] | None:
+    """Reconstruct OpenInference flattened ``{prefix}.{i}.message.*`` keys into a
+    list of message dicts. ai-gateway v0.7 records chat input/output this way and
+    does NOT set output.value for chat completions, so reading output.value alone
+    silently loses the completion (incl. tool calls)."""
+    messages: list[dict[str, Any]] = []
+    for i in _indices_under(attrs, prefix):
+        base = f"{prefix}.{i}.message"
+        message: dict[str, Any] = {}
+        for field in ("role", "content"):
+            value = attrs.get(f"{base}.{field}")
+            if value is not None:
+                message[field] = value
+        tool_calls: list[dict[str, Any]] = []
+        for j in _indices_under(attrs, f"{base}.tool_calls"):
+            fn = f"{base}.tool_calls.{j}.tool_call.function"
+            name = attrs.get(f"{fn}.name")
+            arguments = attrs.get(f"{fn}.arguments")
+            if name is not None or arguments is not None:
+                tool_calls.append({"name": name, "arguments": parse_json_value(arguments)})
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        if message:
+            messages.append(message)
+    return messages or None
+
+
 def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str, Any]:
     """Build a raw (pre-sanitization) CoreData-shaped event dict."""
     params = _invocation_params(attrs)
@@ -176,9 +215,16 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
 
     body: dict[str, Any] | None = None
     if config.capture_llm_content:
+        # ai-gateway v0.7 sets input.value (raw request) but NOT output.value for
+        # chat/completions — the completion lives in flattened llm.output_messages.*
+        # (output.value exists only for the /v1/responses API). Fall back to the
+        # flattened messages when the *.value blob is absent so we don't drop the
+        # completion (the bulk of captured content).
         content = {
-            "input": parse_json_value(first_attr(attrs, _INPUT_KEYS)),
-            "output": parse_json_value(first_attr(attrs, _OUTPUT_KEYS)),
+            "input": parse_json_value(first_attr(attrs, _INPUT_KEYS))
+            or _flattened_messages(attrs, "llm.input_messages"),
+            "output": parse_json_value(first_attr(attrs, _OUTPUT_KEYS))
+            or _flattened_messages(attrs, "llm.output_messages"),
         }
         if content["input"] is not None or content["output"] is not None:
             body = content
