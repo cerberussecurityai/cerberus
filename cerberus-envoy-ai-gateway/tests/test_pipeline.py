@@ -89,11 +89,27 @@ def test_llm_content_flag_off_no_body(config):
     assert event["body"] is None
 
 
-def test_ignored_spans_counted(config):
+def test_mcp_protocol_spans_filtered_not_ignored(config):
+    # mcp initialize/ping/notifications classify as MCP but don't map to an
+    # event — expected protocol overhead, counted as spans_filtered, not
+    # spans_ignored (reserved for truly unclassified spans).
     pipeline, queue, queued = _run("mcp_initialize", config)
     assert queued == 0
     assert len(queue) == 0
+    assert pipeline.spans_filtered == 1
+    assert pipeline.spans_ignored == 0
+
+
+def test_unclassified_span_counted_as_ignored(config):
+    # A span with no MCP/LLM markers is truly unclassified — spans_ignored.
+    request = load_export("mcp_initialize")
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    span.ClearField("attributes")
+    span.ClearField("events")
+    pipeline = Pipeline(config, BoundedQueue(10), None)
+    pipeline.process_export(request)
     assert pipeline.spans_ignored == 1
+    assert pipeline.spans_filtered == 0
 
 
 def test_queue_full_drops_and_counts(config):

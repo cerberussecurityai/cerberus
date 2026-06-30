@@ -95,6 +95,9 @@ def create_app(config: Config) -> FastAPI:
                 content="invalid OTLP request", status_code=400, media_type="text/plain"
             )
 
+        # Synchronous CPU-bound work (protobuf walk, sanitize, json.dumps) runs
+        # on the event loop. Fine for the single-gateway v1; if high throughput
+        # is ever needed, move to run_in_executor with a thread-safe pipeline.
         state["pipeline"].process_export(export)
 
         # Debug dump runs after processing and is exception-guarded: a span
@@ -137,6 +140,7 @@ def create_app(config: Config) -> FastAPI:
             "events_llm": pipeline.events_llm,
             "events_mcp": pipeline.events_mcp,
             "spans_ignored": pipeline.spans_ignored,
+            "spans_filtered": pipeline.spans_filtered,
             "dropped_queue_full": pipeline.queue.dropped_full,
             "dropped_oversize": pipeline.dropped_oversize,
             "posted": sink.posted,

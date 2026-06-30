@@ -46,20 +46,45 @@ def test_endpoint_never_matches_health_filter(config):
     assert event["endpoint"].rsplit("/", 1)[-1] == "gpt-4o-mini"
 
 
-def test_embedding_span_classified_and_model_from_invocation_params(config):
-    # OpenAI embeddings spans use span-kind EMBEDDING and omit llm.model_name;
-    # the model lives only in llm.invocation_parameters. classify() must route
-    # them to the LLM path and the mapper must recover the model from params.
+def test_embedding_span_classified_and_model_from_embedding_attrs(config):
+    # OpenAI embeddings: span-kind EMBEDDING, model in embedding.model_name
+    # (ai-gateway v0.7), not llm.model_name. classify() must route them to the
+    # LLM path and the mapper must read the embedding model.
     from opentelemetry.proto.trace.v1.trace_pb2 import Span
 
     from cerberus_envoy_ai_gateway.classify import KIND_LLM, classify
 
     attrs = {
         "openinference.span.kind": "EMBEDDING",
-        "llm.invocation_parameters": '{"model": "text-embedding-3-small"}',
+        "embedding.model_name": "text-embedding-3-small",
     }
     assert classify(attrs) == KIND_LLM
     event = map_llm_span(Span(name="Embeddings"), attrs, config)
     assert event["method"] == "llm_embeddings"
     assert event["custom_data"]["model"] == "text-embedding-3-small"
     assert event["endpoint"] == "llm://unknown/text-embedding-3-small"
+
+
+def test_embedding_model_falls_back_to_invocation_parameters(config):
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    attrs = {
+        "openinference.span.kind": "EMBEDDING",
+        "embedding.invocation_parameters": '{"model": "text-embedding-3-large"}',
+    }
+    event = map_llm_span(Span(name="Embeddings"), attrs, config)
+    assert event["custom_data"]["model"] == "text-embedding-3-large"
+
+
+def test_v07_cache_and_reasoning_token_keys(config):
+    # ai-gateway v0.7 uses prompt_details.cache_read / completion_details.reasoning.
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    attrs = {
+        "llm.model_name": "gpt-4o",
+        "llm.token_count.prompt_details.cache_read": 12,
+        "llm.token_count.completion_details.reasoning": 34,
+    }
+    event = map_llm_span(Span(name="ChatCompletion"), attrs, config)
+    assert event["custom_data"]["tokens_cache_hit"] == 12
+    assert event["custom_data"]["tokens_reasoning"] == 34

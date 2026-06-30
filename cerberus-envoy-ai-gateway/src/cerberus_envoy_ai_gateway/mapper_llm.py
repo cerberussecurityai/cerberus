@@ -31,7 +31,7 @@ from .spanfields import (
 )
 
 _PROVIDER_KEYS = ("llm.system", "gen_ai.provider.name", "gen_ai.system")
-_MODEL_KEYS = ("llm.model_name", "llm.model", "gen_ai.request.model")
+_MODEL_KEYS = ("llm.model_name", "embedding.model_name", "llm.model", "gen_ai.request.model")
 _RESPONSE_MODEL_KEYS = ("gen_ai.response.model",)
 _INPUT_KEYS = ("input.value", "gen_ai.input.value", "gen_ai.request.input")
 _OUTPUT_KEYS = ("output.value", "gen_ai.output.value")
@@ -54,8 +54,12 @@ _TOKEN_FIELDS = {
     "tokens_prompt": ("llm.token_count.prompt", "gen_ai.usage.input_tokens"),
     "tokens_completion": ("llm.token_count.completion", "gen_ai.usage.output_tokens"),
     "tokens_total": ("llm.token_count.total", "gen_ai.usage.total_tokens"),
-    "tokens_cache_hit": ("llm.token_count.prompt_cache_hit",),
+    "tokens_cache_hit": (
+        "llm.token_count.prompt_details.cache_read",
+        "llm.token_count.prompt_cache_hit",
+    ),
     "tokens_reasoning": (
+        "llm.token_count.completion_details.reasoning",
         "llm.token_count.completion.reasoning",
         "llm.token_count.completion_reasoning",
     ),
@@ -88,7 +92,10 @@ def _token_counts(attrs: dict[str, Any]) -> dict[str, int]:
 
 
 def _invocation_params(attrs: dict[str, Any]) -> dict[str, Any]:
-    params = parse_json_value(attrs.get("llm.invocation_parameters"))
+    # Embeddings spans use embedding.invocation_parameters; chat/messages use
+    # llm.invocation_parameters (ai-gateway v0.7 openinference).
+    raw = attrs.get("llm.invocation_parameters") or attrs.get("embedding.invocation_parameters")
+    params = parse_json_value(raw)
     return params if isinstance(params, dict) else {}
 
 

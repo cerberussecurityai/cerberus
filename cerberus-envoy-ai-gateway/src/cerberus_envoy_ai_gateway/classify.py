@@ -20,7 +20,7 @@ KIND_MCP = "mcp"
 # OpenInference marks LLM spans with a span-kind attribute; the OpenAI path
 # uses `openinference.span.kind: LLM`, the Anthropic path `span.kind: llm`.
 _SPAN_KIND_KEYS = ("openinference.span.kind", "span.kind")
-_MODEL_KEYS = ("llm.model_name", "llm.model", "gen_ai.request.model")
+_MODEL_KEYS = ("llm.model_name", "embedding.model_name", "llm.model", "gen_ai.request.model")
 
 
 def classify(attrs: dict[str, Any]) -> str | None:

@@ -10,6 +10,7 @@ documented known gap).
 
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 
@@ -23,6 +24,14 @@ logger = logging.getLogger(__name__)
 MAX_BATCHES_PER_FLUSH = 20
 
 REQUEST_TIMEOUT_SECONDS = 10.0
+
+
+def _safe_int(value: Any) -> int:
+    """Coerce a server-returned counter to int, defaulting to 0 on junk."""
+    try:
+        return int(value or 0)
+    except (ValueError, TypeError):
+        return 0
 
 
 class Sink:
@@ -84,11 +93,14 @@ class Sink:
         self.posted += len(batch)
         try:
             result = response.json()
-            accepted = int(result.get("accepted") or 0)
-            skipped = int(result.get("skipped") or 0)
-        except (ValueError, TypeError, AttributeError):
+        except ValueError:
             return
-        self.server_accepted += accepted
+        if not isinstance(result, dict):
+            return
+        # Parse each counter independently so one malformed field doesn't drop
+        # both (e.g. accepted="25 events" must not zero a valid skipped).
+        self.server_accepted += _safe_int(result.get("accepted"))
+        skipped = _safe_int(result.get("skipped"))
         self.server_skipped += skipped
         if skipped:
             logger.warning(
@@ -105,6 +117,16 @@ class Sink:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        flush_cap = self.config.batch_size * MAX_BATCHES_PER_FLUSH
+        remaining = len(self.queue)
+        if remaining > flush_cap:
+            logger.warning(
+                "Shutdown: %d events queued but the final flush delivers at most "
+                "%d; ~%d will be dropped (at-most-once delivery)",
+                remaining,
+                flush_cap,
+                remaining - flush_cap,
+            )
         try:
             await self.flush_once()
         except Exception:

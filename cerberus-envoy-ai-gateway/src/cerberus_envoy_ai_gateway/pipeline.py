@@ -61,6 +61,7 @@ class Pipeline:
         self.events_llm = 0
         self.events_mcp = 0
         self.spans_ignored = 0
+        self.spans_filtered = 0
         self.dropped_oversize = 0
 
     def process_export(self, request: Any) -> int:
@@ -77,13 +78,20 @@ class Pipeline:
             if event_attrs:
                 attrs = {**event_attrs, **attrs}
             kind = classify(attrs)
-            event: dict[str, Any] | None = None
+            if kind is None:
+                self.spans_ignored += 1
+                continue
+            event: dict[str, Any] | None
             if kind == KIND_LLM:
                 event = map_llm_span(span, attrs, self.config)
-            elif kind == KIND_MCP:
+            else:
                 event = map_mcp_span(span, attrs, self.config)
-            if event is None or kind is None:
-                self.spans_ignored += 1
+            if event is None:
+                # Classified but unroutable — MCP protocol overhead (initialize /
+                # ping / notifications/*) or a tools/list with no recorded
+                # response. Expected, so keep it out of spans_ignored, which is
+                # reserved for truly unclassified spans operators should chase.
+                self.spans_filtered += 1
                 continue
             finalized = self._finalize(event, kind)
             if finalized is None:

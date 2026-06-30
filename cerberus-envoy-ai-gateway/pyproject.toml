@@ -57,10 +57,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/gpotrock/cerberus"
-Documentation = "https://github.com/gpotrock/cerberus#readme"
-Repository = "https://github.com/gpotrock/cerberus.git"
-Issues = "https://github.com/gpotrock/cerberus/issues"
+Homepage = "https://github.com/cerberussecurityai/cerberus"
+Documentation = "https://github.com/cerberussecurityai/cerberus#readme"
+Repository = "https://github.com/cerberussecurityai/cerberus.git"
+Issues = "https://github.com/cerberussecurityai/cerberus/issues"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
