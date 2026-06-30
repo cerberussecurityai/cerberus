@@ -4,6 +4,11 @@ A drop-in [Envoy AI Gateway](https://aigateway.envoyproxy.io) integration
 for Cerberus: a small OTLP trace bridge that converts the gateway's LLM and
 MCP telemetry into Cerberus events.
 
+> [!WARNING]
+> **Experimental (v1).** This bridge is new and not yet production-hardened —
+> expect rough edges and breaking changes. There is also **no published
+> container image yet**: you build and push it yourself (see Deployment below).
+
 The Envoy AI Gateway extproc already emits OpenTelemetry traces for every
 LLM call (OpenInference conventions: model, provider, token counts, optional
 request/response content) and every MCP call (JSON-RPC method, tool name,
@@ -23,7 +28,7 @@ client ──▶ Envoy AI Gateway ──▶ LLM providers / MCP servers
 Because trace export is asynchronous, the bridge is **never in the request
 path**: if it's down, gateway traffic is unaffected.
 
-## Status: **scaffold (v1)**
+## Status: **experimental (v1 scaffold)**
 
 Working end-to-end: span decode → classify → map → sanitize/hash → batch
 POST. Events land in `processed_events`, and MCP tool calls feed the
