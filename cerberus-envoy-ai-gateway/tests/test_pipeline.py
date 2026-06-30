@@ -245,3 +245,13 @@ def test_schema_report_resources_and_prompts_sanitized(config):
     finalized = pipeline._finalize(event, KIND_MCP)
     assert finalized["custom_data"]["resources"][0]["input_schema"]["example"]["token"] == REDACTED
     assert finalized["custom_data"]["prompts"][0]["arguments"]["password"] == REDACTED
+
+
+def test_schema_report_sanitized_regardless_of_capture_arguments_flag(config):
+    # Schema reports must be redacted even with MCP argument capture off — they
+    # carry tool declarations, not runtime arguments.
+    config = replace(config, capture_mcp_arguments=False)
+    pipeline = Pipeline(config, BoundedQueue(10), None)
+    event = _schema_report_event([{"name": "t", "input_schema": {"example": {"api_key": "sk-x"}}}])
+    finalized = pipeline._finalize(event, KIND_MCP)
+    assert finalized["custom_data"]["tools"][0]["input_schema"]["example"]["api_key"] == REDACTED

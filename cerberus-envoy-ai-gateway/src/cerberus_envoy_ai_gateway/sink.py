@@ -49,14 +49,23 @@ class Sink:
         self._client = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         self._url = f"{config.ingest_service}/v1/ingest/batch"
         self._task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._flush_loop())
 
     async def _flush_loop(self) -> None:
         interval = self.config.flush_interval_ms / 1000
-        while True:
-            await asyncio.sleep(interval)
+        while not self._stop.is_set():
+            # Sleep between ticks but wake immediately on shutdown, so close()
+            # never cancels an in-flight POST (which would drop a batch already
+            # drained from the queue but not yet delivered).
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except TimeoutError:
+                pass
+            if self._stop.is_set():
+                break
             try:
                 await self.flush_once()
             except Exception:
@@ -110,9 +119,10 @@ class Sink:
             )
 
     async def close(self) -> None:
-        """Stop the flush loop and best-effort drain remaining events."""
+        """Signal the flush loop to stop (without interrupting an in-flight POST)
+        and best-effort drain remaining events."""
+        self._stop.set()
         if self._task is not None:
-            self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:

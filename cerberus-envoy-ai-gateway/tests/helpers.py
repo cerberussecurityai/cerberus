@@ -35,7 +35,7 @@ def single_span(request: ExportTraceServiceRequest):
 
 # Path segments event_ingest treats as health checks: events whose endpoint's
 # last segment is one of these are skipped server-side. Used by the sink test's
-# ingest stub (the playground stub keeps its own copy for standalone use).
+# ingest stub; playground/stub_ingest.py keeps an identical standalone copy.
 HEALTH_SEGMENTS = frozenset(
     {
         "health",

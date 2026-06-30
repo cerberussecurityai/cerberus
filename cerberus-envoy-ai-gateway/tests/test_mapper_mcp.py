@@ -78,3 +78,22 @@ def test_per_argument_attribute_variant(config):
     attrs["mcp.request.argument.units"] = "imperial"
     event = map_mcp_span(span, attrs, config)
     assert event["custom_data"]["arguments"] == {"location": "Tokyo", "units": "imperial"}
+
+
+def test_arguments_unwrap_jsonrpc_envelope():
+    from cerberus_envoy_ai_gateway.mapper_mcp import _arguments
+
+    attrs = {
+        "input.value": (
+            '{"jsonrpc": "2.0", "method": "tools/call", '
+            '"params": {"name": "get_weather", "arguments": {"q": "NYC"}}}'
+        )
+    }
+    assert _arguments(attrs) == {"q": "NYC"}
+
+
+def test_arguments_drops_jsonrpc_envelope_without_arguments():
+    from cerberus_envoy_ai_gateway.mapper_mcp import _arguments
+
+    attrs = {"input.value": '{"jsonrpc": "2.0", "method": "initialize", "params": {}}'}
+    assert _arguments(attrs) == {}

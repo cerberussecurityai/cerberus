@@ -44,8 +44,9 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 | Prometheus metrics for the bridge itself | `/stats` JSON only. |
 | Hosted container image | Build it yourself (`make image`) and push to your registry. |
 | Multi-replica dedup | Run **1 replica**; N replicas would each receive a share of spans (fine), but the OTel exporter load-balances — never fan the same endpoint into multiple bridges via a mesh that duplicates. |
-| OTLP receiver is unauthenticated | Standard for in-cluster collectors, but the bridge signs everything it receives with your API key — apply the NetworkPolicy commented in `deploy/kubernetes/bridge.yaml` (or equivalent) so only the gateway can reach `:4318`. Request bodies are capped at 16MB. |
+| OTLP receiver is unauthenticated | Standard for in-cluster collectors, but the bridge signs everything it receives with your API key — the NetworkPolicy in `deploy/kubernetes/bridge.yaml` ships **active** (preset to `envoy-gateway-system`) so only the gateway can reach `:4318`; change its `namespaceSelector` if your proxy pods run elsewhere. Request bodies are capped at 16MB. |
 | Backend version requirement | MCP/LLM events need a Cerberus backend that includes the AI-scheme guards (event_ingest exempts `mcp://`/`llm://` from the health-endpoint filter; event_process keeps `llm://` out of HTTP endpoint discovery). On older backends, tools named `health`/`ready`/`live` are silently skipped at ingest, and `llm_*` methods break the endpoint-discovery flush. Watch `server_skipped` in `/stats`. |
+| HMAC key not re-fetched after a startup failure | If `CERBERUS_BACKEND_URL` is set but the backend is unavailable at pod start, the key fetch fails once and source IPs ship **unhashed** for the process lifetime. Restart the bridge pod to retry. |
 
 ## Configuration (environment variables)
 
@@ -182,6 +183,11 @@ event, and for MCP traffic rows in MCP discovery. The event's `remote_addr`
 should be a 64-char lowercase hex digest (HMAC-SHA256) when a secret key is
 configured. A growing `server_skipped` means the ingest server is filtering
 events (see known gaps).
+
+`events_llm` / `events_mcp` count events **enqueued** for delivery, not raw
+spans seen — under queue pressure they exclude `dropped_oversize` and
+`dropped_queue_full`. Full accounting: `spans_ignored + spans_filtered +
+dropped_oversize + dropped_queue_full + events_llm + events_mcp` = spans received.
 
 ## Privacy
 

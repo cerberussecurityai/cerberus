@@ -80,10 +80,18 @@ def _arguments(attrs: dict[str, Any]) -> dict[str, Any]:
     """Extract handler arguments as a dict (MCPDiscoveryUpdater requires a dict)."""
     value = parse_json_value(first_attr(attrs, _ARGUMENT_KEYS))
     if isinstance(value, dict):
-        # tools/call payloads may nest as {"name": ..., "arguments": {...}}.
+        # tools/call payloads nest as {"name": ..., "arguments": {...}}, or — if a
+        # gateway records the full JSON-RPC request via input.value — under
+        # {"params": {"arguments": {...}}}.
         inner = value.get("arguments")
+        if not isinstance(inner, dict):
+            params = value.get("params")
+            inner = params.get("arguments") if isinstance(params, dict) else None
         if isinstance(inner, dict):
             return inner
+        # Never forward a full JSON-RPC envelope as the arguments dict.
+        if "jsonrpc" in value or "method" in value:
+            return {}
         return value
 
     per_arg = {

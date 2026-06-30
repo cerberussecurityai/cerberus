@@ -6,6 +6,7 @@ X-API-Key auth (401 missing / 403 unknown), 413 over 1000 events,
 health-endpoint skipping, and {"accepted": N, "skipped": M} responses.
 """
 
+import asyncio
 from dataclasses import replace
 
 import httpx
@@ -114,3 +115,39 @@ async def test_close_flushes_remaining(config, queue):
     queue.append({"endpoint": "llm://openai/gpt-4o"})
     await sink.close()
     assert len(received) == 1
+
+
+class _GatedClient:
+    """Async client whose POST blocks until released — holds a batch in-flight
+    while close() runs."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.posted: list = []
+
+    async def post(self, url, json, headers):
+        self.started.set()
+        await self.release.wait()
+        self.posted.extend(json["events"])
+        return httpx.Response(200, json={"accepted": len(json["events"]), "skipped": 0})
+
+    async def aclose(self):
+        pass
+
+
+async def test_close_does_not_drop_in_flight_batch(config, queue):
+    # Shutdown must not cancel a POST that has already drained a batch off the
+    # queue; the in-flight batch should complete, not vanish.
+    client = _GatedClient()
+    sink = Sink(replace(config, flush_interval_ms=10), queue, client=client)
+    for i in range(3):
+        queue.append({"endpoint": f"llm://openai/gpt-{i}", "method": "llm_chat_completion"})
+    sink.start()
+    await asyncio.wait_for(client.started.wait(), timeout=2)
+    close_task = asyncio.create_task(sink.close())
+    await asyncio.sleep(0)
+    client.release.set()
+    await asyncio.wait_for(close_task, timeout=2)
+    assert len(client.posted) == 3
+    assert len(queue) == 0

@@ -14,6 +14,8 @@ from fastapi import FastAPI, Header, HTTPException
 
 API_KEY = "sk_test_playground"
 SECRET_KEY = "playground-hmac-secret"
+# Kept standalone (this harness runs outside pytest); must stay identical to
+# tests/helpers.py HEALTH_SEGMENTS and the backend's health filter.
 HEALTH_SEGMENTS = {
     "health",
     "healthz",
