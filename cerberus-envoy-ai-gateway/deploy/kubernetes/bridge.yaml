@@ -1,16 +1,17 @@
 # Cerberus bridge for Envoy AI Gateway — drop-in deployment.
 #
-# Edit all FIVE CHANGE-ME values:
+# Edit the FOUR CHANGE-ME values:
 #   1. CERBERUS_TOKEN          (in the Secret)        — Cerberus API key
 #   2. image                   (in the Deployment)    — your pushed image
 #   3. CERBERUS_INGEST_SERVICE (Deployment env)       — Cerberus backend URL
 #   4. CERBERUS_BACKEND_URL    (Deployment env)       — usually the same URL;
 #      if left unset/wrong the HMAC key fetch fails and source IPs ship
 #      UNHASHED (one-time warning in the logs — check after first deploy).
-#   5. NetworkPolicy namespace (at the bottom)        — the namespace your Envoy
-#      AI Gateway proxy pods run in. The policy ships ACTIVE (secure by default),
-#      so until you set this the bridge accepts NO spans.
 # (Change the namespace too if you don't use "cerberus".)
+#
+# The NetworkPolicy at the bottom ships ACTIVE and is preset to the standard
+# Envoy AI Gateway namespace (envoy-gateway-system); if your gateway proxy pods
+# run elsewhere, change its namespaceSelector or the bridge receives no spans.
 #
 # Then: kubectl apply -f bridge.yaml
 # And point the AI Gateway extproc's OTLP exporter at
@@ -100,10 +101,11 @@ spec:
 # The OTLP receiver is unauthenticated (standard for in-cluster collectors) and
 # the bridge signs everything it receives with your Cerberus API key, so without
 # this NetworkPolicy any workload in the cluster could inject events at your
-# operator's expense. It ships ACTIVE (secure by default): set the namespace
-# below to wherever your Envoy AI Gateway proxy pods run — until then the
-# selector matches nothing and the bridge receives no spans. Remove this block
-# only if another network control already restricts ingress to :4318.
+# operator's expense. It ships ACTIVE (secure by default) and is preset to the
+# standard Envoy AI Gateway namespace (envoy-gateway-system) — change the
+# namespaceSelector below if your gateway proxy pods run elsewhere, or the
+# bridge receives no spans. Remove this block only if another network control
+# already restricts ingress to :4318.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -118,6 +120,6 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: CHANGE-ME-gateway-namespace
+              kubernetes.io/metadata.name: envoy-gateway-system
       ports:
         - port: 4318

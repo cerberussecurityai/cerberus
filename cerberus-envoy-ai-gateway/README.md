@@ -82,7 +82,10 @@ make lint    # ruff + black --check
 1. **Deploy the bridge** — in
    [`deploy/kubernetes/bridge.yaml`](./deploy/kubernetes/bridge.yaml), edit
    the Secret (API key) and the Deployment env + image (`CERBERUS_INGEST_SERVICE`,
-   `CERBERUS_BACKEND_URL`, your pushed image) — four CHANGE-ME values — then:
+   `CERBERUS_BACKEND_URL`, your pushed image) — four CHANGE-ME values. The file
+   also ships an **active NetworkPolicy** preset to the standard
+   `envoy-gateway-system` namespace; if your gateway proxy pods run elsewhere,
+   update its `namespaceSelector` or the bridge will receive no spans. Then:
 
    ```bash
    kubectl apply -f deploy/kubernetes/bridge.yaml
@@ -118,6 +121,13 @@ make lint    # ruff + black --check
      (extproc env-var values, e.g. `extProc.extraEnvVars`);
    - the **`GatewayConfig`** CRD's extproc Kubernetes spec, when exposed;
    - escape hatch: `kubectl set env` on the extproc workload.
+
+   > **Header mapping on Helm/Kubernetes:** `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES`
+   > only applies to standalone `aigw run`. For chart installs set the controller
+   > value `controller.spanRequestHeaderAttributes` (older charts:
+   > `controller.requestHeaderAttributes`) to the same mapping, or spans arrive
+   > without `http.client_ip`/`user.id`/`http.user_agent` and events show
+   > `remote_addr="unknown"`.
 
    If you already export gateway traces to your own collector, keep doing
    that — add an OTel Collector fan-out and point one exporter here.

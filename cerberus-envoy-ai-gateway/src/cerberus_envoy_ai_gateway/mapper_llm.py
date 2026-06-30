@@ -42,6 +42,7 @@ _ROUTE_KEYS = ("http.route", "url.path", "http.target")
 _OPERATION_METHODS = {
     "chat": "llm_chat_completion",
     "chat_completions": "llm_chat_completion",
+    "chatcompletions": "llm_chat_completion",
     "completion": "llm_completion",
     "text_completion": "llm_completion",
     "embedding": "llm_embeddings",
@@ -71,7 +72,7 @@ def _method(span: Span, attrs: dict[str, Any]) -> str:
     if operation in _OPERATION_METHODS:
         return _OPERATION_METHODS[operation]
     compact = operation.replace(" ", "").replace("_", "").replace("-", "")
-    if "chatcompletion" in compact or compact == "chat":
+    if "chatcompletion" in compact:
         return "llm_chat_completion"
     if "embedding" in compact:
         return "llm_embeddings"
@@ -99,6 +100,17 @@ def _invocation_params(attrs: dict[str, Any]) -> dict[str, Any]:
     return params if isinstance(params, dict) else {}
 
 
+def _as_bool(value: Any) -> bool | None:
+    """Coerce a gateway stream flag (bool/int/str) to bool, else None."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return None
+
+
 def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str, Any]:
     """Build a raw (pre-sanitization) CoreData-shaped event dict."""
     params = _invocation_params(attrs)
@@ -122,7 +134,7 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "duration_ms": duration_ms(span),
         "status": "error" if error else "ok",
         "error": error,
-        "streaming": params["stream"] if isinstance(params.get("stream"), bool) else None,
+        "streaming": _as_bool(params.get("stream")),
         "trace_id": span.trace_id.hex(),
         "span_id": span.span_id.hex(),
     }

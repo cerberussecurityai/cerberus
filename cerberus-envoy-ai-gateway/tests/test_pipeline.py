@@ -171,7 +171,9 @@ def test_oversized_header_fields_truncated_not_dropped(config):
     assert pipeline.dropped_oversize == 0
 
 
-def _schema_report_event(tools: list) -> dict:
+def _schema_report_event(
+    tools: list, resources: list | None = None, prompts: list | None = None
+) -> dict:
     return {
         "remote_addr": None,
         "endpoint": "mcp://srv/schema_report",
@@ -188,8 +190,8 @@ def _schema_report_event(tools: list) -> dict:
             "mcp_server": "srv",
             "event_type": "schema_report",
             "tools": tools,
-            "resources": [],
-            "prompts": [],
+            "resources": resources or [],
+            "prompts": prompts or [],
             "trace_id": "",
         },
     }
@@ -229,3 +231,17 @@ def test_oversize_schema_report_sheds_tools_but_keeps_skeleton(config):
     assert finalized["custom_data"]["content_dropped_oversize"] is True
     assert finalized["custom_data"]["mcp_server"] == "srv"
     assert pipeline.dropped_oversize == 0
+
+
+def test_schema_report_resources_and_prompts_sanitized(config):
+    # The sanitize contract must cover all three declaration lists, not just
+    # tools — matching what _enforce_size sheds.
+    pipeline = Pipeline(config, BoundedQueue(10), None)
+    event = _schema_report_event(
+        [],
+        resources=[{"name": "r", "input_schema": {"example": {"token": "t-secret"}}}],
+        prompts=[{"name": "p", "arguments": {"password": "p-secret"}}],
+    )
+    finalized = pipeline._finalize(event, KIND_MCP)
+    assert finalized["custom_data"]["resources"][0]["input_schema"]["example"]["token"] == REDACTED
+    assert finalized["custom_data"]["prompts"][0]["arguments"]["password"] == REDACTED

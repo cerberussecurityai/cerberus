@@ -100,3 +100,11 @@ def test_invalid_log_level_raises(monkeypatch):
     monkeypatch.setenv("CERBERUS_LOG_LEVEL", "verbose")
     with pytest.raises(ConfigError, match="CERBERUS_LOG_LEVEL"):
         Config.from_env()
+
+
+def test_repr_hides_token_and_secret_key():
+    # Dataclass repr must not leak the API key or HMAC secret (tracebacks, logs).
+    config = Config(ingest_service="http://x", token="sk_secret_123", secret_key="hmac_secret_456")
+    text = repr(config)
+    assert "sk_secret_123" not in text
+    assert "hmac_secret_456" not in text

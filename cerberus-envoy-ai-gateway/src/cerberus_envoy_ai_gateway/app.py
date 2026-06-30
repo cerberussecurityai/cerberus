@@ -15,6 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from starlette.requests import ClientDisconnect
 
 from . import __version__
 from .config import Config
@@ -61,6 +62,11 @@ def create_app(config: Config) -> FastAPI:
             config.ingest_service,
             "on" if secret_key else "OFF (raw IPs)",
         )
+        if config.dump_spans:
+            logger.warning(
+                "CERBERUS_DUMP_SPANS is enabled — raw span content (including LLM "
+                "prompts/completions) is printed to stdout. Do NOT use in production."
+            )
         yield
         state["ready"] = False
         await state["sink"].close()
@@ -75,12 +81,20 @@ def create_app(config: Config) -> FastAPI:
             )
         chunks: list[bytes] = []
         received = 0
-        async for chunk in request.stream():
-            received += len(chunk)
-            if received > MAX_OTLP_BODY_BYTES:
-                logger.warning("Rejecting OTLP request over %d bytes", MAX_OTLP_BODY_BYTES)
-                return Response(content="body too large", status_code=413, media_type="text/plain")
-            chunks.append(chunk)
+        try:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > MAX_OTLP_BODY_BYTES:
+                    logger.warning("Rejecting OTLP request over %d bytes", MAX_OTLP_BODY_BYTES)
+                    return Response(
+                        content="body too large", status_code=413, media_type="text/plain"
+                    )
+                chunks.append(chunk)
+        except ClientDisconnect:
+            # Gateway exporter hung up mid-stream — nothing to ingest and no one
+            # to respond to; return quietly instead of a 500 + traceback.
+            logger.debug("Client disconnected during OTLP upload")
+            return Response(status_code=499)
         body = b"".join(chunks)
 
         content_type = request.headers.get("content-type")

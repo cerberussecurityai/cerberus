@@ -118,14 +118,16 @@ class Pipeline:
 
         if kind == KIND_MCP:
             if event["method"] == "mcp_schema_report":
-                # Schema reports carry no arguments, but their tool descriptions
-                # / inputSchema examples can still embed credential-shaped keys —
-                # redact (and bound) them rather than forwarding unsanitized.
-                tools = event["custom_data"].get("tools")
-                if tools:
-                    event["custom_data"]["tools"] = truncate_values(
-                        [sanitize_dict(tool) if isinstance(tool, dict) else tool for tool in tools]
-                    )
+                # Schema reports carry no arguments, but the tool/resource/prompt
+                # declarations can embed credential-shaped keys in descriptions or
+                # inputSchema examples — redact (and bound) all three lists, the
+                # same set _enforce_size sheds.
+                for catalogue_key in ("tools", "resources", "prompts"):
+                    items = event["custom_data"].get(catalogue_key)
+                    if items:
+                        event["custom_data"][catalogue_key] = truncate_values(
+                            [sanitize_dict(i) if isinstance(i, dict) else i for i in items]
+                        )
             elif self.config.capture_mcp_arguments:
                 arguments = sanitize_dict(event["custom_data"].get("arguments") or {})
                 arguments = truncate_values(arguments)

@@ -88,3 +88,16 @@ def test_v07_cache_and_reasoning_token_keys(config):
     event = map_llm_span(Span(name="ChatCompletion"), attrs, config)
     assert event["custom_data"]["tokens_cache_hit"] == 12
     assert event["custom_data"]["tokens_reasoning"] == 34
+
+
+def test_streaming_flag_coerces_non_bool_values(config):
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    def streaming(stream_json: str):
+        attrs = {"llm.model_name": "gpt-4o", "llm.invocation_parameters": stream_json}
+        return map_llm_span(Span(name="ChatCompletion"), attrs, config)["custom_data"]["streaming"]
+
+    assert streaming('{"stream": true}') is True
+    assert streaming('{"stream": 1}') is True
+    assert streaming('{"stream": "false"}') is False
+    assert streaming("{}") is None

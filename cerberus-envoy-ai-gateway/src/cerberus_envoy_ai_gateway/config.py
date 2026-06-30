@@ -61,9 +61,9 @@ class Config:
     """Bridge configuration. Build with :meth:`from_env`."""
 
     ingest_service: str
-    token: str
+    token: str = field(repr=False)
 
-    secret_key: str | None = None
+    secret_key: str | None = field(default=None, repr=False)
     backend_url: str | None = None
 
     client_ip_attribute: str = "http.client_ip"
