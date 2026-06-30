@@ -1,5 +1,5 @@
 # Expected mapper_llm output for spans/llm_anthropic_messages.json with
-# capture_llm_content=false (the default): no body even though the span
+# capture_llm_content=false: no body even though the span
 # recorded input content.
 remote_addr: "2001:db8::1%eth0"
 endpoint: "llm://anthropic/claude-sonnet-4-6"

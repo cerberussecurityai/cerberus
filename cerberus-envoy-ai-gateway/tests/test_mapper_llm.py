@@ -17,8 +17,8 @@ def test_openai_chat_golden(config):
 
 
 def test_anthropic_messages_golden(config):
-    # capture_llm_content defaults to False — recorded content must not
-    # appear in the event body.
+    # capture_llm_content=False: recorded content must not appear in the body.
+    config = replace(config, capture_llm_content=False)
     assert _map("llm_anthropic_messages", config) == load_expected("llm_anthropic_messages")
 
 
@@ -33,6 +33,7 @@ def test_error_span(config):
 
 
 def test_content_flag_off_drops_body(config):
+    config = replace(config, capture_llm_content=False)
     event = _map("llm_openai_chat", config)
     assert event["body"] is None
     # Metadata is unaffected by the content flag.

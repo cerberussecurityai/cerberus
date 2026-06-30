@@ -70,7 +70,7 @@ class Config:
     user_id_attribute: str | None = None
     user_agent_attribute: str = "http.user_agent"
 
-    capture_llm_content: bool = False
+    capture_llm_content: bool = True
     capture_mcp_arguments: bool = True
 
     batch_size: int = 50
@@ -136,7 +136,7 @@ class Config:
             user_agent_attribute=(
                 os.environ.get("CERBERUS_USER_AGENT_ATTRIBUTE") or "http.user_agent"
             ).strip(),
-            capture_llm_content=_env_bool("CERBERUS_CAPTURE_LLM_CONTENT", False),
+            capture_llm_content=_env_bool("CERBERUS_CAPTURE_LLM_CONTENT", True),
             capture_mcp_arguments=_env_bool("CERBERUS_CAPTURE_MCP_ARGUMENTS", True),
             batch_size=_env_int("CERBERUS_BATCH_SIZE", 50, 1, MAX_SERVER_BATCH_SIZE),
             flush_interval_ms=_env_int(

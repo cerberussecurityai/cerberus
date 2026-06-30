@@ -36,7 +36,7 @@ def test_defaults(monkeypatch):
     assert config.backend_url is None
     assert config.client_ip_attribute == "http.client_ip"
     assert config.user_id_attribute is None
-    assert config.capture_llm_content is False
+    assert config.capture_llm_content is True
     assert config.capture_mcp_arguments is True
     assert config.batch_size == 50
     assert config.flush_interval_ms == 2000
@@ -63,12 +63,12 @@ def test_unreadable_token_file_raises(monkeypatch, tmp_path):
 
 def test_bool_and_int_overrides(monkeypatch):
     _set_required(monkeypatch)
-    monkeypatch.setenv("CERBERUS_CAPTURE_LLM_CONTENT", "true")
+    monkeypatch.setenv("CERBERUS_CAPTURE_LLM_CONTENT", "false")
     monkeypatch.setenv("CERBERUS_CAPTURE_MCP_ARGUMENTS", "off")
     monkeypatch.setenv("CERBERUS_BATCH_SIZE", "200")
     monkeypatch.setenv("CERBERUS_FLUSH_INTERVAL_MS", "500")
     config = Config.from_env()
-    assert config.capture_llm_content is True
+    assert config.capture_llm_content is False
     assert config.capture_mcp_arguments is False
     assert config.batch_size == 200
     assert config.flush_interval_ms == 500

@@ -64,7 +64,7 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 | `CERBERUS_CLIENT_IP_ATTRIBUTE` | | `http.client_ip` | Span attribute holding the client IP. Populate it via `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` (see below). First hop before any comma is used. |
 | `CERBERUS_USER_ID_ATTRIBUTE` | | unset | Span attribute holding end-user identity (map a header like `x-user-id`). Required for per-end-user analytics. |
 | `CERBERUS_USER_AGENT_ATTRIBUTE` | | `http.user_agent` | Span attribute holding the client User-Agent. |
-| `CERBERUS_CAPTURE_LLM_CONTENT` | | `false` | Ship LLM prompts/completions in the event body (key-based redaction only — secrets inside free-form prompt text are NOT scrubbed). Also requires the gateway to record content (don't set `OPENINFERENCE_HIDE_INPUTS/OUTPUTS=true`). |
+| `CERBERUS_CAPTURE_LLM_CONTENT` | | `true` | Ship LLM prompts/completions in the event body (key-based redaction only — secrets inside free-form prompt text are NOT scrubbed). Needs the gateway to record content too (`OPENINFERENCE_HIDE_INPUTS/OUTPUTS` not `"true"`). Set to `false` to drop content. |
 | `CERBERUS_CAPTURE_MCP_ARGUMENTS` | | `true` | Ship sanitized MCP tool/prompt arguments (feeds `arguments_observed` in MCP discovery). |
 | `CERBERUS_BATCH_SIZE` | | `50` | Events per POST (server cap 1000). |
 | `CERBERUS_FLUSH_INTERVAL_MS` | | `2000` | Flush cadence (min 100). |
@@ -114,11 +114,12 @@ make lint    # ruff + black --check
      value: always_on   # not parentbased_* — an unsampled upstream traceparent would drop the request
    - name: OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES
      value: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
-   # Defense-in-depth while CERBERUS_CAPTURE_LLM_CONTENT=false:
+   # Let content into spans so the bridge can capture it (the default).
+   # Set both to "true" + CERBERUS_CAPTURE_LLM_CONTENT=false to suppress it.
    - name: OPENINFERENCE_HIDE_INPUTS
-     value: "true"
+     value: "false"
    - name: OPENINFERENCE_HIDE_OUTPUTS
-     value: "true"
+     value: "false"
    ```
 
    How to inject them depends on how you installed the gateway — in order
@@ -199,18 +200,19 @@ dropped_oversize + dropped_queue_full + events_llm + events_mcp` = spans receive
 - Source IPs are normalized (`normalize_ip`) and pseudonymized with
   HMAC-SHA256 (`hash_pii`) **in the bridge**, before anything is queued
   (shipped as `remote_addr`, the backend's field name).
-- MCP arguments and (opt-in) LLM content pass through `cerberus_core.sanitize_dict`,
+- MCP arguments and LLM content pass through `cerberus_core.sanitize_dict`,
   redacting `SENSITIVE_KEYS` (passwords, tokens, api keys, …). **Redaction is
   key-based only**: secrets embedded in free-form prompt/completion text are
-  NOT scrubbed — enable `CERBERUS_CAPTURE_LLM_CONTENT` only where that is
-  acceptable.
+  NOT scrubbed. LLM content is captured **by default** — set
+  `CERBERUS_CAPTURE_LLM_CONTENT=false` where free-text secrets are a concern.
 - Client-controlled header fields (`user_agent`, `user_id`) and error strings
   are length-capped so an oversized header can't push events over the size
   limit (which would silently suppress that client's telemetry).
-- LLM prompt/completion content is **off by default** twice over: the bridge
-  doesn't ship it (`CERBERUS_CAPTURE_LLM_CONTENT=false`) and the recommended
-  gateway env sets `OPENINFERENCE_HIDE_INPUTS/OUTPUTS=true` so it never even
-  reaches the bridge.
+- LLM prompt/completion content is **captured by default**: the bridge ships it
+  (`CERBERUS_CAPTURE_LLM_CONTENT=true`) and the recommended gateway env records
+  it. Content is key-redacted and truncated, not free-text-scrubbed. To disable,
+  set `CERBERUS_CAPTURE_LLM_CONTENT=false` on the bridge **and**
+  `OPENINFERENCE_HIDE_INPUTS/OUTPUTS=true` on the gateway.
 - Events carry no credentials: the ingest server derives the client from the
   `X-API-Key` header.
 

@@ -36,10 +36,10 @@
 # client IP / user id / user agent and events collapse to remote_addr="unknown".
 - name: OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES
   value: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
-# Defense-in-depth: keep prompt/completion content out of spans entirely
-# while CERBERUS_CAPTURE_LLM_CONTENT=false on the bridge. Remove these two
-# only if you enable LLM content capture.
+# Let prompt/completion content into the spans so the bridge can capture it
+# (CERBERUS_CAPTURE_LLM_CONTENT defaults to true). To suppress content, set
+# BOTH of these to "true" AND CERBERUS_CAPTURE_LLM_CONTENT=false on the bridge.
 - name: OPENINFERENCE_HIDE_INPUTS
-  value: "true"
+  value: "false"
 - name: OPENINFERENCE_HIDE_OUTPUTS
-  value: "true"
+  value: "false"

@@ -84,6 +84,7 @@ def test_llm_content_sanitized_when_captured(config):
 
 
 def test_llm_content_flag_off_no_body(config):
+    config = replace(config, capture_llm_content=False)
     _, queue, _ = _run("llm_openai_chat", config)
     [event] = queue.drain(10)
     assert event["body"] is None
