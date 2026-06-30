@@ -20,6 +20,8 @@ from opentelemetry.proto.trace.v1.trace_pb2 import Span
 from . import __version__
 from .config import Config
 from .spanfields import (
+    MAX_LABEL_CHARS,
+    MODEL_KEYS,
     duration_ms,
     error_message,
     first_attr,
@@ -31,7 +33,6 @@ from .spanfields import (
 )
 
 _PROVIDER_KEYS = ("llm.system", "gen_ai.provider.name", "gen_ai.system")
-_MODEL_KEYS = ("llm.model_name", "embedding.model_name", "llm.model", "gen_ai.request.model")
 _RESPONSE_MODEL_KEYS = ("gen_ai.response.model",)
 _INPUT_KEYS = ("input.value", "gen_ai.input.value", "gen_ai.request.input")
 _OUTPUT_KEYS = ("output.value", "gen_ai.output.value")
@@ -114,10 +115,11 @@ def _as_bool(value: Any) -> bool | None:
 def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str, Any]:
     """Build a raw (pre-sanitization) CoreData-shaped event dict."""
     params = _invocation_params(attrs)
-    provider = str(first_attr(attrs, _PROVIDER_KEYS) or "unknown")
+    provider = str(first_attr(attrs, _PROVIDER_KEYS) or "unknown")[:MAX_LABEL_CHARS]
     # Embeddings spans omit llm.model_name/llm.system; the model is only in
-    # llm.invocation_parameters, so fall back to it before "unknown".
-    model = str(first_attr(attrs, _MODEL_KEYS) or params.get("model") or "unknown")
+    # llm.invocation_parameters, so fall back to it before "unknown". Cap both:
+    # they feed the endpoint, which _enforce_size can't shed.
+    model = str(first_attr(attrs, MODEL_KEYS) or params.get("model") or "unknown")[:MAX_LABEL_CHARS]
     error = error_message(span, attrs)
     method = _method(span, attrs)
 

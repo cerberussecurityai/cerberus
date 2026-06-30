@@ -14,20 +14,21 @@ the terminal AI span carries, so each LLM/MCP call maps to exactly one event:
 
 from typing import Any
 
+from .spanfields import MODEL_KEYS
+
 KIND_LLM = "llm"
 KIND_MCP = "mcp"
 
 # OpenInference marks LLM spans with a span-kind attribute; the OpenAI path
 # uses `openinference.span.kind: LLM`, the Anthropic path `span.kind: llm`.
 _SPAN_KIND_KEYS = ("openinference.span.kind", "span.kind")
-_MODEL_KEYS = ("llm.model_name", "embedding.model_name", "llm.model", "gen_ai.request.model")
 
 
 def classify(attrs: dict[str, Any]) -> str | None:
     """Return KIND_LLM, KIND_MCP, or None for spans to ignore."""
     if "mcp.method.name" in attrs:
         return KIND_MCP
-    for key in _MODEL_KEYS:
+    for key in MODEL_KEYS:
         if attrs.get(key):
             return KIND_LLM
     for key in _SPAN_KIND_KEYS:

@@ -108,3 +108,17 @@ def test_repr_hides_token_and_secret_key():
     text = repr(config)
     assert "sk_secret_123" not in text
     assert "hmac_secret_456" not in text
+
+
+def test_backend_url_requires_scheme(monkeypatch):
+    # Guard against sending the API key to a schemeless/SSRF-y target.
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CERBERUS_BACKEND_URL", "169.254.169.254/api")
+    with pytest.raises(ConfigError, match="CERBERUS_BACKEND_URL"):
+        Config.from_env()
+
+
+def test_backend_url_with_https_ok(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CERBERUS_BACKEND_URL", "https://backend.example.com/")
+    assert Config.from_env().backend_url == "https://backend.example.com"

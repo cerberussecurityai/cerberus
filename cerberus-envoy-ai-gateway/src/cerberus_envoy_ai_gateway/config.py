@@ -113,6 +113,10 @@ class Config:
 
         secret_key = (os.environ.get("CERBERUS_SECRET_KEY") or "").strip() or None
         backend_url = (os.environ.get("CERBERUS_BACKEND_URL") or "").strip().rstrip("/") or None
+        if backend_url and not backend_url.startswith(("http://", "https://")):
+            raise ConfigError(
+                f"CERBERUS_BACKEND_URL must start with http:// or https:// (got {backend_url!r})"
+            )
 
         log_level = (os.environ.get("CERBERUS_LOG_LEVEL") or "info").strip().lower()
         if log_level not in _LOG_LEVELS:

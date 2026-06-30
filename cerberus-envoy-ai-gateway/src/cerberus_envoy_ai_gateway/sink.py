@@ -142,6 +142,12 @@ class Sink:
             )
         try:
             await self.flush_once()
+        except asyncio.CancelledError:
+            # Grace period expired mid-flush; warn, then let the finally close the
+            # client (so the connection pool isn't leaked) before propagating.
+            logger.warning("Shutdown cancelled mid-flush; remaining events dropped")
+            raise
         except Exception:
             logger.exception("Final flush failed; remaining events dropped")
-        await self._client.aclose()
+        finally:
+            await self._client.aclose()

@@ -117,7 +117,15 @@ def create_app(config: Config) -> FastAPI:
         # Synchronous CPU-bound work (protobuf walk, sanitize, json.dumps) runs
         # on the event loop. Fine for the single-gateway v1; if high throughput
         # is ever needed, move to run_in_executor with a thread-safe pipeline.
-        state["pipeline"].process_export(export)
+        try:
+            state["pipeline"].process_export(export)
+        except Exception:
+            # Never 5xx on a malformed/poison span: the OTel exporter retries
+            # 5xx, looping forever on the same bad export. Drop it as a 400.
+            logger.exception("Failed to process OTLP export; rejecting as 400")
+            return Response(
+                content="invalid OTLP request", status_code=400, media_type="text/plain"
+            )
 
         # Debug dump runs after processing and is exception-guarded: a span
         # this dump can't serialize must never cost the export (the OTLP

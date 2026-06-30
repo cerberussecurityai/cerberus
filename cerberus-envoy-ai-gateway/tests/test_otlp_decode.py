@@ -65,6 +65,33 @@ def test_any_value_conversion_covers_all_kinds():
     assert any_value_to_python(AnyValue()) is None
 
 
+def test_any_value_depth_capped():
+    # any_value_to_python bounds its own recursion: beyond MAX_ATTR_DEPTH the
+    # value is truncated to None rather than recursing (defense in depth on top
+    # of protobuf's own ~100-deep parse limit).
+    from opentelemetry.proto.common.v1.common_pb2 import AnyValue, ArrayValue
+
+    from cerberus_envoy_ai_gateway.otlp import MAX_ATTR_DEPTH, any_value_to_python
+
+    value = AnyValue(string_value="deep")
+    for _ in range(MAX_ATTR_DEPTH + 10):  # past the cap, within protobuf's limit
+        value = AnyValue(array_value=ArrayValue(values=[value]))
+    node = any_value_to_python(value)  # must not raise RecursionError
+    for _ in range(MAX_ATTR_DEPTH):
+        assert isinstance(node, list)
+        node = node[0]
+    assert node is None  # truncated beyond the cap; the leaf is never reached
+
+
+def test_deeply_nested_json_body_rejected_not_500():
+    # A deeply nested JSON body must surface as OTLPDecodeError (-> 400), not an
+    # uncaught RecursionError (-> 500 -> exporter retry loop).
+    depth = 5000
+    body = ("[" * depth + "]" * depth).encode("utf-8")
+    with pytest.raises(OTLPDecodeError):
+        decode_traces_request(body, "application/json")
+
+
 def test_iter_spans_yields_scope_names():
     request = load_export("mcp_tool_call")
     [(scope_name, span)] = list(iter_spans(request))

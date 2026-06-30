@@ -18,8 +18,11 @@
 # The bridge only consumes traces; don't export metrics at it.
 - name: OTEL_METRICS_EXPORTER
   value: none
+# always_on (NOT parentbased_*): the gateway may extract an upstream traceparent
+# with sampled=0, and parentbased would honor it and emit NO span for this
+# Cerberus exporter — silently dropping that request from monitoring.
 - name: OTEL_TRACES_SAMPLER
-  value: parentbased_always_on
+  value: always_on
 - name: OTEL_SERVICE_NAME
   value: ai-gateway
 # Map request headers onto span attributes so Cerberus gets client IP,

@@ -32,3 +32,4 @@ custom_data:
   mcp_transport: "http"
   mcp_protocol_version: "2025-06-18"
   trace_id: "1112131415161718191a1b1c1d1e1f20"
+  span_id: "1112131415161718"

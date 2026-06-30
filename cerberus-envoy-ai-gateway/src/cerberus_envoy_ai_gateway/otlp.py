@@ -38,7 +38,9 @@ def decode_traces_request(body: bytes, content_type: str | None) -> ExportTraceS
     if base_type == JSON_CONTENT_TYPE:
         try:
             json_format.Parse(body.decode("utf-8"), request)
-        except (json_format.ParseError, UnicodeDecodeError) as exc:
+        # RecursionError: deeply-nested JSON blows json.loads' stack; catch it so
+        # a crafted body is a 400, not an uncaught 500 (which the exporter retries).
+        except (json_format.ParseError, UnicodeDecodeError, RecursionError) as exc:
             raise OTLPDecodeError(f"invalid OTLP/JSON body: {exc}") from exc
     else:
         try:
@@ -56,8 +58,19 @@ def success_response_body(content_type: str | None) -> tuple[bytes, str]:
     return ExportTraceServiceResponse().SerializeToString(), PROTOBUF_CONTENT_TYPE
 
 
-def any_value_to_python(value: AnyValue) -> Any:
+# Defense-in-depth cap on AnyValue recursion. Protobuf's parser already rejects
+# messages nested past ~100 (DecodeError), so this isn't reachable via a decoded
+# request today — but it keeps the flattener safe independent of that limit, and
+# a blown stack here would be a 500 -> exporter retry loop. Legit attribute
+# values are shallow; past this depth we return None. (The reachable recursion
+# vector — deeply-nested OTLP/JSON — is handled in decode_traces_request.)
+MAX_ATTR_DEPTH = 32
+
+
+def any_value_to_python(value: AnyValue, _depth: int = 0) -> Any:
     """Convert an OTLP AnyValue to the equivalent Python value."""
+    if _depth >= MAX_ATTR_DEPTH:
+        return None
     kind = value.WhichOneof("value")
     if kind == "string_value":
         return value.string_value
@@ -70,9 +83,11 @@ def any_value_to_python(value: AnyValue) -> Any:
     if kind == "bytes_value":
         return value.bytes_value
     if kind == "array_value":
-        return [any_value_to_python(item) for item in value.array_value.values]
+        return [any_value_to_python(item, _depth + 1) for item in value.array_value.values]
     if kind == "kvlist_value":
-        return {kv.key: any_value_to_python(kv.value) for kv in value.kvlist_value.values}
+        return {
+            kv.key: any_value_to_python(kv.value, _depth + 1) for kv in value.kvlist_value.values
+        }
     return None
 
 

@@ -106,7 +106,7 @@ make lint    # ruff + black --check
    - name: OTEL_METRICS_EXPORTER
      value: none
    - name: OTEL_TRACES_SAMPLER
-     value: parentbased_always_on
+     value: always_on   # not parentbased_* — an unsampled upstream traceparent would drop the request
    - name: OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES
      value: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
    # Defense-in-depth while CERBERUS_CAPTURE_LLM_CONTENT=false:

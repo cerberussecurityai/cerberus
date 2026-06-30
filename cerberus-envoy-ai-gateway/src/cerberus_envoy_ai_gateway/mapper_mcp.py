@@ -25,6 +25,7 @@ from opentelemetry.proto.trace.v1.trace_pb2 import Span
 from . import __version__
 from .config import Config
 from .spanfields import (
+    MAX_LABEL_CHARS,
     duration_ms,
     error_message,
     first_attr,
@@ -128,7 +129,7 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
     (initialize, notifications, tools/list without a recorded response, ...).
     """
     jsonrpc_method = str(attrs.get("mcp.method.name") or "")
-    server = str(first_attr(attrs, _SERVER_KEYS) or config.mcp_server_fallback)
+    server = str(first_attr(attrs, _SERVER_KEYS) or config.mcp_server_fallback)[:MAX_LABEL_CHARS]
 
     common = {
         # Backend expects 'remote_addr' (same rename cerberus-django /
@@ -161,6 +162,7 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
                 "resources": [],
                 "prompts": [],
                 "trace_id": span.trace_id.hex(),
+                "span_id": span.span_id.hex(),
             },
         }
 
@@ -169,7 +171,7 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         return None
     method, handler_keys = mapping
 
-    handler = str(first_attr(attrs, handler_keys) or "unknown")
+    handler = str(first_attr(attrs, handler_keys) or "unknown")[:MAX_LABEL_CHARS]
     error = error_message(span, attrs)
     arguments = _arguments(attrs)
 
@@ -191,6 +193,7 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "mcp_transport": attrs.get("mcp.transport"),
         "mcp_protocol_version": attrs.get("mcp.protocol.version"),
         "trace_id": span.trace_id.hex(),
+        "span_id": span.span_id.hex(),
     }
 
     return {

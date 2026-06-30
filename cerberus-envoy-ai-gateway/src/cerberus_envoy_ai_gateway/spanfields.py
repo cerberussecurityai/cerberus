@@ -9,6 +9,15 @@ from opentelemetry.proto.trace.v1.trace_pb2 import Span
 # Span.status.code values (opentelemetry.proto.trace.v1.Status.StatusCode).
 _STATUS_ERROR = 2
 
+# Candidate attribute keys for the request model, shared by classify() (to
+# detect an LLM span) and mapper_llm (to resolve it) so the two can't drift.
+MODEL_KEYS = ("llm.model_name", "embedding.model_name", "llm.model", "gen_ai.request.model")
+
+# Cap for scalar fields that feed the endpoint (LLM provider/model, MCP
+# server/handler). _enforce_size can't shed these, so an overlong value would
+# push the whole event over the byte cap and drop it — bound them at the source.
+MAX_LABEL_CHARS = 256
+
 
 def iso_timestamp(span: Span) -> str:
     """Span start time as an ISO 8601 string with a UTC offset.

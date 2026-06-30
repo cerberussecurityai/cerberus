@@ -101,3 +101,16 @@ def test_streaming_flag_coerces_non_bool_values(config):
     assert streaming('{"stream": 1}') is True
     assert streaming('{"stream": "false"}') is False
     assert streaming("{}") is None
+
+
+def test_overlong_model_is_capped(config):
+    # An overlong model name feeds the endpoint, which _enforce_size can't shed;
+    # cap it at the mapper so it can't push the event over the byte cap.
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    from cerberus_envoy_ai_gateway.spanfields import MAX_LABEL_CHARS
+
+    attrs = {"llm.model_name": "m" * 5000, "llm.system": "openai"}
+    event = map_llm_span(Span(name="ChatCompletion"), attrs, config)
+    assert len(event["custom_data"]["model"]) == MAX_LABEL_CHARS
+    assert len(event["endpoint"]) < 400
