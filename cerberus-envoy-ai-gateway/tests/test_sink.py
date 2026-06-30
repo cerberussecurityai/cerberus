@@ -96,6 +96,22 @@ async def test_connection_error_drops_batch(config, queue):
     assert len(queue) == 0
 
 
+async def test_redirect_not_counted_as_delivered(config, queue):
+    # A 3xx (e.g. an ingress/auth-proxy redirect) is NOT a successful ingest;
+    # httpx doesn't follow redirects by default (and must not), so it's a dropped
+    # batch — not silently counted as posted.
+    def redirect(request):
+        return httpx.Response(302, headers={"location": "https://elsewhere/v1/ingest/batch"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(redirect))
+    sink = Sink(config, queue, client=client)
+    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    await sink.flush_once()
+    assert sink.post_failures == 1
+    assert sink.posted == 0
+    assert len(queue) == 0
+
+
 async def test_health_endpoints_skipped_server_side(config, queue):
     received: list = []
     sink = make_sink(config, queue, make_stub_ingest(received))

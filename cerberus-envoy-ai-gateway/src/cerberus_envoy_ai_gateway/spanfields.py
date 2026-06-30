@@ -48,12 +48,13 @@ def raw_client_ip(attrs: dict[str, Any], attribute: str) -> str | None:
 
     The attribute is populated from a header like X-Forwarded-For via
     OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES, so it may hold a comma-folded
-    hop list — the left-most entry is the original client.
+    hop list — the left-most NON-EMPTY entry is the original client (a
+    malformed leading comma, e.g. ",10.0.0.1", must not drop the real IP).
     """
     value = attrs.get(attribute)
     if not isinstance(value, str) or not value.strip():
         return None
-    return value.split(",")[0].strip()
+    return next((s for s in (p.strip() for p in value.split(",")) if s), None)
 
 
 def parse_json_value(value: Any) -> Any:

@@ -20,7 +20,12 @@ class BoundedQueue:
         return len(self._items)
 
     def append(self, event: dict[str, Any]) -> bool:
-        """Queue an event; returns False (and counts) when at capacity."""
+        """Queue an event; returns False (and counts) when at capacity.
+
+        Not thread-safe: the check-then-append relies on single-threaded
+        event-loop access (see module docstring). If process_export ever moves
+        to a thread executor, this needs a lock.
+        """
         if len(self._items) >= self._capacity:
             self.dropped_full += 1
             return False

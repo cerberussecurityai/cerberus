@@ -86,6 +86,11 @@ def create_app(config: Config) -> FastAPI:
                 received += len(chunk)
                 if received > MAX_OTLP_BODY_BYTES:
                     logger.warning("Rejecting OTLP request over %d bytes", MAX_OTLP_BODY_BYTES)
+                    # Returning mid-stream without draining the rest is intentional:
+                    # Uvicorn discards the unread body and the OTel exporter treats
+                    # 413 as non-retryable, so the oversize export is dropped
+                    # at-most-once. We deliberately do NOT drain the remainder —
+                    # an unbounded drain would be a memory-exhaustion DoS vector.
                     return Response(
                         content="body too large", status_code=413, media_type="text/plain"
                     )

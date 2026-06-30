@@ -90,7 +90,10 @@ class Sink:
             self.post_failures += 1
             logger.warning("Dropping batch of %d events: %s", len(batch), exc)
             return
-        if response.status_code >= 400:
+        # Only a 2xx means the batch was ingested. A 3xx (redirect — httpx does
+        # not follow by default, and we must not, or POST->GET would corrupt the
+        # body) means it was NOT delivered; treat it as a failure, not success.
+        if not (200 <= response.status_code < 300):
             self.post_failures += 1
             logger.warning(
                 "Dropping batch of %d events: ingest returned %d %s",
