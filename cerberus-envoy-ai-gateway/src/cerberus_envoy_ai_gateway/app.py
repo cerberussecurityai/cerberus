@@ -133,6 +133,9 @@ def create_app(config: Config) -> FastAPI:
         if config.dump_spans:
             try:
                 for scope_name, span in iter_spans(export):
+                    # Raw JSON to stdout (NOT logger): one object per line,
+                    # undecorated and on a separate stream, so `... | jq` works
+                    # and operational logs (stderr) don't interleave.
                     print(
                         json.dumps(span_to_debug_dict(scope_name, span), default=repr), flush=True
                     )
