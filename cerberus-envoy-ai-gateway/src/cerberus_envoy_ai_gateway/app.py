@@ -69,6 +69,10 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/v1/traces")
     async def receive_traces(request: Request) -> Response:
+        if not state.get("ready"):
+            return Response(
+                content='{"status": "starting"}', status_code=503, media_type="application/json"
+            )
         chunks: list[bytes] = []
         received = 0
         async for chunk in request.stream():
@@ -120,8 +124,12 @@ def create_app(config: Config) -> FastAPI:
             )
         return Response(content='{"status": "ready"}', media_type="application/json")
 
-    @app.get("/stats")
-    async def stats() -> dict:
+    @app.get("/stats", response_model=None)
+    async def stats() -> Response | dict:
+        if not state.get("ready"):
+            return Response(
+                content='{"status": "starting"}', status_code=503, media_type="application/json"
+            )
         pipeline: Pipeline = state["pipeline"]
         sink: Sink = state["sink"]
         return {

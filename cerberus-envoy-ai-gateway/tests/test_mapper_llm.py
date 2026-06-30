@@ -44,3 +44,22 @@ def test_endpoint_never_matches_health_filter(config):
     # a health check; llm:// endpoints end in the model name.
     event = _map("llm_openai_chat", config)
     assert event["endpoint"].rsplit("/", 1)[-1] == "gpt-4o-mini"
+
+
+def test_embedding_span_classified_and_model_from_invocation_params(config):
+    # OpenAI embeddings spans use span-kind EMBEDDING and omit llm.model_name;
+    # the model lives only in llm.invocation_parameters. classify() must route
+    # them to the LLM path and the mapper must recover the model from params.
+    from opentelemetry.proto.trace.v1.trace_pb2 import Span
+
+    from cerberus_envoy_ai_gateway.classify import KIND_LLM, classify
+
+    attrs = {
+        "openinference.span.kind": "EMBEDDING",
+        "llm.invocation_parameters": '{"model": "text-embedding-3-small"}',
+    }
+    assert classify(attrs) == KIND_LLM
+    event = map_llm_span(Span(name="Embeddings"), attrs, config)
+    assert event["method"] == "llm_embeddings"
+    assert event["custom_data"]["model"] == "text-embedding-3-small"
+    assert event["endpoint"] == "llm://unknown/text-embedding-3-small"

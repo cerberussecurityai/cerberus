@@ -32,6 +32,10 @@ def classify(attrs: dict[str, Any]) -> str | None:
             return KIND_LLM
     for key in _SPAN_KIND_KEYS:
         kind = attrs.get(key)
-        if isinstance(kind, str) and kind.lower() == "llm":
+        # OpenInference marks OpenAI embeddings with span-kind "EMBEDDING" and
+        # omits llm.model_name/llm.system (the model lives in
+        # llm.invocation_parameters), so accept it here too — otherwise
+        # embedding requests fall through as ignored and never reach Cerberus.
+        if isinstance(kind, str) and kind.lower() in ("llm", "embedding"):
             return KIND_LLM
     return None

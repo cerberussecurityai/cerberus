@@ -31,3 +31,23 @@ def single_span(request: ExportTraceServiceRequest):
     ]
     assert len(spans) == 1, f"fixture has {len(spans)} spans, expected 1"
     return spans[0]
+
+
+# Path segments event_ingest treats as health checks: events whose endpoint's
+# last segment is one of these are skipped server-side. Used by the sink test's
+# ingest stub (the playground stub keeps its own copy for standalone use).
+HEALTH_SEGMENTS = frozenset(
+    {
+        "health",
+        "healthz",
+        "healthcheck",
+        "health_check",
+        "health-check",
+        "ready",
+        "readyz",
+        "readiness",
+        "live",
+        "livez",
+        "liveness",
+    }
+)

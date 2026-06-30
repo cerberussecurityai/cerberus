@@ -24,6 +24,13 @@
   value: ai-gateway
 # Map request headers onto span attributes so Cerberus gets client IP,
 # end-user id, and user agent. Format: "header:attribute,header:attribute".
+#
+# NOTE: this env var only takes effect for `aigw run` (standalone). For
+# Helm/Kubernetes installs the extproc takes header mapping from the controller,
+# so set the chart value instead — e.g.
+#   controller.spanRequestHeaderAttributes: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
+# (older charts: controller.requestHeaderAttributes). Without it, spans carry no
+# client IP / user id / user agent and events collapse to remote_addr="unknown".
 - name: OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES
   value: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
 # Defense-in-depth: keep prompt/completion content out of spans entirely

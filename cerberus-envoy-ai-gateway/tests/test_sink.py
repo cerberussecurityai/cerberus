@@ -11,24 +11,12 @@ from dataclasses import replace
 import httpx
 import pytest
 from fastapi import FastAPI, Header, HTTPException
+from helpers import HEALTH_SEGMENTS
 
 from cerberus_envoy_ai_gateway.queue import BoundedQueue
 from cerberus_envoy_ai_gateway.sink import Sink
 
 VALID_KEY = "sk_test_0123456789"
-HEALTH_SEGMENTS = {
-    "health",
-    "healthz",
-    "healthcheck",
-    "health_check",
-    "health-check",
-    "ready",
-    "readyz",
-    "readiness",
-    "live",
-    "livez",
-    "liveness",
-}
 
 
 def make_stub_ingest(received: list) -> FastAPI:

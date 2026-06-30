@@ -1,12 +1,15 @@
 # Cerberus bridge for Envoy AI Gateway — drop-in deployment.
 #
-# Edit all FOUR CHANGE-ME values:
+# Edit all FIVE CHANGE-ME values:
 #   1. CERBERUS_TOKEN          (in the Secret)        — Cerberus API key
 #   2. image                   (in the Deployment)    — your pushed image
 #   3. CERBERUS_INGEST_SERVICE (Deployment env)       — Cerberus backend URL
 #   4. CERBERUS_BACKEND_URL    (Deployment env)       — usually the same URL;
 #      if left unset/wrong the HMAC key fetch fails and source IPs ship
 #      UNHASHED (one-time warning in the logs — check after first deploy).
+#   5. NetworkPolicy namespace (at the bottom)        — the namespace your Envoy
+#      AI Gateway proxy pods run in. The policy ships ACTIVE (secure by default),
+#      so until you set this the bridge accepts NO spans.
 # (Change the namespace too if you don't use "cerberus".)
 #
 # Then: kubectl apply -f bridge.yaml
@@ -93,26 +96,28 @@ spec:
     - name: otlp-http
       port: 4318
       targetPort: otlp-http
-# ---
-# Recommended: restrict who can send the bridge spans. The OTLP receiver is
-# unauthenticated (standard for in-cluster collectors), and the bridge signs
-# everything it receives with your Cerberus API key — so without a
-# NetworkPolicy, any workload in the cluster can inject events. Uncomment and
-# set the namespace selector to wherever your Envoy proxy pods run.
-# apiVersion: networking.k8s.io/v1
-# kind: NetworkPolicy
-# metadata:
-#   name: cerberus-bridge-ingress
-#   namespace: cerberus
-# spec:
-#   podSelector:
-#     matchLabels:
-#       app: cerberus-envoy-ai-gateway
-#   policyTypes: ["Ingress"]
-#   ingress:
-#     - from:
-#         - namespaceSelector:
-#             matchLabels:
-#               kubernetes.io/metadata.name: envoy-gateway-system
-#       ports:
-#         - port: 4318
+---
+# The OTLP receiver is unauthenticated (standard for in-cluster collectors) and
+# the bridge signs everything it receives with your Cerberus API key, so without
+# this NetworkPolicy any workload in the cluster could inject events at your
+# operator's expense. It ships ACTIVE (secure by default): set the namespace
+# below to wherever your Envoy AI Gateway proxy pods run — until then the
+# selector matches nothing and the bridge receives no spans. Remove this block
+# only if another network control already restricts ingress to :4318.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cerberus-bridge-ingress
+  namespace: cerberus
+spec:
+  podSelector:
+    matchLabels:
+      app: cerberus-envoy-ai-gateway
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: CHANGE-ME-gateway-namespace
+      ports:
+        - port: 4318

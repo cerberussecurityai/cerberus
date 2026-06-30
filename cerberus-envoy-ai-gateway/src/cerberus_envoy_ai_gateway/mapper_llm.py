@@ -26,6 +26,8 @@ from .spanfields import (
     iso_timestamp,
     parse_json_value,
     raw_client_ip,
+    span_user_agent,
+    span_user_id,
 )
 
 _PROVIDER_KEYS = ("llm.system", "gen_ai.provider.name", "gen_ai.system")
@@ -92,10 +94,12 @@ def _invocation_params(attrs: dict[str, Any]) -> dict[str, Any]:
 
 def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str, Any]:
     """Build a raw (pre-sanitization) CoreData-shaped event dict."""
-    provider = str(first_attr(attrs, _PROVIDER_KEYS) or "unknown")
-    model = str(first_attr(attrs, _MODEL_KEYS) or "unknown")
-    error = error_message(span, attrs)
     params = _invocation_params(attrs)
+    provider = str(first_attr(attrs, _PROVIDER_KEYS) or "unknown")
+    # Embeddings spans omit llm.model_name/llm.system; the model is only in
+    # llm.invocation_parameters, so fall back to it before "unknown".
+    model = str(first_attr(attrs, _MODEL_KEYS) or params.get("model") or "unknown")
+    error = error_message(span, attrs)
     method = _method(span, attrs)
 
     custom_data: dict[str, Any] = {
@@ -147,12 +151,8 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "headers": None,
         "query_params": None,
         "body": body,
-        "user_agent": str(
-            attrs.get(config.user_agent_attribute) or f"cerberus-envoy-ai-gateway/{__version__}"
+        "user_agent": span_user_agent(
+            attrs, config.user_agent_attribute, f"cerberus-envoy-ai-gateway/{__version__}"
         ),
-        "user_id": (
-            str(attrs[config.user_id_attribute])
-            if config.user_id_attribute and attrs.get(config.user_id_attribute) not in (None, "")
-            else None
-        ),
+        "user_id": span_user_id(attrs, config.user_id_attribute),
     }

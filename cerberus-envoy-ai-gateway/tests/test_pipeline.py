@@ -5,6 +5,7 @@ from dataclasses import replace
 from cerberus_core import REDACTED
 from helpers import load_export
 
+from cerberus_envoy_ai_gateway.classify import KIND_MCP
 from cerberus_envoy_ai_gateway.pipeline import Pipeline, truncate_values
 from cerberus_envoy_ai_gateway.queue import BoundedQueue
 
@@ -151,4 +152,64 @@ def test_oversized_header_fields_truncated_not_dropped(config):
     [event] = queue.drain(10)
     assert len(event["user_agent"]) <= 1024 + len("...[TRUNCATED]")
     assert len(event["user_id"]) <= 256 + len("...[TRUNCATED]")
+    assert pipeline.dropped_oversize == 0
+
+
+def _schema_report_event(tools: list) -> dict:
+    return {
+        "remote_addr": None,
+        "endpoint": "mcp://srv/schema_report",
+        "scheme": "mcp",
+        "method": "mcp_schema_report",
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "headers": None,
+        "query_params": None,
+        "user_agent": "ua",
+        "user_id": None,
+        "body": None,
+        "custom_data": {
+            "integration": "envoy-ai-gateway",
+            "mcp_server": "srv",
+            "event_type": "schema_report",
+            "tools": tools,
+            "resources": [],
+            "prompts": [],
+            "trace_id": "",
+        },
+    }
+
+
+def test_schema_report_tools_sanitized(config):
+    # Schema-report tool schemas skip the argument-sanitization branch, but
+    # credential-shaped example values inside them must still be redacted.
+    pipeline = Pipeline(config, BoundedQueue(10), None)
+    event = _schema_report_event(
+        [
+            {
+                "name": "lookup",
+                "description": "find",
+                "input_schema": {"example": {"api_key": "sk-x"}},
+            }
+        ]
+    )
+    finalized = pipeline._finalize(event, KIND_MCP)
+    tools = finalized["custom_data"]["tools"]
+    assert len(tools) == 1
+    assert tools[0]["input_schema"]["example"]["api_key"] == REDACTED
+
+
+def test_oversize_schema_report_sheds_tools_but_keeps_skeleton(config):
+    # A large tool catalogue has no body/arguments to shed, so without shedding
+    # tools/resources/prompts it would be dropped whole; it should instead land
+    # as a schema_only skeleton the backend can still record.
+    config = replace(config, max_event_bytes=1024)
+    pipeline = Pipeline(config, BoundedQueue(10), None)
+    big_tools = [
+        {"name": f"tool_{i}", "description": "x" * 500, "input_schema": {}} for i in range(40)
+    ]
+    finalized = pipeline._finalize(_schema_report_event(big_tools), KIND_MCP)
+    assert finalized is not None
+    assert finalized["custom_data"]["tools"] == []
+    assert finalized["custom_data"]["content_dropped_oversize"] is True
+    assert finalized["custom_data"]["mcp_server"] == "srv"
     assert pipeline.dropped_oversize == 0

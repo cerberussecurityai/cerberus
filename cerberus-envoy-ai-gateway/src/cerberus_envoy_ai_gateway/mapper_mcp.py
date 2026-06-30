@@ -31,6 +31,8 @@ from .spanfields import (
     iso_timestamp,
     parse_json_value,
     raw_client_ip,
+    span_user_agent,
+    span_user_id,
 )
 
 # JSON-RPC method → (Cerberus event method, handler attribute keys)
@@ -128,14 +130,10 @@ def map_mcp_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "timestamp": iso_timestamp(span),
         "headers": None,
         "query_params": None,
-        "user_agent": str(
-            attrs.get(config.user_agent_attribute) or f"cerberus-envoy-ai-gateway/{__version__}"
+        "user_agent": span_user_agent(
+            attrs, config.user_agent_attribute, f"cerberus-envoy-ai-gateway/{__version__}"
         ),
-        "user_id": (
-            str(attrs[config.user_id_attribute])
-            if config.user_id_attribute and attrs.get(config.user_id_attribute) not in (None, "")
-            else None
-        ),
+        "user_id": span_user_id(attrs, config.user_id_attribute),
     }
 
     if jsonrpc_method == "tools/list":

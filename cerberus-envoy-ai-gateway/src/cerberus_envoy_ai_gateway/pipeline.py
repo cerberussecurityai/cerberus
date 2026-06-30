@@ -108,8 +108,17 @@ class Pipeline:
                 event["custom_data"]["error"], MAX_ERROR_CHARS
             )
 
-        if kind == KIND_MCP and event["method"] != "mcp_schema_report":
-            if self.config.capture_mcp_arguments:
+        if kind == KIND_MCP:
+            if event["method"] == "mcp_schema_report":
+                # Schema reports carry no arguments, but their tool descriptions
+                # / inputSchema examples can still embed credential-shaped keys —
+                # redact (and bound) them rather than forwarding unsanitized.
+                tools = event["custom_data"].get("tools")
+                if tools:
+                    event["custom_data"]["tools"] = truncate_values(
+                        [sanitize_dict(tool) if isinstance(tool, dict) else tool for tool in tools]
+                    )
+            elif self.config.capture_mcp_arguments:
                 arguments = sanitize_dict(event["custom_data"].get("arguments") or {})
                 arguments = truncate_values(arguments)
                 event["custom_data"]["arguments"] = arguments
@@ -146,6 +155,13 @@ class Pipeline:
         custom_data = dict(event.get("custom_data") or {})
         if "arguments" in custom_data:
             custom_data["arguments"] = {}
+        # Schema reports carry their payload in tools/resources/prompts (body is
+        # already None), so shed those too — otherwise an oversized tool
+        # catalogue can't shrink and the event is dropped whole instead of
+        # landing as a schema_only skeleton the backend can still record.
+        for catalogue_key in ("tools", "resources", "prompts"):
+            if custom_data.get(catalogue_key):
+                custom_data[catalogue_key] = []
         custom_data["content_dropped_oversize"] = True
         event["custom_data"] = custom_data
 

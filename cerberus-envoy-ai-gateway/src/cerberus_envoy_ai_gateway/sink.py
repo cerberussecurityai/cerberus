@@ -84,8 +84,8 @@ class Sink:
         self.posted += len(batch)
         try:
             result = response.json()
-            accepted = int(result.get("accepted", 0))
-            skipped = int(result.get("skipped", 0))
+            accepted = int(result.get("accepted") or 0)
+            skipped = int(result.get("skipped") or 0)
         except (ValueError, TypeError, AttributeError):
             return
         self.server_accepted += accepted

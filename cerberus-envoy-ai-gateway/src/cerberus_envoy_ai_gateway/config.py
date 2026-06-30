@@ -15,6 +15,12 @@ from dataclasses import dataclass, field
 # enlarges each event by fanning in api_key/client_id/token before the check.
 MAX_SERVER_BATCH_SIZE = 1000
 DEFAULT_MAX_EVENT_BYTES = 57344  # 56KB
+# Ceiling for the CERBERUS_MAX_EVENT_BYTES override: stay under the server's
+# 64KB skip threshold with headroom, because the server enlarges each event by
+# fanning in api_key/client_id/token *before* the cap (see comment above).
+# 62KB leaves ~2KB for that augmentation; 65536 would let capped events be
+# silently skipped server-side.
+MAX_EVENT_BYTES_CEILING = 63488  # 62KB
 
 MIN_FLUSH_INTERVAL_MS = 100
 
@@ -134,7 +140,7 @@ class Config:
             ),
             queue_capacity=_env_int("CERBERUS_QUEUE_CAPACITY", 10000, 100, 1_000_000),
             max_event_bytes=_env_int(
-                "CERBERUS_MAX_EVENT_BYTES", DEFAULT_MAX_EVENT_BYTES, 1024, 65536
+                "CERBERUS_MAX_EVENT_BYTES", DEFAULT_MAX_EVENT_BYTES, 1024, MAX_EVENT_BYTES_CEILING
             ),
             mcp_server_fallback=(
                 os.environ.get("CERBERUS_MCP_SERVER_FALLBACK") or "envoy-ai-gateway"

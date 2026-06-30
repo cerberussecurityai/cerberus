@@ -34,7 +34,10 @@ async def resolve_secret_key(config: Config) -> str | None:
             response = await client.get(url, headers={"X-API-Key": config.token})
             response.raise_for_status()
             secret = response.json().get("secret_key")
-    except (httpx.HTTPError, ValueError) as exc:
+    # AttributeError guards a valid-JSON non-dict body (e.g. a load balancer
+    # returning `[]` or an HTML error page parsed as a JSON string) — .get()
+    # on a non-dict would otherwise escape and crash lifespan startup.
+    except (httpx.HTTPError, ValueError, AttributeError) as exc:
         logger.warning(
             "Failed to fetch HMAC secret from %s (%s) — source IPs will be sent unhashed",
             url,

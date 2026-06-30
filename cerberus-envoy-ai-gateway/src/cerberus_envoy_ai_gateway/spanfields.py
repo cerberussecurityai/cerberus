@@ -66,3 +66,15 @@ def parse_json_value(value: Any) -> Any:
             except (ValueError, TypeError):
                 return value
     return value
+
+
+def span_user_agent(attrs: dict[str, Any], attribute: str, fallback: str) -> str:
+    """User-agent from the configured span attribute, else the bridge default."""
+    return str(attrs.get(attribute) or fallback)
+
+
+def span_user_id(attrs: dict[str, Any], attribute: str | None) -> str | None:
+    """End-user id from the configured span attribute, when set and non-empty."""
+    if attribute and attrs.get(attribute) not in (None, ""):
+        return str(attrs[attribute])
+    return None
