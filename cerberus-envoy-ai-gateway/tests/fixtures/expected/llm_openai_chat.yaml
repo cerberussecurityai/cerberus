@@ -1,0 +1,38 @@
+# Expected mapper_llm output for spans/llm_openai_chat.json with
+# capture_llm_content=true (raw, pre-sanitization — see test_pipeline for
+# the post-sanitization shape).
+remote_addr: "203.0.113.7"
+endpoint: "llm://openai/gpt-4o-mini"
+scheme: "llm"
+method: "llm_chat_completion"
+timestamp: "2025-06-15T15:06:40+00:00"
+headers: null
+query_params: null
+body:
+  input:
+    messages:
+      - role: "user"
+        content: "hello"
+    api_key: "sk-secret"
+  output:
+    - role: "assistant"
+      content: "hi"
+user_agent: "test-agent/1.0"
+user_id: "user-123"
+custom_data:
+  integration: "envoy-ai-gateway"
+  event_type: "chat_completion"
+  provider: "openai"
+  model: "gpt-4o-mini"
+  response_model: null
+  duration_ms: 1250.0
+  status: "ok"
+  error: null
+  streaming: false
+  trace_id: "0102030405060708090a0b0c0d0e0f10"
+  span_id: "0102030405060708"
+  tokens_prompt: 42
+  tokens_completion: 128
+  tokens_total: 170
+  temperature: 0.7
+  max_tokens: 256

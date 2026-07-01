@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mock-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:9082/mcp"
+    }
+  }
+}

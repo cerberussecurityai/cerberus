@@ -1,0 +1,45 @@
+# Playground services: Cerberus bridge + stub ingest + mock LLM + mock MCP.
+# The Envoy AI Gateway itself runs on the host via `aigw run` (see run.sh),
+# pointing at the published ports below.
+#
+# All four containers reuse the bridge image (it has fastapi/uvicorn).
+services:
+  stub-ingest:
+    build: ..
+    command: ["python", "/playground/stub_ingest.py"]
+    volumes:
+      - ./:/playground:ro
+    ports:
+      - "9089:9089"
+
+  mock-llm:
+    build: ..
+    command: ["python", "/playground/mocks/mock_llm.py"]
+    volumes:
+      - ./:/playground:ro
+    ports:
+      - "9081:9081"
+
+  mock-mcp:
+    build: ..
+    command: ["python", "/playground/mocks/mock_mcp.py"]
+    volumes:
+      - ./:/playground:ro
+    ports:
+      - "9082:9082"
+
+  bridge:
+    build: ..
+    environment:
+      CERBERUS_INGEST_SERVICE: http://stub-ingest:9089
+      CERBERUS_BACKEND_URL: http://stub-ingest:9089   # exercises the HMAC key fetch
+      CERBERUS_TOKEN: sk_test_playground
+      CERBERUS_USER_ID_ATTRIBUTE: user.id
+      CERBERUS_CAPTURE_LLM_CONTENT: "true"            # demo: show sanitized prompts
+      CERBERUS_DUMP_SPANS: "true"                     # dev: print raw spans (fixture capture)
+      CERBERUS_FLUSH_INTERVAL_MS: "1000"
+      CERBERUS_LOG_LEVEL: debug
+    ports:
+      - "4318:4318"
+    depends_on:
+      - stub-ingest

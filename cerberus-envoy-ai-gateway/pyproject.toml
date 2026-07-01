@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cerberus-envoy-ai-gateway"
+version = "0.1.0"
+description = "OTLP trace bridge that ships Envoy AI Gateway LLM and MCP traffic to the Cerberus platform"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Griffin Potrock" }
+]
+keywords = [
+    "envoy",
+    "ai-gateway",
+    "llm",
+    "mcp",
+    "opentelemetry",
+    "otlp",
+    "monitoring",
+    "analytics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "cerberus-core>=0.1.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+    "opentelemetry-proto>=1.25",
+    "protobuf>=4.25",
+]
+
+[project.scripts]
+cerberus-envoy-ai-gateway = "cerberus_envoy_ai_gateway.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pyyaml>=6.0",
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cerberussecurityai/cerberus"
+Documentation = "https://github.com/cerberussecurityai/cerberus#readme"
+Repository = "https://github.com/cerberussecurityai/cerberus.git"
+Issues = "https://github.com/cerberussecurityai/cerberus/issues"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.github",
+    "/tests",
+    "/playground",
+    "/deploy",
+    "CLAUDE.md",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cerberus_envoy_ai_gateway"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+# Direct source paths so tests survive even when macOS flags the venv's
+# editable .pth files as hidden (Python 3.12 skips hidden .pth files).
+pythonpath = ["src", "../cerberus-core/src"]

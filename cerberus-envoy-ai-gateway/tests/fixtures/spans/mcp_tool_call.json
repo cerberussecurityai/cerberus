@@ -1,0 +1,33 @@
+{
+  "resourceSpans": [
+    {
+      "scopeSpans": [
+        {
+          "scope": {"name": "envoyproxy/ai-gateway/mcp"},
+          "spans": [
+            {
+              "traceId": "ERITFBUWFxgZGhscHR4fIA==",
+              "spanId": "ERITFBUWFxg=",
+              "name": "tools/call get_weather",
+              "startTimeUnixNano": "1750000010000000000",
+              "endTimeUnixNano": "1750000010075000000",
+              "status": {},
+              "attributes": [
+                {"key": "mcp.method.name", "value": {"stringValue": "tools/call"}},
+                {"key": "mcp.tool.name", "value": {"stringValue": "get_weather"}},
+                {"key": "mcp.backend.name", "value": {"stringValue": "weather-mcp"}},
+                {"key": "mcp.request.id", "value": {"stringValue": "42"}},
+                {"key": "mcp.session.id", "value": {"stringValue": "sess-1"}},
+                {"key": "mcp.protocol.version", "value": {"stringValue": "2025-06-18"}},
+                {"key": "mcp.transport", "value": {"stringValue": "http"}},
+                {"key": "mcp.tool.arguments", "value": {"stringValue": "{\"location\": \"SF\", \"units\": \"metric\", \"api_key\": \"xyz\"}"}},
+                {"key": "http.client_ip", "value": {"stringValue": "198.51.100.9"}},
+                {"key": "http.user_agent", "value": {"stringValue": "mcp-client/1.2"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

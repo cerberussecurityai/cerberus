@@ -1,0 +1,45 @@
+# Environment variables to add to the Envoy AI Gateway extproc so it exports
+# traces to the Cerberus bridge. How to inject them depends on your install
+# (verify against your chart version):
+#
+#   1. Helm values for oci://docker.io/envoyproxy/ai-gateway-helm
+#      (extproc env-var values, e.g. extProc.extraEnvVars).
+#   2. The GatewayConfig CRD's extproc Kubernetes spec, where exposed.
+#   3. Escape hatch: kubectl set env on the extproc workload.
+#
+# For `aigw run` (standalone mode), export these as process env vars instead.
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: http://cerberus-bridge.cerberus.svc.cluster.local:4318
+# REQUIRED: the OTel default protocol is gRPC; the bridge speaks OTLP/HTTP.
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: http/protobuf
+- name: OTEL_TRACES_EXPORTER
+  value: otlp
+# The bridge only consumes traces; don't export metrics at it.
+- name: OTEL_METRICS_EXPORTER
+  value: none
+# always_on (NOT parentbased_*): the gateway may extract an upstream traceparent
+# with sampled=0, and parentbased would honor it and emit NO span for this
+# Cerberus exporter — silently dropping that request from monitoring.
+- name: OTEL_TRACES_SAMPLER
+  value: always_on
+- name: OTEL_SERVICE_NAME
+  value: ai-gateway
+# Map request headers onto span attributes so Cerberus gets client IP,
+# end-user id, and user agent. Format: "header:attribute,header:attribute".
+#
+# NOTE: this env var only takes effect for `aigw run` (standalone). For
+# Helm/Kubernetes installs the extproc takes header mapping from the controller,
+# so set the chart value instead — e.g.
+#   controller.spanRequestHeaderAttributes: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
+# (older charts: controller.requestHeaderAttributes). Without it, spans carry no
+# client IP / user id / user agent and events collapse to remote_addr="unknown".
+- name: OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES
+  value: "x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
+# Let prompt/completion content into the spans so the bridge can capture it
+# (CERBERUS_CAPTURE_LLM_CONTENT defaults to true). To suppress content, set
+# BOTH of these to "true" AND CERBERUS_CAPTURE_LLM_CONTENT=false on the bridge.
+- name: OPENINFERENCE_HIDE_INPUTS
+  value: "false"
+- name: OPENINFERENCE_HIDE_OUTPUTS
+  value: "false"
