@@ -14,6 +14,7 @@ from cerberus_django.middleware import (
     _extract_body,
     _extract_headers,
     _extract_query_params,
+    _extract_response_body,
     event_queue,
 )
 
@@ -210,6 +211,248 @@ class TestExtractBody:
         request = rf.delete("/")
         body = _extract_body(request)
         assert body is None
+
+
+class TestExtractResponseBody:
+    """Tests for _extract_response_body."""
+
+    def _json_response(self, data, **kwargs):
+        from django.http import HttpResponse
+
+        return HttpResponse(
+            json.dumps(data), content_type="application/json", **kwargs
+        )
+
+    def test_extracts_and_sanitizes_json_response(self):
+        response = self._json_response({"answer": "hello", "api_key": "sk-123"})
+        body = _extract_response_body(response)
+        assert body["answer"] == "hello"
+        assert body["api_key"] == REDACTED
+
+    def test_handles_json_list_response(self):
+        response = self._json_response([{"password": "secret"}, {"name": "alice"}])
+        body = _extract_response_body(response)
+        assert isinstance(body, list)
+        assert body[0]["password"] == REDACTED
+        assert body[1]["name"] == "alice"
+
+    def test_returns_none_for_non_json_content_type(self):
+        from django.http import HttpResponse
+
+        response = HttpResponse("<html></html>", content_type="text/html")
+        assert _extract_response_body(response) is None
+
+    def test_returns_none_for_invalid_json(self):
+        from django.http import HttpResponse
+
+        response = HttpResponse(b"not json{{{", content_type="application/json")
+        assert _extract_response_body(response) is None
+
+    def test_returns_none_for_bare_json_primitive(self):
+        response = self._json_response("just a string")
+        assert _extract_response_body(response) is None
+
+    def test_returns_none_for_empty_body(self):
+        from django.http import HttpResponse
+
+        response = HttpResponse(b"", content_type="application/json")
+        assert _extract_response_body(response) is None
+
+    def test_returns_none_for_streaming_response(self):
+        from django.http import StreamingHttpResponse
+
+        response = StreamingHttpResponse(
+            iter([b'{"a":', b" 1}"]), content_type="application/json"
+        )
+        assert _extract_response_body(response) is None
+        # The stream must not have been consumed by the capture attempt
+        assert b"".join(response.streaming_content) == b'{"a": 1}'
+
+    def test_returns_none_for_file_response(self, tmp_path):
+        from django.http import FileResponse
+
+        f = tmp_path / "data.json"
+        f.write_bytes(b'{"a": 1}')
+        response = FileResponse(open(f, "rb"), content_type="application/json")
+        assert _extract_response_body(response) is None
+
+    def test_skips_compressed_response_with_marker(self):
+        response = self._json_response({"a": 1})
+        response["Content-Encoding"] = "gzip"
+        body = _extract_response_body(response)
+        assert body == {"body_skipped_encoding": "gzip"}
+
+    def test_identity_encoding_still_captured(self):
+        response = self._json_response({"a": 1})
+        response["Content-Encoding"] = "identity"
+        body = _extract_response_body(response)
+        assert body == {"a": 1}
+
+    def test_body_within_budget_ships_whole_without_markers(self):
+        data = {"content": "x" * 100}
+        response = self._json_response(data)
+        body = _extract_response_body(response, head_bytes=1024, tail_bytes=1024)
+        assert body == data
+        assert "body_truncated" not in body
+
+    def test_oversized_body_ships_head_tail_with_markers(self):
+        data = {"content": "x" * 1000}
+        response = self._json_response(data)
+        body = _extract_response_body(response, head_bytes=64, tail_bytes=32)
+        serialized = json.dumps(data)  # sanitization is a no-op for this data
+        assert body["body_truncated"] is True
+        assert body["body_bytes_total"] == len(serialized)
+        assert body["body_bytes_dropped"] == len(serialized) - 64 - 32
+        assert body["head"] == serialized[:64]
+        assert body["tail"] == serialized[-32:]
+
+    def test_truncation_applies_to_sanitized_form(self):
+        """Sensitive values must be redacted BEFORE slicing — the head/tail
+        slices must never leak a secret that fits inside them."""
+        data = {"api_key": "sk-verysecret", "content": "x" * 1000}
+        response = self._json_response(data)
+        body = _extract_response_body(response, head_bytes=64, tail_bytes=32)
+        assert body["body_truncated"] is True
+        assert "sk-verysecret" not in body["head"]
+        assert REDACTED in body["head"]
+
+    def test_zero_tail_bytes_does_not_ship_whole_body(self):
+        """Guard against the b[-0:] == whole-string slicing pitfall."""
+        data = {"content": "x" * 1000}
+        response = self._json_response(data)
+        body = _extract_response_body(response, head_bytes=64, tail_bytes=0)
+        assert body["body_truncated"] is True
+        assert body["tail"] == ""
+        assert len(body["head"]) == 64
+
+    def test_unreadable_content_returns_none(self):
+        """An unrendered TemplateResponse-style .content error must not raise."""
+        response = MagicMock()
+        response.streaming = False
+        response.get = lambda header: {
+            "Content-Type": "application/json"
+        }.get(header)
+        type(response).content = property(
+            lambda self: (_ for _ in ()).throw(Exception("not rendered"))
+        )
+        assert _extract_response_body(response) is None
+        del type(response).content
+
+    def test_deeply_nested_json_returns_none_without_raising(self):
+        """json.loads raises RecursionError on attacker-controllable nesting
+        depth — capture must degrade to None, never break the response path
+        with a 500. Depth 100_000 raises on every supported interpreter
+        (3.12+ parses far deeper than 3.11 before raising)."""
+        from django.http import HttpResponse
+
+        response = HttpResponse(
+            b"[" * 100_000 + b"]" * 100_000, content_type="application/json"
+        )
+        assert _extract_response_body(response) is None
+
+
+class TestResponseBodyCapture:
+    """Middleware-level tests for opt-in response body capture."""
+
+    def _drain_queue(self):
+        while not event_queue.empty():
+            try:
+                event_queue.get_nowait()
+            except thread_queue.Empty:
+                break
+
+    @patch("cerberus_django.middleware.ensure_background_thread")
+    def test_response_body_captured_when_enabled(self, mock_bg, rf):
+        from django.http import JsonResponse
+
+        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
+            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
+            "secret_key": "test-key", "capture_response_body": True,
+        }}):
+            mw = CerberusMiddleware(
+                lambda req: JsonResponse({"answer": "ok", "token": "sk-1"})
+            )
+            self._drain_queue()
+            mw(rf.get("/test"))
+            event = event_queue.get_nowait()
+            assert event.response_body == {"answer": "ok", "token": REDACTED}
+
+    @patch("cerberus_django.middleware.ensure_background_thread")
+    def test_response_body_not_captured_by_default(self, mock_bg, rf):
+        from django.http import JsonResponse
+
+        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
+            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
+            "secret_key": "test-key",
+        }}):
+            mw = CerberusMiddleware(lambda req: JsonResponse({"answer": "ok"}))
+            self._drain_queue()
+            mw(rf.get("/test"))
+            event = event_queue.get_nowait()
+            assert event.response_body is None
+
+    @patch("cerberus_django.middleware.ensure_background_thread")
+    def test_malformed_sizing_knob_falls_back_to_default(self, mock_bg, rf):
+        from cerberus_django.middleware import RESPONSE_HEAD_BYTES_DEFAULT
+
+        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
+            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
+            "secret_key": "test-key", "capture_response_body": True,
+            "response_head_bytes": "lots",
+        }}):
+            mw = CerberusMiddleware(lambda req: MagicMock(data={}))
+            assert mw.response_head_bytes == RESPONSE_HEAD_BYTES_DEFAULT
+
+    @patch("cerberus_django.middleware.ensure_background_thread")
+    def test_valid_sizing_knobs_are_honored_end_to_end(self, mock_bg, rf):
+        """A configured cap must flow from CERBERUS_CONFIG through __call__ to
+        the extractor — catches a typo'd config key or a dropped call-site
+        argument, which the defaults would otherwise mask."""
+        from django.http import HttpResponse
+
+        big = json.dumps({"content": "x" * 1000})
+        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
+            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
+            "secret_key": "test-key", "capture_response_body": True,
+            "response_head_bytes": 64, "response_tail_bytes": 32,
+        }}):
+            mw = CerberusMiddleware(
+                lambda req: HttpResponse(big, content_type="application/json")
+            )
+            self._drain_queue()
+            mw(rf.get("/test"))
+            event = event_queue.get_nowait()
+            assert event.response_body["body_truncated"] is True
+            assert event.response_body["head"] == big[:64]
+            assert event.response_body["tail"] == big[-32:]
+
+    def test_ws_payload_includes_response_body(self):
+        """The transport payload must carry response_body under that exact key
+        — the middleware-level tests stop at event_queue, one hop before
+        serialization."""
+        import asyncio
+
+        from cerberus_django.middleware import AsyncWebSocketClient
+        from cerberus_django.structs import CoreData
+
+        sent = []
+
+        class FakeWebSocket:
+            async def send(self, data):
+                sent.append(data)
+
+            async def recv(self):
+                return "ack"
+
+        client = AsyncWebSocketClient("wss://b:8765", "key", "cid")
+        client.websocket = FakeWebSocket()
+        event = CoreData(
+            token="tok", source_ip="ip", endpoint="/e", scheme=True,
+            method="GET", timestamp="ts", response_body={"answer": "ok"},
+        )
+        asyncio.run(client.send(event))
+        payload = json.loads(sent[0])
+        assert payload["response_body"] == {"answer": "ok"}
 
 
 class TestSourceIpHandling:

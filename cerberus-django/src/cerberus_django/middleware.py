@@ -37,6 +37,16 @@ DEBUG_ENABLED = os.getenv('CERBERUS_DEBUG', 'false').lower() in ('true', '1', 'y
 # Thread-safe queue for events (bounded to prevent unbounded memory growth)
 event_queue = thread_queue.Queue(maxsize=10_000)
 
+# Response-body capture sizing (head+tail cap): when a sanitized response body
+# exceeds head+tail, ship the first head_bytes plus the last tail_bytes of its
+# serialized form with explicit truncation markers instead of the whole body.
+# Tail is generous relative to head because LLM providers put usage/finish
+# data at the end of responses. Overridable via CERBERUS_CONFIG
+# response_head_bytes / response_tail_bytes; defaults match the caps planned
+# for the flex-gateway policy.
+RESPONSE_HEAD_BYTES_DEFAULT = 24 * 1024
+RESPONSE_TAIL_BYTES_DEFAULT = 16 * 1024
+
 # Background thread management
 _background_thread = None
 _thread_lock = threading.Lock()
@@ -102,6 +112,10 @@ class AsyncWebSocketClient:
                         'headers': event_data.headers,
                         'query_params': event_data.query_params,
                         'body': event_data.body,
+                        # Unknown to older ingest deployments, which pass it
+                        # through verbatim into event_data (the batch/WS
+                        # contract tolerates extra fields)
+                        'response_body': event_data.response_body,
                         'user_agent': event_data.user_agent,
                         'user_id': event_data.user_id,
                     }
@@ -373,6 +387,105 @@ def _extract_body(request):
     return None
 
 
+def _extract_response_body(response, head_bytes=RESPONSE_HEAD_BYTES_DEFAULT,
+                           tail_bytes=RESPONSE_TAIL_BYTES_DEFAULT):
+    """Extract the response body from a Django response, mirroring _extract_body.
+
+    Only non-streaming, identity-encoded, JSON responses are captured. The
+    parsed body is sanitized like the request side. If the sanitized body's
+    serialized form exceeds head_bytes + tail_bytes, it ships as a head+tail
+    slice with explicit truncation markers (body_truncated, body_bytes_total,
+    body_bytes_dropped) so truncation is never silent; bodies that fit ship
+    whole, with no marker. Compressed responses are never sliced (a byte slice
+    of a gzip/br stream is undecodable at any layer) — they ship a
+    body_skipped_encoding marker instead. Note middleware ordering: anything
+    that compresses responses (e.g. GZipMiddleware) must sit ABOVE this
+    middleware in MIDDLEWARE, or captured bodies will all be skipped as
+    compressed.
+
+    Args:
+        response: Django HttpResponse object
+        head_bytes: bytes of the serialized body to keep from the start
+        tail_bytes: bytes of the serialized body to keep from the end
+
+    Returns:
+        Sanitized parsed JSON body as dict/list, a marker dict, or None
+    """
+    # StreamingHttpResponse (and its FileResponse subclass) have no
+    # materialized .content — reading the iterator here would consume the
+    # stream before the client sees it.
+    if getattr(response, 'streaming', False):
+        return None
+
+    if not _matches_json_content_type(response.get('Content-Type') or ''):
+        return None
+
+    encoding = (response.get('Content-Encoding') or '').lower()
+    if encoding and encoding != 'identity':
+        return {'body_skipped_encoding': encoding}
+
+    try:
+        content = response.content
+    except Exception as e:
+        # e.g. ContentNotRenderedError on an unrendered TemplateResponse —
+        # capture must never break the response path
+        logger.debug(f"[Cerberus] Could not read response body: {type(e).__name__}")
+        return None
+
+    if not content:
+        return None
+
+    try:
+        body = json.loads(content.decode('utf-8'))
+        if not isinstance(body, (dict, list)):
+            # Mirror the request side: bare JSON primitives are discarded
+            return None
+        sanitized = sanitize_dict(body)
+        # Head+tail cap. Unlike a streaming gateway (which can only slice raw
+        # wire bytes), the whole body is already in memory here, so sanitize
+        # first and slice the sanitized serialized form — the
+        # sanitize-before-transmit invariant holds even for truncated bodies.
+        # The byte counts refer to that serialized form, which is the text the
+        # backend parser resynchronizes over.
+        serialized = json.dumps(sanitized).encode('utf-8')
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    except Exception as e:
+        # json.loads is recursion-bound: attacker-controllable nesting raises
+        # RecursionError (sanitize_dict depth-caps at 20 rather than raising,
+        # so json.dumps only ever sees capped structures). Mirror
+        # _extract_body's broad guard: capture failures degrade to "no body",
+        # never to a broken response.
+        logger.warning(f"[Cerberus] Unexpected error reading response body: {type(e).__name__}: {e}")
+        return None
+    total = len(serialized)
+    if total <= head_bytes + tail_bytes:
+        return sanitized
+
+    head = serialized[:head_bytes] if head_bytes > 0 else b''
+    tail = serialized[-tail_bytes:] if tail_bytes > 0 else b''
+    return {
+        'body_truncated': True,
+        'body_bytes_total': total,
+        'body_bytes_dropped': total - len(head) - len(tail),
+        # errors='replace' because a byte slice may split a multi-byte
+        # UTF-8 sequence at either cut point
+        'head': head.decode('utf-8', errors='replace'),
+        'tail': tail.decode('utf-8', errors='replace'),
+    }
+
+
+def _config_byte_knob(config, key, default):
+    """Read a non-negative int sizing knob from CERBERUS_CONFIG, falling back
+    to the default on a malformed value (middleware __init__ must never raise
+    at Django startup over a bad tuning knob)."""
+    try:
+        return max(0, int(config.get(key, default)))
+    except (TypeError, ValueError):
+        logger.warning(f"[Cerberus] Invalid {key} in CERBERUS_CONFIG; using default {default}")
+        return default
+
+
 class CerberusMiddleware:
     """Django middleware for capturing and sending HTTP request metrics.
 
@@ -384,12 +497,28 @@ class CerberusMiddleware:
         - ws_url: WebSocket URL for event_ingest backend
         - backend_url: HTTP URL for fetching secret key (optional)
         - secret_key: HMAC key for PII hashing (optional, auto-fetched if backend_url set)
+        - capture_response_body: capture JSON response bodies (optional, default False)
+        - response_head_bytes / response_tail_bytes: head+tail truncation caps
+          for captured response bodies (optional; see _extract_response_body)
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
         self.config = dict(getattr(settings, 'CERBERUS_CONFIG', {}))
         self._warned_no_secret_key = False
+
+        # Response-body capture is OPT-IN.
+        # TODO: from the first deploy with this enabled, customer response
+        # content (e.g. LLM completions) is stored at rest in the backend's
+        # processed_events.event_data, which today has no retention/TTL, no
+        # per-org/per-key capture opt-out, and raw exposure through the
+        # dashboard events API. The retention/opt-out story is a larger
+        # product decision; until it exists this knob stays default-off.
+        self.capture_response_body = bool(self.config.get('capture_response_body', False))
+        self.response_head_bytes = _config_byte_knob(
+            self.config, 'response_head_bytes', RESPONSE_HEAD_BYTES_DEFAULT)
+        self.response_tail_bytes = _config_byte_knob(
+            self.config, 'response_tail_bytes', RESPONSE_TAIL_BYTES_DEFAULT)
 
         if DEBUG_ENABLED:
             logger.info("[Cerberus] Middleware initializing...")
@@ -463,6 +592,18 @@ class CerberusMiddleware:
                 raw_metrics = response.data.pop('_cerberus_metrics')
                 metrics = sanitize_dict(raw_metrics) if isinstance(raw_metrics, dict) else {}
 
+        # Capture the response body (opt-in; see __init__ for the
+        # data-retention caveat)
+        response_body = None
+        if self.capture_response_body:
+            try:
+                response_body = _extract_response_body(
+                    response, self.response_head_bytes, self.response_tail_bytes
+                )
+            except Exception as e:
+                # Backstop: capture must never break the response path
+                logger.warning(f"[Cerberus] Response body capture failed: {type(e).__name__}: {e}")
+
         # Get source IP address, normalize, and hash for PII protection
         source_ip = normalize_ip(request.META.get('REMOTE_ADDR'))
         secret_key = self.config.get('secret_key')
@@ -487,6 +628,7 @@ class CerberusMiddleware:
             headers=headers,
             query_params=query_params,
             body=body,
+            response_body=response_body,
             user_agent=user_agent,
             user_id=user_id,
         )
