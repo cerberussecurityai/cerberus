@@ -20,5 +20,9 @@ class CoreData:
     headers: Optional[Dict] = None
     query_params: Optional[Dict] = None
     body: Optional[Dict] = None
+    # Response body captured by _extract_response_body when
+    # capture_response_body is enabled: a sanitized dict/list, or a
+    # truncation/skip marker dict (head+tail contract — see middleware).
+    response_body: Optional[Dict] = None
     user_agent: Optional[str] = None
     user_id: Optional[str] = None

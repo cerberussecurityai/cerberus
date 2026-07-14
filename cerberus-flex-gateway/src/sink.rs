@@ -62,6 +62,14 @@ pub async fn post_batch(
         .map_err(|err| anyhow!("dispatch_http_call failed: {}", err))?;
 
     let status = response.status_code();
+    // KNOWN ISSUE: a 403 from ingestService may be the backend's edge WAF
+    // (Cloud Armor SQLi/XSS/RCE/LFI signatures, enforced with JSON body
+    // inspection) matching attack-looking strings inside captured event
+    // bodies — request bodies today, response bodies once capture lands —
+    // not an auth failure. Since delivery is at-most-once, the whole batch
+    // is dropped and the events are silently lost. Mitigation (path-scoped
+    // WAF exclusion for /v1/ingest/* or client-side encoding of body fields)
+    // is still to be designed.
     if (200..300).contains(&status) {
         logger::debug!(
             "cerberus-flex-gateway: posted batch of {} events ({})",

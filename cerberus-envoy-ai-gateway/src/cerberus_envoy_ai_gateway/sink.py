@@ -93,6 +93,15 @@ class Sink:
         # Only a 2xx means the batch was ingested. A 3xx (redirect — httpx does
         # not follow by default, and we must not, or POST->GET would corrupt the
         # body) means it was NOT delivered; treat it as a failure, not success.
+        #
+        # KNOWN ISSUE: a 403 here may not be an auth problem — the ingest LB
+        # runs Cloud Armor SQLi/XSS/RCE/LFI signature rules in enforcement
+        # with JSON body inspection, and the LLM prompt/completion content
+        # this bridge ships in event `body` fields can match them. When that
+        # happens the WHOLE batch is dropped below (at-most-once delivery),
+        # silently losing up to batch_size unrelated events. Live today;
+        # mitigation (path-scoped WAF exclusion for /v1/ingest/* or
+        # client-side encoding of body fields) is still to be designed.
         if not (200 <= response.status_code < 300):
             self.post_failures += 1
             logger.warning(
