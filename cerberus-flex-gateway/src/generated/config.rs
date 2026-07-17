@@ -28,6 +28,8 @@ pub struct Config {
     pub log_level: Option<String>,
     #[serde(alias = "queueCapacity")]
     pub queue_capacity: Option<i64>,
+    #[serde(alias = "sampleRate")]
+    pub sample_rate: Option<f64>,
     #[serde(alias = "secretKey")]
     pub secret_key: Option<String>,
     #[serde(alias = "token")]

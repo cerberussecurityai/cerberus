@@ -66,6 +66,16 @@ spec:
       description: "Optional glob patterns. Matching paths are skipped. Applied AFTER capturePaths — useful for exempting noisy subroutes within an otherwise-captured prefix. Glob syntax is the `globset` crate's: `*` matches one path segment, `**` matches any number of segments."
 
     # ---------------------------------------------------------------------
+    # Sampling
+    # ---------------------------------------------------------------------
+    sampleRate:
+      type: number
+      default: 1
+      minimum: 0
+      maximum: 1
+      description: "Fraction of capturable traffic to sample, 0 to 1. 1 = capture every request (default); 0.25 = ~25% of requests; 0 = capture nothing. Requests that are not sampled do no capture work at all (no header/body extraction, no sanitization, no event) and pass through untouched. Applied after capturePaths/excludePaths and the health-endpoint filter, so it reads as 'fraction of otherwise-captured traffic'. Per-request and memoryless (no per-client or per-trace stickiness); uses a non-cryptographic per-worker PRNG. Out-of-range values are clamped with a startup warning."
+
+    # ---------------------------------------------------------------------
     # Body capture
     # ---------------------------------------------------------------------
     captureRequestBody:

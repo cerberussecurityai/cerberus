@@ -44,11 +44,17 @@ fn config() -> String {
 // upstream, where the TraceBackend captures it. Returns the parsed
 // `{"events":[...]}` array, or None if no batch was sent.
 fn capture_events(req: UnitHttpRequest) -> Option<Vec<Value>> {
+    capture_events_with_config(req, config())
+}
+
+// Same as `capture_events` but with an explicit policy config, for tests that
+// exercise config-gated behavior.
+fn capture_events_with_config(req: UnitHttpRequest, config: String) -> Option<Vec<Value>> {
     let _guard = HARNESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let trace = Rc::new(TraceBackend::new(UnitHttpResponse::new(200)));
     let mut tester = UnitTestBuilder::default()
-        .with_config(config())
+        .with_config(config)
         .with_http_upstream_from_authority(INGEST_AUTHORITY, Rc::clone(&trace))
         .with_entrypoint(crate::configure);
 
@@ -135,5 +141,53 @@ fn health_endpoint_is_skipped() {
     assert!(
         capture_events(req).is_none(),
         "health-check requests must not generate events"
+    );
+}
+
+// Minimal capturable request for the sampling tests — a POST to a
+// non-health path that survives the default (empty) path filters.
+fn minimal_post() -> UnitHttpRequest {
+    UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/api/orders")
+}
+
+// Baseline config plus a raw sampleRate JSON value (number, out-of-range,
+// etc. — passed through verbatim so tests can exercise the clamp).
+fn config_with_sample_rate(rate: &str) -> String {
+    format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":{rate}}}"#
+    )
+}
+
+#[test]
+fn sample_rate_zero_suppresses_all_events() {
+    assert!(
+        capture_events_with_config(minimal_post(), config_with_sample_rate("0")).is_none(),
+        "sampleRate 0 must capture nothing"
+    );
+}
+
+#[test]
+fn sample_rate_one_captures() {
+    let events = capture_events_with_config(minimal_post(), config_with_sample_rate("1"))
+        .expect("sampleRate 1 must capture every request");
+    assert_eq!(events.len(), 1, "one request → one event");
+    let e = &events[0];
+    assert_eq!(e["method"], "POST");
+    assert_eq!(e["endpoint"], "/api/orders");
+}
+
+#[test]
+fn sample_rate_out_of_range_clamps() {
+    // Above range clamps to 1 → still captures.
+    let events = capture_events_with_config(minimal_post(), config_with_sample_rate("7.5"))
+        .expect("sampleRate 7.5 clamps to 1 and captures");
+    assert_eq!(events.len(), 1);
+
+    // Below range clamps to 0 → captures nothing.
+    assert!(
+        capture_events_with_config(minimal_post(), config_with_sample_rate("-3")).is_none(),
+        "sampleRate -3 clamps to 0 and captures nothing"
     );
 }

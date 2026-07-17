@@ -4,6 +4,8 @@
 //
 //   Request → request_filter:
 //     - early-exit on health endpoints and capturePaths/excludePaths misses
+//     - early-exit on the sampleRate coin flip (unsampled requests do
+//       no capture work at all)
 //     - extract method, scheme, endpoint, query params (sanitized)
 //     - extract headers (sanitized; Authorization HMAC'd if secret available)
 //     - resolve source IP from clientIpHeader (XFF first hop) or stream
@@ -35,6 +37,7 @@ mod event;
 mod hash;
 mod path_filter;
 mod queue;
+mod sampler;
 mod sanitize;
 mod secret;
 mod sink;
@@ -77,33 +80,63 @@ use crate::config::Config;
 use crate::event::CerberusEvent;
 use crate::path_filter::PathFilter;
 use crate::queue::EventQueue;
+use crate::sampler::Sampler;
 use crate::sanitize::{is_sensitive_header_lower, sanitize_value, REDACTED};
 
 const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
 
 /// Per-policy state shared across request, response, and flush handlers.
-/// All members are immutable except the queue (interior mutability via
-/// RefCell, safe because proxy-wasm workers are single-threaded — no
-/// task can hold a mutable borrow across an await point).
+/// All members are immutable except the queue and the sampler's PRNG
+/// state (interior mutability via RefCell, safe because proxy-wasm
+/// workers are single-threaded — no task can hold a mutable borrow
+/// across an await point).
 struct PolicyContext {
     config: Config,
     secret_key: Option<String>,
     path_filter: PathFilter,
     queue: EventQueue,
+    sampler: Sampler,
 }
 
 impl PolicyContext {
-    fn new(config: Config, secret_key: Option<String>) -> Result<Self> {
+    fn new(config: Config, secret_key: Option<String>, sampler_seed: u64) -> Result<Self> {
+        // Clamp out-of-range / non-finite sampleRate instead of failing
+        // policy load — a bad numeric knob must not take capture down
+        // entirely. NaN → 1.0 (capture all). (Type-level mistakes, e.g.
+        // a quoted "0.5" in Local-mode YAML, still fail config
+        // deserialization upstream like any other numeric field.)
+        // gcl.yaml declares minimum/maximum so API Manager validates the
+        // form input; the clamp is defense for Local-mode YAML.
+        let configured_rate = config.sample_rate;
+        let clamped_rate = if configured_rate.is_nan() {
+            1.0
+        } else {
+            configured_rate.clamp(0.0, 1.0)
+        };
+        if clamped_rate != configured_rate {
+            logger::warn!(
+                "cerberus-flex-gateway: sampleRate {} out of range; clamped to {}",
+                configured_rate,
+                clamped_rate
+            );
+        }
+        // Store the effective value back so anything reading config
+        // sees what the sampler actually uses.
+        let mut config = config;
+        config.sample_rate = clamped_rate;
+
         let path_filter = PathFilter::compile(
             config.capture_paths.as_deref().unwrap_or(&[]),
             config.exclude_paths.as_deref().unwrap_or(&[]),
         )?;
         let queue = EventQueue::new(config.queue_capacity as usize);
+        let sampler = Sampler::new(clamped_rate, sampler_seed);
         Ok(Self {
             config,
             secret_key,
             path_filter,
             queue,
+            sampler,
         })
     }
 
@@ -150,7 +183,9 @@ fn pseudonymize_or_redact(secret_key: Option<&str>, value: &str) -> String {
 #[derive(Debug)]
 enum RequestSlot {
     /// Event was suppressed early (health endpoint / path filter miss /
-    /// non-matching content-type). Response filter is a no-op.
+    /// sampling miss). Response filter is a no-op. Note: a non-matching
+    /// content-type does NOT suppress the event — it only skips body
+    /// capture; the bodyless event still ships.
     Skip,
     /// Event is partially built; response filter will push it onto the queue.
     Capture(CerberusEvent),
@@ -175,6 +210,13 @@ async fn request_filter(
     }
 
     if !ctx.path_filter.should_capture(&endpoint) {
+        return Flow::Continue(RequestSlot::Skip);
+    }
+
+    // Sampling comes after the (cheaper) health/path checks and before
+    // any extraction work, so sampleRate reads as "fraction of
+    // otherwise-captured traffic" and unsampled requests cost nothing.
+    if !ctx.sampler.should_sample() {
         return Flow::Continue(RequestSlot::Skip);
     }
 
@@ -435,6 +477,21 @@ fn current_timestamp_iso8601() -> String {
     format_epoch(dur.as_secs() as i64, dur.subsec_micros())
 }
 
+/// Seed for the per-worker sampling PRNG: microseconds since UNIX_EPOCH
+/// from the host clock (same `get_current_time` hostcall pattern as
+/// `current_timestamp_iso8601`), XOR'd with the SplitMix64 gamma so a
+/// degenerate zero clock still yields a non-trivial seed. Workers
+/// configure at slightly different instants, so they walk different
+/// decision sequences.
+fn sampler_seed_from_clock() -> u64 {
+    use pdk::classy::proxy_wasm::hostcalls;
+    use std::time::UNIX_EPOCH;
+
+    let t = hostcalls::get_current_time().unwrap_or(UNIX_EPOCH);
+    let micros = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64;
+    micros ^ 0x9E37_79B9_7F4A_7C15
+}
+
 /// Format `(seconds-since-epoch, microseconds)` as ISO 8601 UTC with a
 /// literal `+00:00` suffix.
 fn format_epoch(secs: i64, micros: u32) -> String {
@@ -489,7 +546,15 @@ async fn configure(
         );
     }
 
-    let ctx = PolicyContext::new(config, secret_key)?;
+    let ctx = PolicyContext::new(config, secret_key, sampler_seed_from_clock())?;
+    if ctx.config.sample_rate < 1.0 {
+        // Confirmable from pod logs — sampling silently suppressing
+        // events is otherwise indistinguishable from a broken pipeline.
+        logger::info!(
+            "cerberus-flex-gateway: sampling active; effective sampleRate={}",
+            ctx.config.sample_rate
+        );
+    }
 
     // Periodic flush.
     let timer = clock.period(Duration::from_millis(ctx.config.flush_interval_ms as u64));
