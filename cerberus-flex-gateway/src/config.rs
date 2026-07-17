@@ -51,6 +51,10 @@ pub struct Config {
     /// Optional. Header to read end-user identity from.
     pub user_id_header: Option<String>,
 
+    /// Optional. Allowlist of request header names to capture
+    /// (case-insensitive). Empty/unset = capture all headers.
+    pub capture_headers: Option<Vec<String>>,
+
     /// Optional glob allowlist.
     pub capture_paths: Option<Vec<String>>,
 

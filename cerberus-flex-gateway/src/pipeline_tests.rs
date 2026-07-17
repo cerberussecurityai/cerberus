@@ -132,6 +132,118 @@ fn post_request_produces_sanitized_event() {
     assert!(ts.ends_with("+00:00"), "expected UTC offset suffix: {ts}");
 }
 
+// Mixed-case allowlist entries prove matching is case-insensitive
+// (Envoy presents header names lowercased).
+fn allowlist_config() -> String {
+    format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":["content-type","X-CUSTOM","Authorization","cookie"]}}"#
+    )
+}
+
+#[test]
+fn header_allowlist_filters_headers_map() {
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/api/orders")
+        .with_header("authorization", "Bearer abc")
+        .with_header("cookie", "sid=1")
+        // Sensitive AND non-allowlisted: must be absent entirely, not
+        // redacted-but-present (the allowlist gate runs before the
+        // sensitivity branch). Covered by the exact-key-set assert below.
+        .with_header("proxy-authorization", "Basic xyz")
+        .with_header("user-agent", "testagent")
+        .with_header("x-custom", "keep")
+        .with_header("x-other", "drop")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"name":"alice"}"#);
+
+    let events = capture_events_with_config(req, allowlist_config())
+        .expect("expected a flushed batch");
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+
+    // Exactly the allowlisted headers survive — nothing else.
+    let headers = e["headers"].as_object().expect("headers object");
+    let mut keys: Vec<&str> = headers.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["Authorization", "Content-Type", "Cookie", "X-Custom"],
+        "headers map must contain exactly the allowlisted headers"
+    );
+
+    // Allowlisting controls presence; sanitization still controls value.
+    assert_eq!(e["headers"]["Authorization"], "[REDACTED]", "no secret → redact");
+    assert_eq!(e["headers"]["Cookie"], "[REDACTED]", "allowlisted-but-sensitive stays redacted");
+    assert_eq!(e["headers"]["X-Custom"], "keep");
+    assert_eq!(e["headers"]["Content-Type"], "application/json");
+
+    // The dedicated user_agent field is unaffected by the allowlist even
+    // though User-Agent is filtered out of the headers map.
+    assert_eq!(e["user_agent"], "testagent");
+}
+
+#[test]
+fn header_allowlist_empty_array_captures_all() {
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":[]}}"#
+    );
+    let req = UnitHttpRequest::get()
+        .with_header(":scheme", "https")
+        .with_path("/api/orders")
+        .with_header("user-agent", "testagent")
+        .with_header("x-custom", "keep")
+        .with_header("x-other", "also-kept");
+
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+    let headers = events[0]["headers"].as_object().expect("headers object");
+    // Empty allowlist = unset = capture everything.
+    assert_eq!(headers["X-Custom"], "keep");
+    assert_eq!(headers["X-Other"], "also-kept");
+    assert_eq!(headers["User-Agent"], "testagent");
+}
+
+#[test]
+fn header_allowlist_blank_entries_capture_all() {
+    // Non-empty array whose entries are all blank (e.g. a config-templating
+    // bug or an empty row in the Anypoint UI array editor) collapses to
+    // capture-all — the documented fail-open, surfaced by a startup warning.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":["  ", ""]}}"#
+    );
+    let req = UnitHttpRequest::get()
+        .with_header(":scheme", "https")
+        .with_path("/api/orders")
+        .with_header("x-custom", "keep")
+        .with_header("x-other", "also-kept");
+
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+    let headers = events[0]["headers"].as_object().expect("headers object");
+    assert_eq!(headers["X-Custom"], "keep");
+    assert_eq!(headers["X-Other"], "also-kept");
+}
+
+#[test]
+fn header_allowlist_no_survivors_omits_headers_field() {
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":["x-never-sent"]}}"#
+    );
+    let req = UnitHttpRequest::get()
+        .with_header(":scheme", "https")
+        .with_path("/api/orders")
+        .with_header("user-agent", "testagent")
+        .with_header("x-custom", "drop");
+
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+    let e = &events[0];
+    // Every header was filtered out → the headers field is absent
+    // (None serializes as omitted), not an empty object.
+    assert!(
+        e.get("headers").is_none(),
+        "headers field should be absent when the allowlist admits nothing: {e}"
+    );
+}
+
 #[test]
 fn health_endpoint_is_skipped() {
     let req = UnitHttpRequest::get()
