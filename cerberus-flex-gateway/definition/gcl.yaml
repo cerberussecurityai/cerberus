@@ -87,12 +87,18 @@ spec:
       type: boolean
       default: true
       description: "Buffer + sanitize JSON request bodies (POST/PUT/PATCH, application/json content-type, 1MB cap). Disable globally to skip the buffering cost; for per-route scoping use capturePaths / excludePaths."
+    captureAiContent:
+      type: boolean
+      default: true
+      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and SENSITIVE_KEYS-sanitized like any other JSON body. Sanitization is key-matching only, so free-form prompt text itself leaves the gateway raw — it cannot be reliably scrubbed today. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
 
     # NOTE: captureResponseBody is intentionally absent in v1.
     # Response-body mutation interacts badly with Content-Length /
     # Content-Encoding / streaming bodies / signed responses.
     # See README "Known gaps in v1".
     # If we add it later: bump endpoint version to /v2/ingest/batch.
+    # When response capture is added, response bodies must respect
+    # captureAiContent — model output carries the same PII risk as prompts.
 
     # ---------------------------------------------------------------------
     # Buffering / batching

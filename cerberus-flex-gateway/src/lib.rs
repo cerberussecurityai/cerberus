@@ -11,7 +11,10 @@
 //       sanitized; Authorization HMAC'd if secret available)
 //     - resolve source IP from clientIpHeader (XFF first hop) or stream
 //     - if captureRequestBody && content-type matches application/json:
-//       buffer body, parse, recursively sanitize
+//       buffer body, parse, recursively sanitize; bodies detected as
+//       LLM/AI prompt content are withheld unless captureAiContent is
+//       set (MCP/JSON-RPC bodies are never treated as AI content —
+//       see ai_content.rs)
 //     - stash partial Event in RequestData; pass through
 //
 //   Response → response_filter:
@@ -33,6 +36,7 @@
 // See README.md for the operator-facing config and deployment guide.
 // Search for "TODO(v1.1)" in the source for scoped-out-of-v1 items.
 
+mod ai_content;
 mod config;
 mod event;
 mod hash;
@@ -286,10 +290,18 @@ async fn request_filter(
         .and_then(|h| headers_state.handler().header(h));
 
     // Body — only buffer for write-mutating methods + JSON content-type.
+    // With captureAiContent off, a well-known LLM API path skips body
+    // buffering entirely: prompts are the largest bodies the gateway sees,
+    // and the body would be withheld anyway. Tradeoff: an MCP server
+    // mounted on an LLM-looking path would lose body capture — acceptable,
+    // since real MCP mounts don't collide with provider API path shapes,
+    // and the body-shape carve-out below still protects every normal MCP
+    // mount.
     let mut body_value: Option<Value> = None;
     let should_capture_body = ctx.config.capture_request_body
         && matches!(method.as_str(), "POST" | "PUT" | "PATCH")
-        && content_type_is_json(headers_state.handler().header("content-type").as_deref());
+        && content_type_is_json(headers_state.handler().header("content-type").as_deref())
+        && (ctx.config.capture_ai_content || !ai_content::is_llm_path(&endpoint));
 
     let timestamp = current_timestamp_iso8601();
     let endpoint_for_event = endpoint.clone();
@@ -302,7 +314,17 @@ async fn request_filter(
             // null) → None — only objects and arrays are captured.
             if let Ok(parsed) = serde_json::from_slice::<Value>(&body_bytes) {
                 body_value = match parsed {
-                    Value::Object(_) | Value::Array(_) => Some(sanitize_value(parsed)),
+                    Value::Object(_) | Value::Array(_) => {
+                        if !ctx.config.capture_ai_content
+                            && ai_content::should_suppress_body(&endpoint, &parsed)
+                        {
+                            // AI prompt content — withheld from the event (the event
+                            // itself still ships for endpoint discovery).
+                            None
+                        } else {
+                            Some(sanitize_value(parsed))
+                        }
+                    }
                     _ => None,
                 };
             }
@@ -331,6 +353,10 @@ async fn response_filter(_state: ResponseState, data: RequestData<RequestSlot>, 
         _ => return,
     };
     // TODO(v1.1): capture status_code and latency_ms here.
+    // TODO(ai-content): when response-body capture lands, LLM/AI response
+    // bodies must be gated behind captureAiContent exactly like request
+    // prompts — generated responses carry the same PII risk and there is
+    // no scrubbing mechanism for free-form model output yet.
     if let Err(()) = ctx.queue.push(event) {
         // Queue full — already counted by EventQueue::push.
         // TODO(v1.1): emit a Prometheus / Envoy stat here.
@@ -577,6 +603,17 @@ async fn configure(
     if config.user_id_header.is_none() {
         logger::warn!(
             "cerberus-flex-gateway: userIdHeader unset; events will not carry end-user identity"
+        );
+    }
+
+    // Capturing AI/LLM prompt bodies is the default (sanitized, but
+    // free-form text is not scrubbable by key-matching). Surface the
+    // opt-out in pod logs instead: an operator who sets
+    // captureAiContent: false has chosen to withhold detected LLM/AI
+    // request bodies (endpoint/method and sanitized metadata still ship).
+    if !config.capture_ai_content {
+        logger::info!(
+            "cerberus-flex-gateway: captureAiContent disabled; LLM/AI request bodies will be withheld from events"
         );
     }
 
