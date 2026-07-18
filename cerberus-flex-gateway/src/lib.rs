@@ -7,7 +7,8 @@
 //     - early-exit on the sampleRate coin flip (unsampled requests do
 //       no capture work at all)
 //     - extract method, scheme, endpoint, query params (sanitized)
-//     - extract headers (sanitized; Authorization HMAC'd if secret available)
+//     - extract headers (captureHeaders allowlist if configured, then
+//       sanitized; Authorization HMAC'd if secret available)
 //     - resolve source IP from clientIpHeader (XFF first hop) or stream
 //     - if captureRequestBody && content-type matches application/json:
 //       buffer body, parse, recursively sanitize
@@ -94,6 +95,8 @@ struct PolicyContext {
     config: Config,
     secret_key: Option<String>,
     path_filter: PathFilter,
+    /// Lowercased captureHeaders allowlist. None = capture all headers.
+    header_allowlist: Option<std::collections::HashSet<String>>,
     queue: EventQueue,
     sampler: Sampler,
 }
@@ -129,12 +132,41 @@ impl PolicyContext {
             config.capture_paths.as_deref().unwrap_or(&[]),
             config.exclude_paths.as_deref().unwrap_or(&[]),
         )?;
+        // Trim + lowercase entries defensively (header matching is
+        // case-insensitive); blank entries are dropped. If nothing
+        // survives (unset, `[]`, or all-blank) the allowlist is None —
+        // capture all headers, mirroring capturePaths' empty semantics.
+        let header_allowlist = config
+            .capture_headers
+            .as_deref()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|n| n.trim().to_lowercase())
+                    .filter(|n| !n.is_empty())
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .filter(|set| !set.is_empty());
+        // A configured-but-all-blank allowlist fails open to capture-all
+        // (more data leaves the gateway than the operator intended) —
+        // surface that in policy logs rather than collapsing silently.
+        if header_allowlist.is_none()
+            && config
+                .capture_headers
+                .as_deref()
+                .is_some_and(|names| !names.is_empty())
+        {
+            logger::warn!(
+                "cerberus-flex-gateway: captureHeaders entries are all blank; capturing ALL headers"
+            );
+        }
         let queue = EventQueue::new(config.queue_capacity as usize);
         let sampler = Sampler::new(clamped_rate, sampler_seed);
         Ok(Self {
             config,
             secret_key,
             path_filter,
+            header_allowlist,
             queue,
             sampler,
         })
@@ -343,8 +375,12 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
 /// Extract and sanitize request headers.
 ///
 /// Rules:
+///   * captureHeaders allowlist (if configured): non-listed headers are
+///     omitted entirely — absent, not redacted. Matched on the
+///     lowercased name. The gate runs before sensitivity handling, so
+///     the allowlist controls presence and sanitization controls value.
 ///   * Iterate (name, value) pairs as Envoy presents them.
-///   * Lowercase the name once for sensitivity matching.
+///   * Lowercase the name once for allowlist + sensitivity matching.
 ///   * Authorization → HMAC-SHA256(secret, value) if secret is configured;
 ///     else REDACTED.
 ///   * Other SENSITIVE_HEADERS → REDACTED.
@@ -374,6 +410,15 @@ fn extract_headers(
         }
 
         let name_lower = name.to_lowercase();
+
+        // Allowlist gate — before the sensitivity branch, so non-listed
+        // sensitive headers are absent rather than redacted-but-present.
+        if let Some(allow) = &ctx.header_allowlist {
+            if !allow.contains(&name_lower) {
+                continue;
+            }
+        }
+
         let entry_value: String = if name_lower == "authorization" {
             ctx.hash_or_redact(&value)
         } else if is_sensitive_header_lower(&name_lower) {

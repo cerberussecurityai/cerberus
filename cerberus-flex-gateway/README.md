@@ -11,6 +11,7 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 
 - Request metadata capture (header / query / body sanitization, IP
   normalization + HMAC, source IP resolution, health-endpoint filter).
+- Header allowlisting via `captureHeaders` (only ship the headers you name).
 - Path scoping via `capturePaths` / `excludePaths` globs.
 - Probabilistic request sampling via `sampleRate` (load-shedding for
   high-RPS deployments).
@@ -40,6 +41,7 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 | `backendUrl` | | — | Base URL to fetch HMAC key from at startup. 5-second timeout; failure logs and falls back to raw PII. Use `https://` in production. |
 | `clientIpHeader` | | `X-Forwarded-For` | Header to read the client IP from (first hop). Falls back to Envoy connection source if absent. |
 | `userIdHeader` | | unset | Header to read end-user identity from (e.g. `X-User-Id`). Required for per-end-user analytics; intentionally not defaulted so each deployment picks its own header. |
+| `captureHeaders` | | `[]` (all headers) | Allowlist of header names (case-insensitive). Non-empty = only these headers ship in the event's headers map; sanitization still applies to them. Empty = all headers. Dedicated fields (`user_agent`, `clientIpHeader`, `userIdHeader`) unaffected. |
 | `capturePaths` | | `[]` | Glob allowlist. Empty = capture everything. Primary lever for high-RPS scoping. |
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
 | `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Non-crypto per-worker PRNG; out-of-range clamps with a warning. |
@@ -56,9 +58,24 @@ HTTP/2 conventions, and multi-valued headers (e.g. `Set-Cookie`,
 comma-folded `X-Forwarded-For`) appear as multiple entries with the
 same name. The policy:
 
-1. Title-cases header names (`x-api-key` → `X-Api-Key`).
-2. Collapses multi-valued headers with `, ` separator before storing
+1. Skips Envoy pseudo-headers (`:method`, `:path`, `:scheme`, ...) —
+   their metadata is captured in dedicated event fields.
+2. Applies the `captureHeaders` allowlist (if configured): headers not
+   on the list are omitted from the event entirely.
+3. Applies sensitivity handling: `Authorization` is HMAC'd (secret
+   configured) or `[REDACTED]` (no secret); other `SENSITIVE_HEADERS`
+   are `[REDACTED]`.
+4. Title-cases header names (`x-api-key` → `X-Api-Key`).
+5. Collapses multi-valued headers with `, ` separator before storing
    in the event payload.
+
+The allowlist controls which headers are *present*; sanitization
+controls their *values* — listing `Authorization` or `Cookie` in
+`captureHeaders` does not bypass redaction. The dedicated `user_agent`
+event field is populated regardless of the allowlist. Allowlist
+entries are trimmed and blank entries ignored; a list containing only
+blank entries counts as empty, so all headers are captured and the
+policy logs a startup warning.
 
 ### Path scoping
 

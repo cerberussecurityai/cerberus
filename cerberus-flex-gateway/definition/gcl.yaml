@@ -50,6 +50,11 @@ spec:
     userIdHeader:
       type: string
       description: "Optional. Request header to read end-user identity from (e.g. X-User-Id, X-End-User). The customer's upstream auth/JWT policy must populate the header pre-Cerberus. Required for per-end-user anomaly detection. Left intentionally configurable rather than defaulted so each deployment can pick its own header name."
+    captureHeaders:
+      type: array
+      items:
+        type: string
+      description: "Optional allowlist of request header names to capture, matched case-insensitively (e.g. Content-Type, User-Agent, X-Request-Id). If non-empty, ONLY these headers are included in the event's headers map; all others are omitted entirely. Empty/unset = capture all headers. Entries are trimmed of surrounding whitespace and blank entries are ignored; a list containing only blank entries counts as empty, so ALL headers are captured and the policy logs a startup warning. Sanitization still applies to allowlisted headers — Authorization is HMAC'd or redacted and other sensitive headers are redacted even when listed. Governs only the headers map: the dedicated user_agent field and the clientIpHeader / userIdHeader lookups are configured separately and unaffected."
 
     # ---------------------------------------------------------------------
     # Path scoping (the primary lever for high-RPS deployments)
