@@ -57,6 +57,10 @@ pub struct Config {
     /// Optional glob denylist.
     pub exclude_paths: Option<Vec<String>>,
 
+    /// Fraction of capturable traffic to sample. Default: 1.0 (all).
+    #[serde(default = "default_sample_rate")]
+    pub sample_rate: f64,
+
     /// Buffer + sanitize JSON request bodies. Default: true.
     #[serde(default = "default_capture_request_body")]
     pub capture_request_body: bool,
@@ -85,6 +89,9 @@ pub struct Config {
 
 fn default_client_ip_header() -> String {
     "X-Forwarded-For".to_string()
+}
+fn default_sample_rate() -> f64 {
+    1.0
 }
 fn default_capture_request_body() -> bool {
     true

@@ -130,7 +130,7 @@ cd cerberus-flex-gateway
 
 make sync-fixtures    # one-time: symlink ../parity-fixtures into tests/fixtures
 make build            # compile to wasm32-wasip1 + emit GCL artifacts
-make test             # 28 unit tests + 6 parity tests
+make test             # cargo test (parity + unit)
 make run              # docker compose up — blocks the terminal
 ```
 

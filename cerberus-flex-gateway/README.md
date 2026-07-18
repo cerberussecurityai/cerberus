@@ -12,6 +12,8 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 - Request metadata capture (header / query / body sanitization, IP
   normalization + HMAC, source IP resolution, health-endpoint filter).
 - Path scoping via `capturePaths` / `excludePaths` globs.
+- Probabilistic request sampling via `sampleRate` (load-shedding for
+  high-RPS deployments).
 - Per-worker bounded queue with drop-on-full counter.
 - Batched outbound POST to the Cerberus backend every `flushIntervalMs`.
 - Init-time HMAC secret fetch with 5-second timeout.
@@ -40,6 +42,7 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 | `userIdHeader` | | unset | Header to read end-user identity from (e.g. `X-User-Id`). Required for per-end-user analytics; intentionally not defaulted so each deployment picks its own header. |
 | `capturePaths` | | `[]` | Glob allowlist. Empty = capture everything. Primary lever for high-RPS scoping. |
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
+| `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Non-crypto per-worker PRNG; out-of-range clamps with a warning. |
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
 | `flushIntervalMs` | | `2000` | Flush cadence. Min 100ms (prevents tight-loop misconfig). |
@@ -78,6 +81,23 @@ excludePaths:
 
 Health endpoints (`/health`, `/health_check`, `/ready`) are always
 skipped regardless of filter config.
+
+### Sampling
+
+`sampleRate` (0–1, default `1.0`) sheds capture *volume*: each request
+gets a uniform per-request coin flip, and requests that lose it do no
+capture work at all — no header/body extraction, no sanitization, no
+event — and pass through untouched. It sits last in the decision order
+(health-endpoint filter → `capturePaths` / `excludePaths` → sampling),
+so it reads as "fraction of otherwise-captured traffic".
+
+Use `capturePaths` / `excludePaths` to scope *which* routes are
+captured, and `sampleRate` to shed volume uniformly across whatever
+remains. The sampled subset is unbiased, but event counts become
+estimates — multiply observed counts by `1/sampleRate`. Sampling is
+per-request and memoryless: there is no per-client or per-session
+stickiness, so a given caller's requests land in the sample
+independently.
 
 ## Setup
 
@@ -239,6 +259,7 @@ cerberus-flex-gateway/
 │   ├── source_ip.rs          # XFF first-hop / stream fallback
 │   ├── secret.rs             # init-time secret fetch
 │   ├── path_filter.rs        # capturePaths / excludePaths globs
+│   ├── sampler.rs            # sampleRate coin flip (SplitMix64)
 │   ├── queue.rs              # bounded RefCell<VecDeque>
 │   └── sink.rs               # POST /v1/ingest/batch
 └── tests/
