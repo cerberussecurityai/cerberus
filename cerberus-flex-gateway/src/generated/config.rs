@@ -9,6 +9,8 @@ pub struct Config {
     pub backend_url: Option<pdk::hl::Service>,
     #[serde(alias = "batchSize")]
     pub batch_size: Option<i64>,
+    #[serde(alias = "captureAiContent")]
+    pub capture_ai_content: Option<bool>,
     #[serde(alias = "captureHeaders")]
     pub capture_headers: Option<Vec<String>>,
     #[serde(alias = "capturePaths")]

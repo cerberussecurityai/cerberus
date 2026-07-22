@@ -303,3 +303,107 @@ fn sample_rate_out_of_range_clamps() {
         "sampleRate -3 clamps to 0 and captures nothing"
     );
 }
+
+#[test]
+fn ai_prompt_body_captured_by_default() {
+    // captureAiContent defaults to true — a well-known LLM path buffers
+    // and captures the body, SENSITIVE_KEYS-sanitized like any JSON body.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/v1/chat/completions")
+        .with_header("user-agent", "openai-python")
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"model":"gpt-4o","api_key":"sk-123","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+
+    let events = capture_events(req).expect("expected a flushed batch");
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+
+    assert_eq!(e["endpoint"], "/v1/chat/completions");
+    assert_eq!(e["method"], "POST");
+    let headers = e["headers"].as_object().expect("headers object");
+    assert_eq!(headers["User-Agent"], "openai-python");
+    // Body captured by default; key-matching sanitization still runs, so
+    // the free-form prompt content ships while sensitive keys redact.
+    assert_eq!(e["body"]["model"], "gpt-4o");
+    assert_eq!(e["body"]["messages"][0]["content"], "hi");
+    assert_eq!(e["body"]["api_key"], "[REDACTED]");
+}
+
+#[test]
+fn ai_prompt_body_withheld_when_disabled() {
+    // captureAiContent: false → the well-known LLM path short-circuits
+    // body buffering and the event ships without a body.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/v1/chat/completions")
+        .with_header("user-agent", "openai-python")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureAiContent":false}}"#
+    );
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+
+    // Everything except the body still ships — AI endpoint discovery
+    // and traffic analytics keep working.
+    assert_eq!(e["endpoint"], "/v1/chat/completions");
+    assert_eq!(e["method"], "POST");
+    let headers = e["headers"].as_object().expect("headers object");
+    assert_eq!(headers["User-Agent"], "openai-python");
+    assert!(
+        e.get("body").is_none(),
+        "AI prompt body must be withheld when captureAiContent is disabled: {e}"
+    );
+}
+
+#[test]
+fn ai_prompt_shaped_body_on_custom_path_withheld_when_disabled() {
+    // captureAiContent: false, non-LLM path → the body is buffered, so the
+    // post-parse body-shape heuristic must still withhold it.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/ai/ask")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureAiContent":false}}"#
+    );
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+
+    assert_eq!(e["endpoint"], "/internal/ai/ask");
+    assert!(
+        e.get("body").is_none(),
+        "prompt-shaped body must be withheld even off well-known LLM paths: {e}"
+    );
+}
+
+#[test]
+fn mcp_jsonrpc_body_still_captured() {
+    // MCP carve-out: JSON-RPC bodies always ship (discovery depends on
+    // the arguments), with standard sanitization applied.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/mcp")
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"x","api_key":"sk-123"}}}"#,
+        );
+
+    let events = capture_events(req).expect("expected a flushed batch");
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+
+    assert_eq!(e["body"]["jsonrpc"], "2.0");
+    assert_eq!(e["body"]["method"], "tools/call");
+    assert_eq!(e["body"]["params"]["arguments"]["query"], "x");
+    assert_eq!(e["body"]["params"]["arguments"]["api_key"], "[REDACTED]");
+}

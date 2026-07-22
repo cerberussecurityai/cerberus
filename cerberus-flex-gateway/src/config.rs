@@ -69,6 +69,15 @@ pub struct Config {
     #[serde(default = "default_capture_request_body")]
     pub capture_request_body: bool,
 
+    /// Capture request bodies detected as LLM/AI prompt content.
+    /// Default: true — AI/LLM request bodies are captured and sanitized
+    /// like any other JSON body. Set to false to withhold prompt content
+    /// (detected LLM/AI traffic then ships its event without the body)
+    /// until content-aware scrubbing exists. MCP (JSON-RPC) bodies are
+    /// never treated as AI content.
+    #[serde(default = "default_capture_ai_content")]
+    pub capture_ai_content: bool,
+
     /// Max events per outbound batch. Default: 50.
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
@@ -98,6 +107,9 @@ fn default_sample_rate() -> f64 {
     1.0
 }
 fn default_capture_request_body() -> bool {
+    true
+}
+fn default_capture_ai_content() -> bool {
     true
 }
 fn default_batch_size() -> u32 {

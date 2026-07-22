@@ -12,6 +12,10 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 - Request metadata capture (header / query / body sanitization, IP
   normalization + HMAC, source IP resolution, health-endpoint filter).
 - Header allowlisting via `captureHeaders` (only ship the headers you name).
+- LLM/AI prompt-body capture toggle (`captureAiContent`) — AI request
+  bodies are captured and sanitized by default; set it to `false` to
+  withhold prompt content until content-aware scrubbing exists. MCP
+  traffic is unaffected.
 - Path scoping via `capturePaths` / `excludePaths` globs.
 - Probabilistic request sampling via `sampleRate` (load-shedding for
   high-RPS deployments).
@@ -29,6 +33,7 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 | Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. |
 | `status_code` / `latency_ms` capture | Trivially addable in `response_filter`. |
 | Streaming-body capture for >1MB JSON payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large payloads. |
+| Content-aware scrubbing for AI prompts/responses | Free-form model I/O can't be sanitized by key-matching. Until it exists, set `captureAiContent: false` to withhold AI request bodies entirely (they are captured by default). |
 | Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
 
 ## Configuration (`gcl.yaml`)
@@ -46,6 +51,7 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
 | `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Non-crypto per-worker PRNG; out-of-range clamps with a warning. |
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
+| `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts). On by default: detected AI traffic ships the body, SENSITIVE_KEYS-sanitized (free-form prompt text still ships raw). Set to `false` to withhold prompt content — detected AI traffic then ships events without the body. MCP/JSON-RPC bodies are not treated as AI content. See "LLM/AI content handling". |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
 | `flushIntervalMs` | | `2000` | Flush cadence. Min 100ms (prevents tight-loop misconfig). |
 | `queueCapacity` | | `10000` | Per-worker queue. Total memory ~ `workers × queueCapacity × ~5KB`. |
@@ -115,6 +121,67 @@ estimates — multiply observed counts by `1/sampleRate`. Sampling is
 per-request and memoryless: there is no per-client or per-session
 stickiness, so a given caller's requests land in the sample
 independently.
+
+### LLM/AI content handling
+
+LLM prompts and responses are free-form text with high PII potential,
+and no reliable scrubbing mechanism exists for them today —
+`SENSITIVE_KEYS` matching cannot reach inside prompt text. By default
+the policy captures LLM/AI request bodies and sanitizes them like any
+other JSON body (`captureAiContent: true`); because sanitization is
+key-matching only, the free-form prompt text itself ships raw. Set
+`captureAiContent: false` to withhold detected LLM/AI request bodies as
+a stopgap until content-aware handling exists (future work).
+
+When `captureAiContent: false` and a request is detected as LLM/AI
+traffic, its event still ships with everything except `body`: endpoint,
+method, sanitized headers and query params, source IP, timestamp, user
+agent, and user id — so AI endpoint discovery and traffic analytics keep
+working; only the prompt content is withheld.
+
+The detection heuristic below governs which requests are withheld when
+`captureAiContent: false`. It is biased toward recall: a false positive
+only costs body capture for one event, while a false negative ships
+prompt text. A request counts as LLM/AI traffic if either matches:
+
+- **Path** (lowercased, query-stripped): ends with `/completions` or
+  `/embeddings`; contains `/v1/messages`, `generatecontent` (Gemini
+  `:generateContent` / `:streamGenerateContent`), or `/v1/responses`;
+  ends with `/converse` or `/converse-stream` (Bedrock Converse);
+  contains `/model/` and ends with `/invoke` or
+  `/invoke-with-response-stream` (Bedrock InvokeModel); or contains a
+  Vertex AI custom method (`:predict`, `:rawPredict`,
+  `:streamRawPredict` — the colon keeps ordinary `/predict` business
+  routes out). Path-matched requests skip body buffering entirely —
+  prompts are the largest bodies the gateway sees.
+- **Body shape** (parsed JSON): a `messages` array whose elements carry
+  a `role`; a `model` key alongside `prompt` / `input` / `messages` /
+  `contents` / `message` / `chat_history` / `texts` (the last three are
+  Cohere-style); a Gemini-style `contents` array whose elements carry
+  `parts`; `prompt` alongside a generation parameter (`max_tokens`,
+  `max_tokens_to_sample`, `temperature`, `top_p`); `anthropic_version`
+  (Bedrock-Anthropic); `inputText` + `textGenerationConfig` (Bedrock
+  Titan); or a bare top-level array of `{role, content}` messages.
+
+**MCP traffic is never treated as AI content.** Bodies that look like
+JSON-RPC (a top-level object with a `jsonrpc` key) are captured
+normally: MCP bodies are well-structured (method names + typed
+params), standard `SENSITIVE_KEYS` sanitization handles them, and MCP
+discovery depends on the captured arguments. One caveat, and only when
+`captureAiContent: false`: this carve-out applies to bodies that get
+buffered, but requests on the well-known LLM API paths above skip
+buffering before the body can be inspected, so an MCP server mounted on
+such a path (e.g. a mount containing `/v1/messages`) ships its events
+without a body — real MCP mounts don't collide with provider API path
+shapes.
+
+Leaving `captureAiContent` at its `true` default means prompt content
+(SENSITIVE_KEYS-sanitized, but otherwise raw free-form text) leaves the
+gateway; keep it enabled only if you accept that. Set it to `false` to
+withhold AI request bodies entirely until content-aware scrubbing exists.
+
+Response bodies are not captured by the policy at all yet; when
+response capture lands, it will respect this same flag.
 
 ## Setup
 
@@ -269,6 +336,7 @@ cerberus-flex-gateway/
 │   └── docker-compose.yaml   # local Flex Gateway harness
 ├── src/
 │   ├── lib.rs                # entrypoint, request/response/flush handlers
+│   ├── ai_content.rs         # LLM/AI prompt detection (captureAiContent gate)
 │   ├── config.rs             # Config struct (mirrors gcl.yaml)
 │   ├── event.rs              # CerberusEvent (CoreData mirror)
 │   ├── sanitize.rs           # SENSITIVE_KEYS/HEADERS, sanitize_value
