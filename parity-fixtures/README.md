@@ -20,10 +20,10 @@ fail and force the Rust port to update. **Don't skip these tests.**
 | `content_type.yaml`      | ✅ | ✅ | `application/json` substring matching for body capture. |
 | `sensitive_headers.yaml` | ✅ | ✅ | `SENSITIVE_HEADERS` set membership. |
 | `path_filter.yaml`       | ✗  | ✅ | Rust-only. Django scopes per-app via middleware inclusion. |
+| `custom_pii_rules.yaml`  | ✗  | ✅ | Rust-only *for now*. Customer scrub rules (`customSensitiveKeys` + `customPiiPatterns`) shipped in flex-gateway first; this fixture is the contract `cerberus-core` must match when the Python integrations adopt the feature. |
 
 The Python runner lives at `cerberus-django/tests/test_parity.py`. The Rust
-runner is in `cerberus-flex-gateway/tests/parity/` (added when the Rust
-crate is scaffolded).
+runner is `cerberus-flex-gateway/tests/parity_runner.rs`.
 
 ## Format
 

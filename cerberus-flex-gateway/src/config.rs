@@ -16,6 +16,8 @@
 
 use serde::Deserialize;
 
+use crate::pii_rules::PiiPatternConfig;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
@@ -55,6 +57,16 @@ pub struct Config {
     /// (case-insensitive). Empty/unset = capture all headers.
     pub capture_headers: Option<Vec<String>>,
 
+    /// Optional. Extra key names (case-insensitive) whose values are
+    /// redacted in query params and JSON bodies — additive to the
+    /// built-in SENSITIVE_KEYS floor.
+    pub custom_sensitive_keys: Option<Vec<String>>,
+
+    /// Optional. Customer regex scrubbing rules applied to query params
+    /// and JSON bodies. Compiled once at policy load; invalid rules
+    /// fail policy load. See pii_rules.rs.
+    pub custom_pii_patterns: Option<Vec<PiiPatternConfig>>,
+
     /// Optional glob allowlist.
     pub capture_paths: Option<Vec<String>>,
 
@@ -71,10 +83,10 @@ pub struct Config {
 
     /// Capture request bodies detected as LLM/AI prompt content.
     /// Default: true — AI/LLM request bodies are captured and sanitized
-    /// like any other JSON body. Set to false to withhold prompt content
-    /// (detected LLM/AI traffic then ships its event without the body)
-    /// until content-aware scrubbing exists. MCP (JSON-RPC) bodies are
-    /// never treated as AI content.
+    /// like any other JSON body (customPiiPatterns value rules reach
+    /// inside prompt text). Set to false to withhold prompt content
+    /// entirely (detected LLM/AI traffic then ships its event without
+    /// the body). MCP (JSON-RPC) bodies are never treated as AI content.
     #[serde(default = "default_capture_ai_content")]
     pub capture_ai_content: bool,
 

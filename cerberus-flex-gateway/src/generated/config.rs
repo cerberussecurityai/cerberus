@@ -1,5 +1,16 @@
 use serde::Deserialize;
 #[derive(Deserialize, Clone, Debug)]
+pub struct CustomPiiPatterns0Config {
+    #[serde(alias = "action")]
+    pub action: Option<String>,
+    #[serde(alias = "label")]
+    pub label: Option<String>,
+    #[serde(alias = "pattern")]
+    pub pattern: Option<String>,
+    #[serde(alias = "scope")]
+    pub scope: Option<String>,
+}
+#[derive(Deserialize, Clone, Debug)]
 pub struct Config {
     #[serde(
         alias = "backendUrl",
@@ -19,6 +30,10 @@ pub struct Config {
     pub capture_request_body: Option<bool>,
     #[serde(alias = "clientIpHeader")]
     pub client_ip_header: Option<String>,
+    #[serde(alias = "customPiiPatterns")]
+    pub custom_pii_patterns: Option<Vec<CustomPiiPatterns0Config>>,
+    #[serde(alias = "customSensitiveKeys")]
+    pub custom_sensitive_keys: Option<Vec<String>>,
     #[serde(alias = "excludePaths")]
     pub exclude_paths: Option<Vec<String>>,
     #[serde(alias = "flushIntervalMs")]

@@ -41,8 +41,31 @@ spec:
       description: "Optional. Cerberus backend to fetch the HMAC secret from at startup; the policy GETs {backendUrl}/api/secret-key. `format: service` registers an Envoy cluster for this URL at policy load — required for the init-time outbound fetch, since proxy-wasm only dispatches to registered clusters. Fetched once with a 5s timeout; failure logs a warning and falls back to raw PII. Use https:// in production. Typically the same host as ingestService."
 
     # ---------------------------------------------------------------------
-    # Request metadata extraction
+    # Custom PII scrubbing
     # ---------------------------------------------------------------------
+    customSensitiveKeys:
+      type: array
+      items:
+        type: string
+      description: "Optional. Extra field names whose values are redacted in query params and JSON bodies, matched case-insensitively (e.g. member_number, internal_customer_id). Additive to the built-in SENSITIVE_KEYS floor — built-in redactions (password, token, ssn, ...) always apply and cannot be removed. Matching a key replaces its entire value (nested objects/arrays included) with [REDACTED]. Entries are trimmed; blank entries are ignored with a startup warning. Applies to params and bodies only — header handling is governed by captureHeaders + the fixed SENSITIVE_HEADERS set."
+    customPiiPatterns:
+      type: array
+      items:
+        type: object
+        properties:
+          pattern:
+            type: string
+            description: "Regex to match. Linear-time engine (no catastrophic backtracking); character classes \\d \\w \\s are ASCII-only. Patterns match case-insensitively by default — prefix with (?-i) to opt out. Invalid patterns fail policy load."
+          label:
+            type: string
+            description: "Optional human-readable rule name (e.g. ssn, member-id). Used in startup logs and config error messages only; never appears in event output."
+          action:
+            type: string
+            description: "Optional. redact (default) replaces matches with [REDACTED]. hash replaces each match with its HMAC-SHA256 hex digest (keyed on the policy's secret), keeping stable identifiers correlatable without shipping the raw value; if no HMAC secret is available, hash falls back to redact — matched PII never ships raw."
+          scope:
+            type: string
+            description: "Optional. values (default) rewrites matched substrings inside string values — e.g. an SSN embedded in free text. keys matches field NAMES and replaces the whole value (like customSensitiveKeys, but regex). both does both."
+      description: "Optional. Regex scrubbing rules applied to query params and JSON request bodies (including captured LLM/AI prompt bodies — this is the mechanism that reaches inside free-form prompt text). Rules apply in declaration order after built-in key redaction; each value-scope rule scans the previous rule's output. Rules only ever add scrubbing on top of the built-in floor. Compiled once at policy load; a rule that fails to compile (bad regex, unknown action/scope) fails policy load rather than silently not scrubbing. Matching cost is O(rules × body size) on the request path — keep rule counts modest on high-RPS APIs. See README 'Custom PII scrubbing' for examples."
     clientIpHeader:
       type: string
       default: "X-Forwarded-For"
@@ -90,7 +113,7 @@ spec:
     captureAiContent:
       type: boolean
       default: true
-      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and SENSITIVE_KEYS-sanitized like any other JSON body. Sanitization is key-matching only, so free-form prompt text itself leaves the gateway raw — it cannot be reliably scrubbed today. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
+      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and sanitized like any other JSON body. Built-in sanitization is key-matching only; configure customPiiPatterns value rules to scrub regex-shaped PII (SSNs, emails, account numbers) inside free-form prompt text — PII with no stable shape still ships raw. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
 
     # NOTE: captureResponseBody is intentionally absent in v1.
     # Response-body mutation interacts badly with Content-Length /

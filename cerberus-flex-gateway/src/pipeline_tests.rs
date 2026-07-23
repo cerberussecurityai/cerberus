@@ -245,6 +245,54 @@ fn header_allowlist_no_survivors_omits_headers_field() {
 }
 
 #[test]
+fn custom_pii_rules_scrub_params_and_body() {
+    // customSensitiveKeys + customPiiPatterns end-to-end: the camelCase
+    // config fields must deserialize, compile, and scrub both query
+    // params and JSON bodies. secretKey present → the hash-action rule
+    // must produce a digest, not a redaction.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","secretKey":"test-hmac-secret","customSensitiveKeys":["member_number"],"customPiiPatterns":[{{"pattern":"\\b\\d{{3}}-\\d{{2}}-\\d{{4}}\\b","label":"ssn"}},{{"pattern":"^ACC-\\d+$","label":"account","action":"hash"}}]}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/api/claims?member_number=M-1&status=open")
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"note":"ssn 123-45-6789 on file","account":"ACC-42","password":"hunter2","ok":"keep"}"#,
+        );
+
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+
+    // Query params: custom key redacted, ordinary param preserved.
+    assert_eq!(e["query_params"]["member_number"], "[REDACTED]");
+    assert_eq!(e["query_params"]["status"], "open");
+
+    // Body: value pattern scrubs inside free text, hash rule digests,
+    // built-in floor unaffected, untouched fields pass through.
+    assert_eq!(e["body"]["note"], "ssn [REDACTED] on file");
+    let account = e["body"]["account"].as_str().expect("account is a string");
+    assert_eq!(account.len(), 64, "hash action → SHA-256 hex digest");
+    assert_ne!(account, "ACC-42");
+    assert_eq!(e["body"]["password"], "[REDACTED]");
+    assert_eq!(e["body"]["ok"], "keep");
+}
+
+#[test]
+fn invalid_custom_pii_pattern_fails_policy_load() {
+    // A rule that fails to compile must fail policy load (no events, no
+    // silent not-scrubbing) — mirrors PathFilter's bad-glob behavior.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","customPiiPatterns":[{{"pattern":"([unclosed"}}]}}"#
+    );
+    assert!(
+        capture_events_with_config(minimal_post(), config).is_none(),
+        "policy with an invalid scrub pattern must not capture events"
+    );
+}
+
+#[test]
 fn health_endpoint_is_skipped() {
     let req = UnitHttpRequest::get()
         .with_header(":scheme", "https")

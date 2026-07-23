@@ -41,6 +41,7 @@ mod config;
 mod event;
 mod hash;
 mod path_filter;
+mod pii_rules;
 mod queue;
 mod sampler;
 mod sanitize;
@@ -68,7 +69,8 @@ mod generated;
 pub mod __test_exports {
     pub use crate::hash::{hash_pii, normalize_ip};
     pub use crate::path_filter::PathFilter;
-    pub use crate::sanitize::{is_sensitive_header_lower, sanitize_value};
+    pub use crate::pii_rules::{CompiledPiiRules, PiiPatternConfig};
+    pub use crate::sanitize::{is_sensitive_header_lower, sanitize_value, sanitize_value_with};
     pub use super::content_type_is_json;
 }
 
@@ -84,9 +86,10 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::event::CerberusEvent;
 use crate::path_filter::PathFilter;
+use crate::pii_rules::CompiledPiiRules;
 use crate::queue::EventQueue;
 use crate::sampler::Sampler;
-use crate::sanitize::{is_sensitive_header_lower, sanitize_value, REDACTED};
+use crate::sanitize::{is_sensitive_header_lower, sanitize_value_with, REDACTED};
 
 const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
 
@@ -101,6 +104,10 @@ struct PolicyContext {
     path_filter: PathFilter,
     /// Lowercased captureHeaders allowlist. None = capture all headers.
     header_allowlist: Option<std::collections::HashSet<String>>,
+    /// Compiled customSensitiveKeys + customPiiPatterns. Empty when the
+    /// operator configured neither — sanitization then follows the
+    /// fixed built-in contract exactly.
+    pii_rules: CompiledPiiRules,
     queue: EventQueue,
     sampler: Sampler,
 }
@@ -164,6 +171,31 @@ impl PolicyContext {
                 "cerberus-flex-gateway: captureHeaders entries are all blank; capturing ALL headers"
             );
         }
+        // Customer PII rules — compiled once here; a rule that fails to
+        // compile fails policy load (mirroring PathFilter): silently
+        // skipping a scrub rule the operator wrote is a PII leak.
+        let (pii_rules, pii_warnings) = CompiledPiiRules::compile(
+            config.custom_sensitive_keys.as_deref().unwrap_or(&[]),
+            config.custom_pii_patterns.as_deref().unwrap_or(&[]),
+        )
+        .map_err(|err| anyhow!("invalid custom PII scrubbing config: {err:#}"))?;
+        for warning in &pii_warnings {
+            logger::warn!("cerberus-flex-gateway: {}", warning);
+        }
+        if !pii_rules.is_empty() {
+            // Confirmable from pod logs, like sampling — custom scrub
+            // rules changing event content should be visible at startup.
+            logger::info!(
+                "cerberus-flex-gateway: custom PII scrubbing active: {} extra sensitive keys, {} patterns",
+                pii_rules.extra_keys.len(),
+                pii_rules.patterns.len()
+            );
+        }
+        if pii_rules.has_hash_action() && secret_key.is_none() {
+            logger::warn!(
+                "cerberus-flex-gateway: customPiiPatterns uses action: hash but no HMAC secret is available; matches will be redacted instead"
+            );
+        }
         let queue = EventQueue::new(config.queue_capacity as usize);
         let sampler = Sampler::new(clamped_rate, sampler_seed);
         Ok(Self {
@@ -171,6 +203,7 @@ impl PolicyContext {
             secret_key,
             path_filter,
             header_allowlist,
+            pii_rules,
             queue,
             sampler,
         })
@@ -264,9 +297,10 @@ async fn request_filter(
 
     let headers = extract_headers(headers_state.handler().headers(), ctx);
 
-    // Query params — sanitized for SENSITIVE_KEYS.
+    // Query params — sanitized for SENSITIVE_KEYS + customer PII rules.
     let query_params = query_string.as_deref().and_then(parse_query_string);
-    let query_params = query_params.map(|q| sanitize_value(Value::Object(q)))
+    let query_params = query_params
+        .map(|q| sanitize_value_with(Value::Object(q), &ctx.pii_rules, ctx.secret_key.as_deref()))
         .map(|v| match v {
             Value::Object(map) => map,
             _ => unreachable!("sanitize preserves object → object"),
@@ -322,7 +356,11 @@ async fn request_filter(
                             // itself still ships for endpoint discovery).
                             None
                         } else {
-                            Some(sanitize_value(parsed))
+                            Some(sanitize_value_with(
+                                parsed,
+                                &ctx.pii_rules,
+                                ctx.secret_key.as_deref(),
+                            ))
                         }
                     }
                     _ => None,

@@ -1,0 +1,239 @@
+# Customer-configurable PII scrubbing rules — customSensitiveKeys (extra
+# field names) + customPiiPatterns (regex rules with action/scope).
+#
+# Currently Rust-only (cerberus-flex-gateway), like path_filter.yaml:
+# the flex-gateway policy is the first integration to ship the feature.
+# When cerberus-core grows the same rule engine, its runner must consume
+# this file unchanged — the case shape is deliberately language-neutral.
+#
+# Case shape:
+#   custom_sensitive_keys: [string]        (optional, default [])
+#   patterns:                              (optional, default [])
+#     - pattern: <regex>                   (linear-time flavor, ASCII classes)
+#       label:   <string>                  (optional; logs/errors only)
+#       action:  redact|hash               (optional, default redact)
+#       scope:   keys|values|both          (optional, default values)
+#   secret_key: <string|null>              (optional; HMAC key for hash actions)
+#   input / expected: the sanitized tree
+#
+# Pinned semantics:
+#   * custom_sensitive_keys are ADDITIVE to the built-in SENSITIVE_KEYS
+#     floor — a customer rule can never un-redact a built-in key.
+#   * Key-name matching (custom keys and scope:keys rules) replaces the
+#     ENTIRE value, subtrees included.
+#   * scope:values rules rewrite matched SUBSTRINGS inside string leaves,
+#     in declaration order; non-string leaves are never pattern-matched.
+#   * action:hash replaces each match with HMAC-SHA256(secret, match) as
+#     lowercase hex (same contract as hash_pii.yaml); without a secret it
+#     falls back to redact — matched PII never ships raw.
+#   * Patterns compile case-insensitively by default; inline (?-i) opts out.
+#
+# Hash digests below are keyed on the standard parity test secret
+# `cerberus-parity-test-key-v1` (see README "Test secret").
+
+cases:
+  - name: empty_rules_match_base_contract
+    input:
+      username: alice
+      password: hunter2
+    expected:
+      username: alice
+      password: "[REDACTED]"
+
+  - name: custom_key_redacts_value_case_insensitively
+    custom_sensitive_keys:
+      - member_number
+    input:
+      Member_Number: M-12345
+      name: alice
+    expected:
+      Member_Number: "[REDACTED]"
+      name: alice
+
+  - name: custom_key_redacts_entire_subtree
+    custom_sensitive_keys:
+      - beneficiary
+    input:
+      beneficiary:
+        name: bob
+        relation: spouse
+      plan: gold
+    expected:
+      beneficiary: "[REDACTED]"
+      plan: gold
+
+  - name: custom_keys_are_additive_builtin_floor_still_applies
+    custom_sensitive_keys:
+      - member_number
+    input:
+      member_number: M-12345
+      api_key: sk-live-123
+      name: alice
+    expected:
+      member_number: "[REDACTED]"
+      api_key: "[REDACTED]"
+      name: alice
+
+  - name: value_pattern_redacts_ssn_embedded_in_free_text
+    patterns:
+      - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+        label: ssn
+    input:
+      note: "member ssn is 123-45-6789, please update"
+    expected:
+      note: "member ssn is [REDACTED], please update"
+
+  - name: value_pattern_replaces_every_match
+    patterns:
+      - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+    input:
+      note: "primary 123-45-6789 secondary 078-05-1120"
+    expected:
+      note: "primary [REDACTED] secondary [REDACTED]"
+
+  - name: value_pattern_case_insensitive_by_default
+    patterns:
+      - pattern: 'confidential-\d+'
+    input:
+      tag: "ref CONFIDENTIAL-42 attached"
+    expected:
+      tag: "ref [REDACTED] attached"
+
+  - name: value_pattern_reaches_nested_objects_and_arrays
+    patterns:
+      - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+    input:
+      messages:
+        - role: user
+          content: "my ssn is 123-45-6789"
+        - "078-05-1120"
+      meta:
+        note: "no pii here"
+    expected:
+      messages:
+        - role: user
+          content: "my ssn is [REDACTED]"
+        - "[REDACTED]"
+      meta:
+        note: "no pii here"
+
+  - name: value_pattern_hash_replaces_match_with_hmac_digest
+    patterns:
+      - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+        action: hash
+    secret_key: cerberus-parity-test-key-v1
+    input:
+      note: "id 123-45-6789 end"
+    expected:
+      note: "id b364bae5197b0ddc6240a46451b264a5559de691a3316fec232920d379b6f192 end"
+
+  - name: value_pattern_hash_without_secret_falls_back_to_redact
+    patterns:
+      - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+        action: hash
+    input:
+      note: "id 123-45-6789 end"
+    expected:
+      note: "id [REDACTED] end"
+
+  - name: email_pattern_hash_keeps_identifier_stable
+    patterns:
+      - pattern: '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}'
+        label: email
+        action: hash
+    secret_key: cerberus-parity-test-key-v1
+    input:
+      contact: alice@example.com
+    expected:
+      contact: 36c8020027f05042ded5e429f7a332a9107ebd2f0c2aedf2cfb66f675f89bb50
+
+  - name: key_scope_replaces_whole_value_and_ignores_value_text
+    patterns:
+      - pattern: 'internal_id'
+        scope: keys
+    input:
+      x_internal_id_v2: abc-123
+      note: "internal_id mentioned in passing"
+    expected:
+      x_internal_id_v2: "[REDACTED]"
+      note: "internal_id mentioned in passing"
+
+  - name: key_scope_hash_hashes_string_value
+    patterns:
+      - pattern: '^account_ref$'
+        action: hash
+        scope: keys
+    secret_key: cerberus-parity-test-key-v1
+    input:
+      account_ref: AC-778899
+    expected:
+      account_ref: 19c68fc4713fb76004711c01772a0ec21be2cc7cf080b861b9728a52e5471b55
+
+  - name: key_scope_hash_redacts_non_string_value
+    # There is no cross-language-stable serialization of a subtree to
+    # hash, so hash-on-non-string redacts instead.
+    patterns:
+      - pattern: '^account_ref$'
+        action: hash
+        scope: keys
+    secret_key: cerberus-parity-test-key-v1
+    input:
+      account_ref:
+        id: AC-778899
+        region: us
+    expected:
+      account_ref: "[REDACTED]"
+
+  - name: both_scope_matches_key_names_and_value_text
+    patterns:
+      - pattern: 'caseref-\d+'
+        scope: both
+    input:
+      caseref-9912: open
+      summary: "escalated from caseref-8801 last week"
+    expected:
+      caseref-9912: "[REDACTED]"
+      summary: "escalated from [REDACTED] last week"
+
+  - name: non_string_leaves_never_pattern_matched
+    patterns:
+      - pattern: '\d+'
+    input:
+      count: 123456789
+      active: true
+      note: "code 42"
+    expected:
+      count: 123456789
+      active: true
+      note: "code [REDACTED]"
+
+  - name: builtin_key_redaction_wins_over_pattern_rules
+    # The sensitive-key floor replaces the value wholesale before any
+    # pattern rule sees it — a hash rule cannot downgrade a built-in
+    # redaction to a correlatable digest. Outside the floor the same
+    # rule hashes normally (the note field).
+    patterns:
+      - pattern: 'hunter\d'
+        action: hash
+    secret_key: cerberus-parity-test-key-v1
+    input:
+      password: hunter2
+      note: "hunter2 was reused"
+    expected:
+      password: "[REDACTED]"
+      note: "a8546a314e67e9495f769e34c0184014c5fdf2c25f27eca721c91ef0e0cb224d was reused"
+
+  - name: independent_rules_all_apply
+    custom_sensitive_keys:
+      - member_number
+    patterns:
+      - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+        label: ssn
+      - pattern: '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}'
+        label: email
+    input:
+      member_number: M-12345
+      note: "reach alice@example.com re ssn 123-45-6789"
+    expected:
+      member_number: "[REDACTED]"
+      note: "reach [REDACTED] re ssn [REDACTED]"
