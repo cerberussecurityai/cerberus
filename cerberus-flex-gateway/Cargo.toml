@@ -6,7 +6,7 @@
 # The Anypoint Exchange asset IDs in [package.metadata.anypoint] keep
 # hyphens, since those are the user-facing identifiers in Exchange.
 name = "cerberus_flex_gateway"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88.0"
 resolver = "2"
