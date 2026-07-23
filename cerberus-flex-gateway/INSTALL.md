@@ -105,6 +105,50 @@ anypoint-cli-v4 api-mgr policy apply \
 See the policy README's **Configuration** table for every option
 (`capturePaths`, `secretKey`, `batchSize`, `flushIntervalMs`, …).
 
+## Enforcing TLS 1.3 to Cerberus (optional hardening)
+
+The policy's outbound POSTs to `ingestService` are protected by the gateway's
+default TLS context for policy calls, which supports TLS 1.2–1.3. The Cerberus
+production ingest endpoint supports TLS 1.3 and rejects anything below TLS 1.2,
+so in practice the connection negotiates TLS 1.3.
+
+If your compliance posture requires *guaranteeing* TLS ≥ 1.3, pin the minimum
+version on the gateway (self-managed Flex Gateway only, Local or Connected
+mode):
+
+```yaml
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: Configuration
+metadata:
+  name: default-tls
+spec:
+  defaultTLS:
+    outboundPolicyCalls:
+      minversion: "1.3"
+```
+
+Apply it like any other Flex Gateway configuration resource — `kubectl apply`
+on Kubernetes, or drop the YAML into the gateway's configuration directory on
+Docker/Linux installs.
+
+**Scope caveat — read before applying:** `defaultTLS.outboundPolicyCalls` is
+gateway-wide. It governs the outbound calls of *every* policy on the gateway
+(for example an OAuth token-introspection policy calling your IdP), not just
+the Cerberus policy. Confirm all your policy upstreams support TLS 1.3 first.
+It is not configurable on MuleSoft-managed Flex Gateway.
+
+The pin governs TLS connections only — it does nothing for a plaintext
+`http://` URL, which the policy schema accepts for local testing. For the
+guarantee to mean anything, `ingestService` (and `backendUrl`, if set) must be
+`https://` URLs.
+
+With an `https://` ingest URL and the pin in place, verification is built in:
+the gateway refuses any handshake below TLS 1.3, so if events are arriving in
+your Cerberus dashboard, the connection is TLS 1.3.
+
+MuleSoft reference:
+<https://docs.mulesoft.com/gateway/latest/policies-tls-configuration>.
+
 ## Upgrade
 
 A new bundle version is a new immutable Exchange version. Extract the new
