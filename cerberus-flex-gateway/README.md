@@ -274,6 +274,15 @@ entirely.
 Response bodies are not captured by the policy at all yet; when
 response capture lands, it will respect this same flag.
 
+### TLS to the Cerberus backend
+
+Outbound POSTs to `ingestService` use the gateway's default outbound-policy
+TLS context (TLS 1.2–1.3; negotiates 1.3 against the Cerberus production
+endpoint, which rejects < 1.2). Operators who must *guarantee* TLS ≥ 1.3 can
+pin `defaultTLS.outboundPolicyCalls.minversion: "1.3"` in a gateway
+`Configuration` resource — see `INSTALL.md` ("Enforcing TLS 1.3 to Cerberus")
+for the YAML and the gateway-wide scope caveat.
+
 ## Setup
 
 Prerequisites (PDK 1.8.0, April 2026):
