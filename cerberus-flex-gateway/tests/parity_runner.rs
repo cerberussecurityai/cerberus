@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use cerberus_flex_gateway::__test_exports::{
     content_type_is_json, hash_pii, is_sensitive_header_lower, normalize_ip, sanitize_value,
-    PathFilter,
+    sanitize_value_with, CompiledPiiRules, PathFilter, PiiPatternConfig,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -221,6 +221,44 @@ fn parity_sensitive_headers() {
     // Sanity check: don't silently turn into a no-op if all cases get
     // skipped by the translator.
     assert!(covered > 0, "no sensitive_headers cases survived translation");
+}
+
+// ============================================================================
+// custom_pii_rules (Rust-only for now — flex-gateway ships the feature
+// first; the fixture is the contract cerberus-core must match when the
+// Python integrations adopt it)
+// ============================================================================
+
+#[derive(Deserialize)]
+struct CustomPiiRulesCase {
+    name: String,
+    #[serde(default)]
+    custom_sensitive_keys: Vec<String>,
+    // Deserializes straight into the crate's config struct — the fixture
+    // rule shape IS the policy-config rule shape.
+    #[serde(default)]
+    patterns: Vec<PiiPatternConfig>,
+    #[serde(default)]
+    secret_key: Option<String>,
+    input: serde_json::Value,
+    expected: serde_json::Value,
+}
+
+#[test]
+fn parity_custom_pii_rules() {
+    let cases: Vec<CustomPiiRulesCase> = load("custom_pii_rules.yaml");
+    for case in cases {
+        let (rules, _warnings) =
+            CompiledPiiRules::compile(&case.custom_sensitive_keys, &case.patterns)
+                .unwrap_or_else(|e| panic!("case {:?}: rule compile failed: {}", case.name, e));
+        let actual =
+            sanitize_value_with(case.input.clone(), &rules, case.secret_key.as_deref());
+        assert_eq!(
+            actual, case.expected,
+            "case {:?}: got {:?}, expected {:?}",
+            case.name, actual, case.expected
+        );
+    }
 }
 
 // ============================================================================

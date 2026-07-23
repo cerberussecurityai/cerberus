@@ -28,6 +28,18 @@ spec:
         # upstream auth policy populates it.
         capturePaths: []
         excludePaths: []
+        # Customer PII scrubbing (see README "Custom PII scrubbing").
+        # Exercise locally: POST a body like
+        #   {"member_number":"M-1","note":"ssn 123-45-6789","account":"ACC-42"}
+        # → member_number and the SSN redact; account hashes (secretKey set).
+        customSensitiveKeys:
+          - member_number
+        customPiiPatterns:
+          - pattern: '\b\d{3}-\d{2}-\d{4}\b'
+            label: ssn
+          - pattern: '^ACC-\d+$'
+            label: account
+            action: hash
         captureRequestBody: true
         batchSize: 50
         flushIntervalMs: 2000

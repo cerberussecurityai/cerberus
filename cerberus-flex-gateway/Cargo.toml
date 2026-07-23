@@ -6,7 +6,7 @@
 # The Anypoint Exchange asset IDs in [package.metadata.anypoint] keep
 # hyphens, since those are the user-facing identifiers in Exchange.
 name = "cerberus_flex_gateway"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88.0"
 resolver = "2"
@@ -47,6 +47,13 @@ hex = "0.4"
 futures = "0.3"
 globset = "0.4"
 url = "2.5"
+# Customer-configurable PII scrubbing patterns (customPiiPatterns).
+# regex-lite over the full `regex` crate: same linear-time guarantee
+# (no catastrophic backtracking → attacker-adjacent patterns can't
+# ReDoS the request path) at a fraction of the wasm size, since it
+# skips the Unicode tables. Character classes (\d, \w, \s) are
+# ASCII-only — the right semantics for PII shapes anyway.
+regex-lite = "0.1"
 # Already in the dependency graph via pdk → pdk-jwt-lib → jwt-compact, so
 # declaring it directly adds no artifact weight. Used only for ISO 8601
 # formatting; the wasmbind/js-sys path is cfg-gated off for wasm32-wasip1.

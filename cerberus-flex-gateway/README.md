@@ -11,11 +11,15 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 
 - Request metadata capture (header / query / body sanitization, IP
   normalization + HMAC, source IP resolution, health-endpoint filter).
+- Customer-configurable PII scrubbing via `customSensitiveKeys` (extra
+  field names) and `customPiiPatterns` (regex rules with redact/hash
+  actions) — additive to the built-in `SENSITIVE_KEYS` floor. See
+  "Custom PII scrubbing".
 - Header allowlisting via `captureHeaders` (only ship the headers you name).
 - LLM/AI prompt-body capture toggle (`captureAiContent`) — AI request
   bodies are captured and sanitized by default; set it to `false` to
-  withhold prompt content until content-aware scrubbing exists. MCP
-  traffic is unaffected.
+  withhold prompt content entirely. `customPiiPatterns` value rules
+  reach inside captured prompt text. MCP traffic is unaffected.
 - Path scoping via `capturePaths` / `excludePaths` globs.
 - Probabilistic request sampling via `sampleRate` (load-shedding for
   high-RPS deployments).
@@ -33,7 +37,7 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 | Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. |
 | `status_code` / `latency_ms` capture | Trivially addable in `response_filter`. |
 | Streaming-body capture for >1MB JSON payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large payloads. |
-| Content-aware scrubbing for AI prompts/responses | Free-form model I/O can't be sanitized by key-matching. Until it exists, set `captureAiContent: false` to withhold AI request bodies entirely (they are captured by default). |
+| Semantic scrubbing for AI prompts/responses | `customPiiPatterns` value rules scrub anything regex-shaped (SSNs, emails, member IDs) inside prompt text, but free-form PII with no stable shape (names, addresses in prose) still can't be caught. For zero prompt egress, set `captureAiContent: false` to withhold AI request bodies entirely (they are captured by default). |
 | Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
 
 ## Configuration (`gcl.yaml`)
@@ -44,6 +48,8 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 | `token` | ✓ | — | Cerberus API key. Sent as the `X-API-Key` header on outbound requests. Trimmed at config-parse time. |
 | `secretKey` | | — | HMAC key for PII hashing. Inline alternative to `backendUrl`. |
 | `backendUrl` | | — | Base URL to fetch HMAC key from at startup. 5-second timeout; failure logs and falls back to raw PII. Use `https://` in production. |
+| `customSensitiveKeys` | | `[]` | Extra field names (case-insensitive) redacted in query params and JSON bodies, additive to the built-in `SENSITIVE_KEYS` floor. Matching a key redacts its entire value, subtrees included. |
+| `customPiiPatterns` | | `[]` | Regex scrubbing rules (`{pattern, label, action: redact\|hash, scope: keys\|values\|both}`) applied to query params and JSON bodies. Invalid rules fail policy load. See "Custom PII scrubbing". |
 | `clientIpHeader` | | `X-Forwarded-For` | Header to read the client IP from (first hop). Falls back to Envoy connection source if absent. |
 | `userIdHeader` | | unset | Header to read end-user identity from (e.g. `X-User-Id`). Required for per-end-user analytics; intentionally not defaulted so each deployment picks its own header. |
 | `captureHeaders` | | `[]` (all headers) | Allowlist of header names (case-insensitive). Non-empty = only these headers ship in the event's headers map; sanitization still applies to them. Empty = all headers. Dedicated fields (`user_agent`, `clientIpHeader`, `userIdHeader`) unaffected. |
@@ -122,16 +128,100 @@ per-request and memoryless: there is no per-client or per-session
 stickiness, so a given caller's requests land in the sample
 independently.
 
+### Custom PII scrubbing
+
+The built-in sanitization contract is fixed: `SENSITIVE_KEYS` matching
+by key name only. Customers carry domain-specific PII the fixed list
+can't know about — internal member numbers, custom token field names —
+and PII embedded in *values* (an SSN inside a free-text note) that
+key-name matching can never reach. Two config properties close both
+gaps. Rules only ever **add** scrubbing: the built-in `SENSITIVE_KEYS`
+/ `SENSITIVE_HEADERS` floor always applies and cannot be removed or
+weakened by customer rules.
+
+`customSensitiveKeys` — extra field names, matched case-insensitively
+exactly like the built-in list. A matching key's entire value (nested
+objects/arrays included) becomes `[REDACTED]`:
+
+```yaml
+customSensitiveKeys:
+  - member_number
+  - internal_customer_id
+```
+
+`customPiiPatterns` — regex rules applied to query params and JSON
+request bodies (including captured LLM/AI prompt bodies — this is the
+mechanism that reaches inside free-form prompt text):
+
+```yaml
+customPiiPatterns:
+  - pattern: '\b\d{3}-\d{2}-\d{4}\b'   # US SSN
+    label: ssn
+    action: redact                     # default
+    scope: values                      # default
+  - pattern: '^MBR-\d{8}$'
+    label: member-id
+    action: hash                       # HMAC instead of redacting
+  - pattern: 'x_acme_'
+    label: acme-internal-fields
+    scope: keys                        # match field NAMES
+```
+
+Per-rule knobs:
+
+- `action` — `redact` (default) replaces matches with `[REDACTED]`.
+  `hash` replaces each match with its HMAC-SHA256 hex digest, keyed on
+  the policy's secret (`secretKey` / `backendUrl` fetch) — use it for
+  stable identifiers where "same value across requests" keeps analytics
+  value. If no secret is available, `hash` falls back to redact and the
+  policy logs a startup warning: matched PII never ships raw.
+- `scope` — `values` (default) rewrites matched substrings inside
+  string values, preserving surrounding text (`"ssn is 123-45-6789"` →
+  `"ssn is [REDACTED]"`). `keys` matches field *names* and replaces the
+  entire value, like `customSensitiveKeys` but regex (a `hash` action
+  on a non-string value redacts instead — there is no cross-language-
+  stable subtree serialization to hash). `both` does both.
+- `label` — optional name used in startup logs and config error
+  messages; never appears in event output.
+
+Semantics worth knowing:
+
+- Rules apply after built-in key redaction, in declaration order; each
+  value rule scans the previous rule's output. A value already replaced
+  wholesale by key matching is not pattern-scanned.
+- Patterns match **case-insensitively by default** (a PII net that
+  misses `SSN` because the rule said `ssn` is a leak); prefix a pattern
+  with `(?-i)` to opt out.
+- The engine is linear-time (`regex-lite`) — catastrophic-backtracking
+  ReDoS is structurally impossible, and compiled-pattern size is
+  capped. Character classes `\d` `\w` `\s` are ASCII-only.
+- Pattern matching is text-only: an SSN stored as a JSON *number*
+  (`123456789`) will not match; numbers, bools, and null pass through.
+- A rule that fails to compile (bad regex, unknown `action`/`scope`,
+  empty `pattern`) **fails policy load** with a descriptive error
+  rather than silently not scrubbing.
+- Scrubbing applies to query params and JSON bodies — the literal
+  customer ask. Header values are governed by `captureHeaders` + the
+  fixed `SENSITIVE_HEADERS` set and are not pattern-scanned.
+- Matching cost is O(rules × body size) on the request path. Keep rule
+  counts modest on high-RPS APIs; `capturePaths` / `sampleRate` scope
+  the traffic that pays it.
+
+The rule engine is pinned by `parity-fixtures/custom_pii_rules.yaml`
+(Rust-only for now — the fixture is the contract the Python
+integrations must match when they adopt the feature).
+
 ### LLM/AI content handling
 
-LLM prompts and responses are free-form text with high PII potential,
-and no reliable scrubbing mechanism exists for them today —
-`SENSITIVE_KEYS` matching cannot reach inside prompt text. By default
-the policy captures LLM/AI request bodies and sanitizes them like any
-other JSON body (`captureAiContent: true`); because sanitization is
-key-matching only, the free-form prompt text itself ships raw. Set
-`captureAiContent: false` to withhold detected LLM/AI request bodies as
-a stopgap until content-aware handling exists (future work).
+LLM prompts and responses are free-form text with high PII potential.
+By default the policy captures LLM/AI request bodies and sanitizes them
+like any other JSON body (`captureAiContent: true`): built-in
+sanitization is key-matching only, so prompt text ships raw unless
+`customPiiPatterns` value rules are configured — those rewrite matched
+substrings inside prompt strings (SSNs, emails, account numbers), but
+PII with no stable shape (names in prose) still passes. Set
+`captureAiContent: false` to withhold detected LLM/AI request bodies
+entirely.
 
 When `captureAiContent: false` and a request is detected as LLM/AI
 traffic, its event still ships with everything except `body`: endpoint,
@@ -176,9 +266,10 @@ without a body — real MCP mounts don't collide with provider API path
 shapes.
 
 Leaving `captureAiContent` at its `true` default means prompt content
-(SENSITIVE_KEYS-sanitized, but otherwise raw free-form text) leaves the
-gateway; keep it enabled only if you accept that. Set it to `false` to
-withhold AI request bodies entirely until content-aware scrubbing exists.
+(sanitized for `SENSITIVE_KEYS` and any `customPiiPatterns`, but
+otherwise raw free-form text) leaves the gateway; keep it enabled only
+if you accept that. Set it to `false` to withhold AI request bodies
+entirely.
 
 Response bodies are not captured by the policy at all yet; when
 response capture lands, it will respect this same flag.
@@ -311,6 +402,11 @@ implementations all consume the same YAML fixtures from
 - `cerberus-flex-gateway/tests/parity_runner.rs` runs them against the
   Rust ports.
 
+`custom_pii_rules.yaml` (the customer rule engine) and
+`path_filter.yaml` are Rust-only: this crate ships those features
+first, and the fixtures are the contract the Python implementations
+must match when they adopt them.
+
 If you change a constant in `cerberus-core/src/cerberus_core/sanitization.py`,
 update the fixture file in the **same PR** so the other implementations
 are forced to follow.
@@ -339,7 +435,8 @@ cerberus-flex-gateway/
 │   ├── ai_content.rs         # LLM/AI prompt detection (captureAiContent gate)
 │   ├── config.rs             # Config struct (mirrors gcl.yaml)
 │   ├── event.rs              # CerberusEvent (CoreData mirror)
-│   ├── sanitize.rs           # SENSITIVE_KEYS/HEADERS, sanitize_value
+│   ├── sanitize.rs           # SENSITIVE_KEYS/HEADERS, sanitize_value(_with)
+│   ├── pii_rules.rs          # customSensitiveKeys / customPiiPatterns compiler
 │   ├── hash.rs               # hash_pii, normalize_ip
 │   ├── source_ip.rs          # XFF first-hop / stream fallback
 │   ├── secret.rs             # init-time secret fetch
