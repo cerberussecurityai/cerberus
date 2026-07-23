@@ -137,9 +137,14 @@ gateway-wide. It governs the outbound calls of *every* policy on the gateway
 the Cerberus policy. Confirm all your policy upstreams support TLS 1.3 first.
 It is not configurable on MuleSoft-managed Flex Gateway.
 
-With the pin in place, verification is built in: the gateway refuses any
-handshake below TLS 1.3, so if events are arriving in your Cerberus dashboard,
-the connection is TLS 1.3.
+The pin governs TLS connections only — it does nothing for a plaintext
+`http://` URL, which the policy schema accepts for local testing. For the
+guarantee to mean anything, `ingestService` (and `backendUrl`, if set) must be
+`https://` URLs.
+
+With an `https://` ingest URL and the pin in place, verification is built in:
+the gateway refuses any handshake below TLS 1.3, so if events are arriving in
+your Cerberus dashboard, the connection is TLS 1.3.
 
 MuleSoft reference:
 <https://docs.mulesoft.com/gateway/latest/policies-tls-configuration>.
