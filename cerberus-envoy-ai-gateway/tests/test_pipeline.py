@@ -655,3 +655,38 @@ def test_same_attribute_in_both_lists_is_allowed_and_hashes(config):
     [event] = queue.drain(10)
     assert HEX64.match(event["custom_data"]["corr_id"])
     assert "RAW-CORR" not in json.dumps(event)
+
+
+def test_extra_attributes_redacts_kebab_case_sensitive_compound(config):
+    # x-api-key is the spelling HTTP headers actually use, and this codebase
+    # already treats it as sensitive via SENSITIVE_HEADERS. Segment-wise
+    # matching missed it: neither "api" nor "key" is sensitive alone, and the
+    # compound never survives as its own segment under any single split.
+    config = replace(config, extra_attributes=("http.request.header.x-api-key",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_attr("llm_openai_chat", "http.request.header.x-api-key", "sk-SECRET")
+    )
+    [event] = queue.drain(10)
+    assert "sk-SECRET" not in json.dumps(event)
+    assert event["custom_data"]["http_request_header_x_api_key"] == REDACTED
+
+
+def test_multiword_sensitive_compounds_detected_in_both_spellings():
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    # Compounds whose individual words are not sensitive on their own — these
+    # are the ones segment matching let through.
+    for compound in ("api-key", "private-key", "ssh-key", "credit-card", "card-number"):
+        assert is_sensitive_attribute(f"http.request.header.x-{compound}"), compound
+        assert is_sensitive_attribute(f"req.{compound.replace('-', '_')}"), compound
+
+
+def test_operator_correlation_names_are_not_over_redacted():
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    # The documented examples must stay usable, or the wider match breaks the
+    # configuration the README tells operators to use.
+    for name in ("corr.session", "tenant.id", "request.id", "corr.trace"):
+        assert not is_sensitive_attribute(name), name

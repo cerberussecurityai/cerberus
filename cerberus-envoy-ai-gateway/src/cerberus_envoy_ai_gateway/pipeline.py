@@ -48,6 +48,11 @@ MAX_EXTRA_VALUE_BYTES = 1024
 # A valid IP (incl. IPv6 + zone) is <=45 chars; bound malformed raw values.
 MAX_IP_CHARS = 64
 
+# Longest SENSITIVE_KEYS entry in words, bounding the n-gram scan in
+# is_sensitive_attribute. Derived so a longer entry added upstream widens the
+# scan automatically instead of silently falling outside it.
+_MAX_SENSITIVE_WORDS = max(len(key.split("_")) for key in SENSITIVE_KEYS)
+
 
 def extra_attribute_key(name: str) -> str:
     """Derive a ``custom_data`` key from a span attribute name (``A.b-c`` -> ``a_b_c``).
@@ -59,18 +64,31 @@ def extra_attribute_key(name: str) -> str:
 
 
 def is_sensitive_attribute(name: str) -> bool:
-    """True when any segment of a span attribute name is a SENSITIVE_KEYS entry.
+    """True when any run of words in a span attribute name is a SENSITIVE_KEYS entry.
 
     ``sanitize_dict`` matches whole keys, so a namespaced OTel name like
     ``http.request.header.authorization`` flattens to
-    ``http_request_header_authorization`` — which matches nothing, and would
-    copy a bearer token through in cleartext. Splitting on ``.``/``-`` keeps
-    compound entries like ``api_key`` intact; also splitting on ``_`` catches
-    the dotted spelling (``access.token`` -> ``token``).
+    ``http_request_header_authorization``, matches nothing, and would copy a
+    bearer token through in cleartext.
+
+    Word runs rather than single segments, because several SENSITIVE_KEYS
+    entries are multi-word (``api_key``, ``private_key``, ``credit_card``,
+    ``session_id``) and none of their individual words is sensitive alone. Any
+    separator-preserving scheme fails on the kebab spelling HTTP headers
+    actually use: ``http.request.header.x-api-key`` splits to
+    ``… x | api | key`` with no ``api_key`` segment, and keeping ``_`` intact
+    instead fuses the leading ``x`` onto it as ``x_api_key``. Normalizing every
+    separator and testing contiguous runs catches both spellings — and this
+    codebase already treats ``x-api-key`` as sensitive via ``SENSITIVE_HEADERS``.
     """
-    lowered = name.strip().lower()
-    segments = set(re.split(r"[.\-]", lowered)) | set(re.split(r"[.\-_]", lowered))
-    return any(segment in SENSITIVE_KEYS for segment in segments if segment)
+    words = [word for word in re.split(r"[.\-_]", name.strip().lower()) if word]
+    for start in range(len(words)):
+        for length in range(1, _MAX_SENSITIVE_WORDS + 1):
+            if start + length > len(words):
+                break
+            if "_".join(words[start : start + length]) in SENSITIVE_KEYS:
+                return True
+    return False
 
 
 def coerce_json_safe(value: Any) -> Any:
