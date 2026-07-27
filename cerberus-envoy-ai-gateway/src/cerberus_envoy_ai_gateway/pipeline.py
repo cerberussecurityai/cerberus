@@ -174,6 +174,10 @@ class Pipeline:
             if value is None:
                 continue
             key = extra_attribute_key(name)
+            # Guards against keys the *mappers* set, all of which are present by
+            # now. Keys written later still win by overwriting — only
+            # `content_dropped_oversize` from _enforce_size, which an operator
+            # would have to name deliberately to collide with.
             if key in custom_data or key in extras:
                 if key not in self._extra_key_collisions:
                     self._extra_key_collisions.add(key)

@@ -404,3 +404,21 @@ def test_extra_attributes_bytes_value_does_not_drop_the_event(config):
     [event] = queue.drain(10)
     assert isinstance(event["custom_data"]["weird_blob"], str)
     json.dumps(event)  # the failure mode this guards was an unserializable event
+
+
+def test_extra_attributes_redacts_sensitive_term_in_underscored_segment(config):
+    # Locks the second split in is_sensitive_attribute. Splitting on [.-] alone
+    # leaves "user_access_token" as one segment, which matches nothing; only the
+    # [.-_] split decomposes it to "token". Dropping that split as redundant
+    # must fail here — the other redaction tests would all still pass.
+    config = replace(config, extra_attributes=("request.user_access_token",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "request.user_access_token"
+    attr.value.string_value = "tok-abc"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["request_user_access_token"] == REDACTED

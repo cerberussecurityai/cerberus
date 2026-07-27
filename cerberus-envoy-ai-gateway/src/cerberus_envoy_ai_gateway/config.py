@@ -25,8 +25,9 @@ MAX_EVENT_BYTES_CEILING = 63488  # 62KB
 MIN_FLUSH_INTERVAL_MS = 100
 
 # Operator-selected span attributes copied into custom_data. Bounded because
-# these land in unsheddable custom_data keys — _enforce_size can only shed
-# body/arguments, so anything else must be small by construction.
+# _enforce_size sheds only captured content (body/arguments, plus the
+# schema-report catalogues) — these keys survive to the byte cap, so they have
+# to be small by construction.
 MAX_EXTRA_ATTRIBUTES = 20
 
 _LOG_LEVELS = ("debug", "info", "warning", "error")
