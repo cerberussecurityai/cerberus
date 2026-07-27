@@ -25,6 +25,7 @@ from .mapper_mcp import CONSUMED_ATTRIBUTES as MCP_CONSUMED
 from .mapper_mcp import map_mcp_span
 from .otlp import iter_spans, span_attributes, span_event_attributes
 from .queue import BoundedQueue
+from .spanfields import CONSUMED_ATTRIBUTES as SPANFIELDS_CONSUMED
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,11 @@ def fit_encoded(text: str, max_bytes: int) -> str:
         return text
     suffix = "...[TRUNCATED]"
     budget = max_bytes - len(json.dumps(suffix))
+    if budget <= 0:
+        # max_bytes is smaller than the marker itself. Drop the marker rather
+        # than return something that still exceeds the cap it was handed —
+        # unreachable at the current MAX_EXTRA_VALUE_BYTES, latent if lowered.
+        suffix, budget = "", max_bytes
     low, high = 0, len(text)
     while low < high:
         mid = (low + high + 1) // 2
@@ -181,7 +187,7 @@ def _reject_bridge_owned_attributes(config: Config) -> None:
     quietly at runtime, and over-rejecting is safe — the operator maps their own
     header (``corr.session``, ``tenant.id``) and gets a conflict-free key.
     """
-    owned = set(LLM_CONSUMED) | set(MCP_CONSUMED)
+    owned = set(LLM_CONSUMED) | set(MCP_CONSUMED) | set(SPANFIELDS_CONSUMED)
     for attribute in (
         config.client_ip_attribute,
         config.user_id_attribute,

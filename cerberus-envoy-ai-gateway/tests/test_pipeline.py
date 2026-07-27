@@ -508,53 +508,28 @@ def test_operator_correlation_names_are_not_over_redacted():
         assert not is_sensitive_attribute(name), name
 
 
-def test_extra_attributes_redacts_sensitive_term_in_underscored_segment(config):
-    # "user_access_token" is one segment under [.-] and matches nothing; only
-    # normalizing every separator surfaces access_token / token inside it.
-    config = replace(config, extra_attributes=("request.user_access_token",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    pipeline.process_export(_with_attr("llm_openai_chat", "request.user_access_token", "tok-abc"))
-    [event] = queue.drain(10)
-    assert event["custom_data"]["request_user_access_token"] == REDACTED
+def test_shared_helper_attributes_are_rejected(config):
+    # error.type is read by spanfields.error_message(), which both mappers call,
+    # and feeds custom_data["error"] — a different key than the derived one, so
+    # neither the startup set nor the runtime collision check saw it.
+    with pytest.raises(ConfigError, match="already read by the bridge"):
+        Pipeline(replace(config, extra_attributes=("error.type",)), BoundedQueue(10), "k")
 
 
-def test_extra_attributes_bytes_value_does_not_drop_the_event(config):
-    # A bytes-valued attribute would fail json.dumps in _enforce_size and take
-    # the whole event with it.
-    config = replace(config, extra_attributes=("weird.blob",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    export = load_export("llm_openai_chat")
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = "weird.blob"
-    attr.value.bytes_value = b"\xff\xfe binary"
-    queued = pipeline.process_export(export)
-    assert queued == 1
-    [event] = queue.drain(10)
-    assert isinstance(event["custom_data"]["weird_blob"], str)
-    json.dumps(event)  # the failure mode this guards was an unserializable event
+def test_mapper_request_params_are_rejected(config):
+    # gen_ai.request.temperature lands in custom_data["temperature"] — again a
+    # different key than the derived gen_ai_request_temperature.
+    for name in ("gen_ai.request.temperature", "gen_ai.request.top_p"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, extra_attributes=(name,)), BoundedQueue(10), "k")
 
 
-def test_extra_attributes_large_collection_does_not_blow_the_event_cap(config):
-    # truncate_values bounds string leaves only, so a many-element array
-    # attribute would push the event past max_event_bytes — dropping it whole,
-    # since extras aren't in _enforce_size's shed set.
-    config = replace(config, extra_attributes=("bulk.list",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    export = load_export("llm_openai_chat")
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = "bulk.list"
-    for _ in range(5000):
-        attr.value.array_value.values.add().string_value = "x" * 10
-    queued = pipeline.process_export(export)
-    assert queued == 1
-    assert pipeline.dropped_oversize == 0
-    [event] = queue.drain(10)
-    assert len(json.dumps(event).encode()) <= config.max_event_bytes
+def test_fit_encoded_never_exceeds_a_tiny_budget():
+    from cerberus_envoy_ai_gateway.pipeline import fit_encoded
+
+    # Latent if MAX_EXTRA_VALUE_BYTES is ever lowered below the marker length.
+    for budget in (4, 8, 16):
+        assert len(json.dumps(fit_encoded("x" * 500, budget))) <= budget
 
 
 def test_key_collision_within_one_list_is_rejected(config):

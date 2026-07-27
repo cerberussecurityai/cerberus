@@ -29,6 +29,10 @@ MIN_FLUSH_INTERVAL_MS = 100
 # schema-report catalogues) — these keys survive to the byte cap, so they have
 # to be small by construction.
 MAX_EXTRA_ATTRIBUTES = 20
+# Attribute *names* become custom_data keys, which are unsheddable like the
+# values. Values are bounded in the pipeline; without this the key itself could
+# exceed the event cap and silently drop every event carrying that attribute.
+MAX_EXTRA_ATTRIBUTE_NAME_CHARS = 128
 
 _LOG_LEVELS = ("debug", "info", "warning", "error")
 
@@ -57,7 +61,16 @@ def _env_attribute_list(name: str, maximum: int) -> tuple[str, ...]:
     names: list[str] = []
     for part in raw.split(","):
         attribute = part.strip()
-        if attribute and attribute not in names:
+        if not attribute:
+            continue
+        if len(attribute) > MAX_EXTRA_ATTRIBUTE_NAME_CHARS:
+            raise ConfigError(
+                f"{name}: attribute name is {len(attribute)} characters, over the "
+                f"{MAX_EXTRA_ATTRIBUTE_NAME_CHARS}-character limit — the name becomes an "
+                "unsheddable custom_data key, so an oversized one would drop every event "
+                f"carrying it (got {attribute[:40]!r}...)"
+            )
+        if attribute not in names:
             names.append(attribute)
     if len(names) > maximum:
         raise ConfigError(f"{name} accepts at most {maximum} attributes (got {len(names)})")

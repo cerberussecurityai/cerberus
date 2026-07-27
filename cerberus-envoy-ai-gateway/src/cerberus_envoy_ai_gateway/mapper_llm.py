@@ -37,6 +37,9 @@ _RESPONSE_MODEL_KEYS = ("gen_ai.response.model",)
 _INPUT_KEYS = ("input.value", "gen_ai.input.value", "gen_ai.request.input")
 _OUTPUT_KEYS = ("output.value", "gen_ai.output.value")
 _ROUTE_KEYS = ("http.route", "url.path", "http.target")
+# Read as f"gen_ai.request.{param}" — named here so CONSUMED_ATTRIBUTES derives
+# from the same tuple the read loop uses.
+_REQUEST_PARAMS = ("temperature", "top_p", "max_tokens")
 
 
 # gen_ai.operation.name (or span name) → Cerberus event method. The values
@@ -99,15 +102,23 @@ CONSUMED_ATTRIBUTES = frozenset(
     + ("llm.invocation_parameters", "embedding.invocation_parameters")
     + ("gen_ai.operation.name", "openinference.span.kind")
     + ("llm.input_messages", "llm.output_messages")
+    + tuple(f"gen_ai.request.{param}" for param in _REQUEST_PARAMS)
     + tuple(candidate for candidates in _TOKEN_FIELDS.values() for candidate in candidates)
     # Built from the table rather than re-listed, so a new token candidate can't
     # be added there and silently escape the rejection set. An earlier
     # hand-written version of this frozenset omitted all 14 of them.
 )
 
-# Flattened message attributes are per-index (llm.output_messages.0.message.…),
-# so they're matched by prefix rather than listed.
-CONSUMED_ATTRIBUTE_PREFIXES = ("llm.input_messages.", "llm.output_messages.")
+# Attribute names this mapper builds dynamically, matched by prefix because the
+# suffix is per-index or per-parameter. The drift guard requires every f-string
+# attribute lookup's static prefix to appear here — a literal scan alone can't
+# see names assembled at runtime, which is how the gen_ai.request.* parameters
+# went undeclared.
+CONSUMED_ATTRIBUTE_PREFIXES = (
+    "llm.input_messages.",
+    "llm.output_messages.",
+    "gen_ai.request.",
+)
 
 
 def _token_counts(attrs: dict[str, Any]) -> dict[str, int]:
@@ -229,7 +240,7 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "span_id": span.span_id.hex(),
     }
     custom_data.update(_token_counts(attrs))
-    for param in ("temperature", "top_p", "max_tokens"):
+    for param in _REQUEST_PARAMS:
         value = attrs.get(f"gen_ai.request.{param}")
         if value is None:
             value = params.get(param)
