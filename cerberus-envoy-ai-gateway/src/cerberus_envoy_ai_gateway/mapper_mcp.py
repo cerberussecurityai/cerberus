@@ -77,15 +77,13 @@ _ARGUMENT_PREFIX = "mcp.request.argument."
 _TOOL_LIST_KEYS = ("mcp.tools.list", "output.value")
 
 # Attributes this mapper reads. Declared so the pipeline can refuse to let an
-# operator also select one via CERBERUS_EXTRA_ATTRIBUTES:
+# operator also select one via CERBERUS_EXTRA_ATTRIBUTES/CERBERUS_HASH_ATTRIBUTES:
 # the mapper copies these into custom_data (and some into `endpoint`) under its
-# own names, which would store the same value twice under two keys.
+# own names, which would leave the raw value beside any digest.
 # Per-index/per-name attributes this mapper reads, matched by prefix (the suffix
 # is the argument name). Declared so the pipeline can refuse an operator
 # selecting one without hand-copying the literal.
 CONSUMED_ATTRIBUTE_PREFIXES = (_ARGUMENT_PREFIX,)
-
-
 CONSUMED_ATTRIBUTES = frozenset(
     _SERVER_KEYS
     + _SESSION_KEYS

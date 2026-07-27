@@ -104,6 +104,7 @@ class Config:
     user_id_attribute: str | None = None
     user_agent_attribute: str = "http.user_agent"
     extra_attributes: tuple[str, ...] = ()
+    hash_attributes: tuple[str, ...] = ()
 
     capture_llm_content: bool = True
     capture_mcp_arguments: bool = True
@@ -181,6 +182,15 @@ class Config:
             )
 
         extra_attributes = _env_attribute_list("CERBERUS_EXTRA_ATTRIBUTES", MAX_EXTRA_ATTRIBUTES)
+        hash_attributes = _env_attribute_list("CERBERUS_HASH_ATTRIBUTES", MAX_EXTRA_ATTRIBUTES)
+        # Both lists are captured, so the cap has to bind on the union — each
+        # attribute occupies an unsheddable custom_data key.
+        captured = len(set(extra_attributes) | set(hash_attributes))
+        if captured > MAX_EXTRA_ATTRIBUTES:
+            raise ConfigError(
+                "CERBERUS_EXTRA_ATTRIBUTES and CERBERUS_HASH_ATTRIBUTES together accept at "
+                f"most {MAX_EXTRA_ATTRIBUTES} attributes (got {captured})"
+            )
 
         return cls(
             ingest_service=ingest_service,
@@ -195,6 +205,7 @@ class Config:
                 os.environ.get("CERBERUS_USER_AGENT_ATTRIBUTE") or "http.user_agent"
             ).strip(),
             extra_attributes=extra_attributes,
+            hash_attributes=hash_attributes,
             capture_llm_content=_env_bool("CERBERUS_CAPTURE_LLM_CONTENT", True),
             capture_mcp_arguments=_env_bool("CERBERUS_CAPTURE_MCP_ARGUMENTS", True),
             batch_size=_env_int("CERBERUS_BATCH_SIZE", 50, 1, MAX_SERVER_BATCH_SIZE),

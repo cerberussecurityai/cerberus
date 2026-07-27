@@ -171,7 +171,6 @@ def test_extra_attributes_default_empty(monkeypatch):
 
 
 def test_extra_attributes_rejects_oversized_list(monkeypatch):
-    # Each captured attribute occupies an unsheddable custom_data key.
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
     monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
     monkeypatch.setenv(
@@ -219,3 +218,32 @@ def test_secret_fetch_knobs_out_of_range_rejected(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
     with pytest.raises(ConfigError):
         Config.from_env()
+
+
+def test_hash_attributes_parsed(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", "corr.session, tenant.id")
+    config = Config.from_env()
+    assert config.hash_attributes == ("corr.session", "tenant.id")
+
+
+def test_attribute_cap_binds_on_the_union_of_both_lists(monkeypatch):
+    # Each captured attribute occupies an unsheddable custom_data key, so the
+    # cap has to cover both lists together, not each independently.
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    half = MAX_EXTRA_ATTRIBUTES // 2 + 1
+    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", ",".join(f"a{i}" for i in range(half)))
+    monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", ",".join(f"b{i}" for i in range(half)))
+    with pytest.raises(ConfigError):
+        Config.from_env()
+
+
+def test_overlapping_lists_count_once_toward_the_cap(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    names = ",".join(f"a{i}" for i in range(MAX_EXTRA_ATTRIBUTES))
+    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", names)
+    monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", names)
+    assert len(Config.from_env().hash_attributes) == MAX_EXTRA_ATTRIBUTES
