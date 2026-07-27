@@ -45,8 +45,12 @@ MAX_IP_CHARS = 64
 
 
 def extra_attribute_key(name: str) -> str:
-    """Derive a ``custom_data`` key from a span attribute name (``a.b-c`` -> ``a_b_c``)."""
-    return name.strip().replace(".", "_").replace("-", "_")
+    """Derive a ``custom_data`` key from a span attribute name (``A.b-c`` -> ``a_b_c``).
+
+    Lower-cased so a header copy-pasted with mixed case still lands on the
+    snake_case key every other ``custom_data`` entry uses.
+    """
+    return name.strip().lower().replace(".", "_").replace("-", "_")
 
 
 def is_sensitive_attribute(name: str) -> bool:
@@ -78,6 +82,22 @@ def coerce_json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [coerce_json_safe(item) for item in value]
     return value
+
+
+def coerce_extra_value(value: Any) -> Any:
+    """Reduce an extra attribute to a scalar ``truncate_values`` can bound.
+
+    Extras are correlation identifiers landing in ``custom_data`` keys that
+    ``_enforce_size`` cannot shed, so their size has to be settled here.
+    Truncation only bounds string *leaves*, so a structured attribute — an OTLP
+    ``array_value``/``kvlist_value`` with thousands of small elements — would
+    sail through it and push the event past the byte cap, dropping it whole.
+    Serializing anything non-scalar gives every extra a hard bound.
+    """
+    safe = coerce_json_safe(value)
+    if isinstance(safe, (str, int, float, bool)):
+        return safe
+    return json.dumps(safe, ensure_ascii=False)
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
@@ -188,7 +208,7 @@ class Pipeline:
                         key,
                     )
                 continue
-            extras[key] = coerce_json_safe(value)
+            extras[key] = coerce_extra_value(value)
             if is_sensitive_attribute(name):
                 redact.add(key)
         if not extras:

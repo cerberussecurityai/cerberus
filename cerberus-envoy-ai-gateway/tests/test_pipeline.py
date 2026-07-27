@@ -422,3 +422,37 @@ def test_extra_attributes_redacts_sensitive_term_in_underscored_segment(config):
     pipeline.process_export(export)
     [event] = queue.drain(10)
     assert event["custom_data"]["request_user_access_token"] == REDACTED
+
+
+def test_extra_attributes_large_collection_does_not_blow_the_event_cap(config):
+    # truncate_values bounds string leaves only, so a many-element array
+    # attribute would sail through it and push the event past max_event_bytes —
+    # dropping it whole, since extras aren't in _enforce_size's shed set.
+    config = replace(config, extra_attributes=("bulk.list",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "bulk.list"
+    for _ in range(5000):
+        attr.value.array_value.values.add().string_value = "x" * 10
+    queued = pipeline.process_export(export)
+    assert queued == 1
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    assert len(json.dumps(event).encode()) <= config.max_event_bytes
+
+
+def test_extra_attribute_keys_are_lowercased(config):
+    config = replace(config, extra_attributes=("Tenant.ID",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "Tenant.ID"
+    attr.value.string_value = "acme"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["tenant_id"] == "acme"
