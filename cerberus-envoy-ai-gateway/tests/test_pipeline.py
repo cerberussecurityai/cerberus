@@ -21,6 +21,15 @@ def _run(name: str, config, secret_key=None, capacity=100):
     return pipeline, queue, queued
 
 
+def _with_attr(fixture: str, key: str, value: str):
+    export = load_export(fixture)
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = key
+    attr.value.string_value = value
+    return export
+
+
 def test_remote_addr_hashed_with_secret(config):
     _, queue, queued = _run("llm_openai_chat", config, secret_key="test-secret")
     assert queued == 1
@@ -394,151 +403,6 @@ def test_extra_attributes_non_sensitive_names_still_pass_through(config):
     assert event["custom_data"]["tenant_id"] == "acme-42"
 
 
-def test_extra_attributes_bytes_value_does_not_drop_the_event(config):
-    # A bytes-valued attribute would fail json.dumps in _enforce_size and take
-    # the whole event with it.
-    config = replace(config, extra_attributes=("weird.blob",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    export = load_export("llm_openai_chat")
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = "weird.blob"
-    attr.value.bytes_value = b"\xff\xfe binary"
-    queued = pipeline.process_export(export)
-    assert queued == 1
-    [event] = queue.drain(10)
-    assert isinstance(event["custom_data"]["weird_blob"], str)
-    json.dumps(event)  # the failure mode this guards was an unserializable event
-
-
-def test_extra_attributes_redacts_sensitive_term_in_underscored_segment(config):
-    # Locks the second split in is_sensitive_attribute. Splitting on [.-] alone
-    # leaves "user_access_token" as one segment, which matches nothing; only the
-    # [.-_] split decomposes it to "token". Dropping that split as redundant
-    # must fail here — the other redaction tests would all still pass.
-    config = replace(config, extra_attributes=("request.user_access_token",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    export = load_export("llm_openai_chat")
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = "request.user_access_token"
-    attr.value.string_value = "tok-abc"
-    pipeline.process_export(export)
-    [event] = queue.drain(10)
-    assert event["custom_data"]["request_user_access_token"] == REDACTED
-
-
-def test_extra_attributes_large_collection_does_not_blow_the_event_cap(config):
-    # truncate_values bounds string leaves only, so a many-element array
-    # attribute would sail through it and push the event past max_event_bytes —
-    # dropping it whole, since extras aren't in _enforce_size's shed set.
-    config = replace(config, extra_attributes=("bulk.list",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    export = load_export("llm_openai_chat")
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = "bulk.list"
-    for _ in range(5000):
-        attr.value.array_value.values.add().string_value = "x" * 10
-    queued = pipeline.process_export(export)
-    assert queued == 1
-    assert pipeline.dropped_oversize == 0
-    [event] = queue.drain(10)
-    assert len(json.dumps(event).encode()) <= config.max_event_bytes
-
-
-def test_extra_attribute_keys_are_lowercased(config):
-    config = replace(config, extra_attributes=("Tenant.ID",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    export = load_export("llm_openai_chat")
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = "Tenant.ID"
-    attr.value.string_value = "acme"
-    pipeline.process_export(export)
-    [event] = queue.drain(10)
-    assert event["custom_data"]["tenant_id"] == "acme"
-
-
-def _with_attr(fixture: str, key: str, value: str):
-    export = load_export(fixture)
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = key
-    attr.value.string_value = value
-    return export
-
-
-def test_hash_attributes_produce_a_digest_not_cleartext(config):
-    config = replace(config, hash_attributes=("corr.session",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-abc"))
-    [event] = queue.drain(10)
-    digest = event["custom_data"]["corr_session"]
-    assert HEX64.match(digest)
-    assert "sess-abc" not in json.dumps(event)
-
-
-def test_hash_attributes_join_across_llm_and_mcp_events(config):
-    # The whole point: trace_id doesn't correlate the two paths, so the same
-    # identifier must produce the same digest on both.
-    config = replace(config, hash_attributes=("corr.session",))
-    digests = []
-    for fixture in ("llm_openai_chat", "mcp_tool_call_route_events"):
-        queue = BoundedQueue(100)
-        pipeline = Pipeline(config, queue, "secret-k")
-        pipeline.process_export(_with_attr(fixture, "corr.session", "sess-abc"))
-        digests.append(queue.drain(10)[0]["custom_data"]["corr_session"])
-    assert digests[0] == digests[1]
-
-
-def test_hash_attributes_fail_closed_without_a_secret(config):
-    # Must never fall back to the raw value the way _pseudonymize_ip does — the
-    # operator asked for this attribute specifically not to be stored in clear.
-    config = replace(config, hash_attributes=("corr.session",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, None)
-    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-abc"))
-    [event] = queue.drain(10)
-    assert event["custom_data"]["corr_session"] == REDACTED
-    assert "sess-abc" not in json.dumps(event)
-
-
-def test_hash_attributes_are_captured_without_being_listed_twice(config):
-    config = replace(config, extra_attributes=(), hash_attributes=("corr.session",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-abc"))
-    [event] = queue.drain(10)
-    assert HEX64.match(event["custom_data"]["corr_session"])
-
-
-def test_hashing_beats_sensitive_name_redaction(config):
-    # user.token has a sensitive segment and would otherwise be redacted —
-    # unusable for the correlation the opt-in exists to serve.
-    config = replace(config, hash_attributes=("user.token",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "user.token", "sess-abc"))
-    [event] = queue.drain(10)
-    assert HEX64.match(event["custom_data"]["user_token"])
-
-
-def test_unhashed_sensitive_attribute_still_redacted(config):
-    # The opt-in must not weaken the default for attributes not listed.
-    config = replace(config, extra_attributes=("user.token",), hash_attributes=())
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "user.token", "sess-abc"))
-    [event] = queue.drain(10)
-    assert event["custom_data"]["user_token"] == REDACTED
-
-
 def _with_kvlist(fixture: str, key: str, pairs: dict):
     export = load_export(fixture)
     span = export.resource_spans[0].scope_spans[0].spans[0]
@@ -588,9 +452,8 @@ def test_selecting_a_bridge_owned_attribute_is_rejected(config):
     # The bridge copies mcp.session.id into custom_data["session_id"] itself, so
     # selecting it would leave the raw value beside the captured/hashed one.
     # Refused at startup rather than scrubbed, which never caught every alias.
-    for field in ("extra_attributes", "hash_attributes"):
-        with pytest.raises(ConfigError, match="already read by the bridge"):
-            Pipeline(replace(config, **{field: ("mcp.session.id",)}), BoundedQueue(10), "k")
+    with pytest.raises(ConfigError, match="already read by the bridge"):
+        Pipeline(replace(config, extra_attributes=("mcp.session.id",)), BoundedQueue(10), "k")
 
 
 def test_endpoint_embedded_sources_are_rejected(config):
@@ -598,7 +461,7 @@ def test_endpoint_embedded_sources_are_rejected(config):
     # corrupt the endpoint or leave the raw value inside it.
     for name in ("llm.system", "llm.model_name"):
         with pytest.raises(ConfigError, match="already read by the bridge"):
-            Pipeline(replace(config, hash_attributes=(name,)), BoundedQueue(10), "k")
+            Pipeline(replace(config, extra_attributes=(name,)), BoundedQueue(10), "k")
 
 
 def test_configured_header_attributes_are_rejected(config):
@@ -607,54 +470,7 @@ def test_configured_header_attributes_are_rejected(config):
     config = replace(config, user_id_attribute="corr.id")
     for name in ("http.user_agent", "http.client_ip", "corr.id"):
         with pytest.raises(ConfigError, match="already read by the bridge"):
-            Pipeline(replace(config, hash_attributes=(name,)), BoundedQueue(10), "k")
-
-
-def test_operator_owned_attributes_are_still_accepted(config):
-    # Over-rejection would make the feature useless; the intended shape works.
-    Pipeline(replace(config, hash_attributes=("corr.session",)), BoundedQueue(10), "k")
-    Pipeline(replace(config, extra_attributes=("tenant.id",)), BoundedQueue(10), "k")
-
-
-def test_two_attributes_claiming_one_key_are_rejected(config):
-    # tenant-id and tenant.id both derive custom_data["tenant_id"]. Split across
-    # the two lists, extras won on iteration order and the hash entry was skipped
-    # before its digest was computed — shipping the raw value in cleartext.
-    with pytest.raises(ConfigError, match="both map to custom_data key"):
-        Pipeline(
-            replace(config, extra_attributes=("tenant-id",), hash_attributes=("tenant.id",)),
-            BoundedQueue(10),
-            "k",
-        )
-
-
-def test_key_collision_within_one_list_is_rejected(config):
-    with pytest.raises(ConfigError, match="both map to custom_data key"):
-        Pipeline(
-            replace(config, extra_attributes=("tenant-id", "tenant.id")), BoundedQueue(10), "k"
-        )
-
-
-def test_case_variant_names_claiming_one_key_are_rejected(config):
-    # Span attribute lookup is case-sensitive, so these are two different
-    # sources, but extra_attribute_key lower-cases and they collide.
-    with pytest.raises(ConfigError, match="both map to custom_data key"):
-        Pipeline(
-            replace(config, extra_attributes=("Tenant.id",), hash_attributes=("tenant.id",)),
-            BoundedQueue(10),
-            "k",
-        )
-
-
-def test_same_attribute_in_both_lists_is_allowed_and_hashes(config):
-    # Naming one attribute in both lists is unambiguous: it means "hash it".
-    config = replace(config, extra_attributes=("corr.id",), hash_attributes=("corr.id",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "corr.id", "RAW-CORR"))
-    [event] = queue.drain(10)
-    assert HEX64.match(event["custom_data"]["corr_id"])
-    assert "RAW-CORR" not in json.dumps(event)
+            Pipeline(replace(config, extra_attributes=(name,)), BoundedQueue(10), "k")
 
 
 def test_extra_attributes_redacts_kebab_case_sensitive_compound(config):
@@ -690,3 +506,66 @@ def test_operator_correlation_names_are_not_over_redacted():
     # configuration the README tells operators to use.
     for name in ("corr.session", "tenant.id", "request.id", "corr.trace"):
         assert not is_sensitive_attribute(name), name
+
+
+def test_extra_attributes_redacts_sensitive_term_in_underscored_segment(config):
+    # "user_access_token" is one segment under [.-] and matches nothing; only
+    # normalizing every separator surfaces access_token / token inside it.
+    config = replace(config, extra_attributes=("request.user_access_token",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "request.user_access_token", "tok-abc"))
+    [event] = queue.drain(10)
+    assert event["custom_data"]["request_user_access_token"] == REDACTED
+
+
+def test_extra_attributes_bytes_value_does_not_drop_the_event(config):
+    # A bytes-valued attribute would fail json.dumps in _enforce_size and take
+    # the whole event with it.
+    config = replace(config, extra_attributes=("weird.blob",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "weird.blob"
+    attr.value.bytes_value = b"\xff\xfe binary"
+    queued = pipeline.process_export(export)
+    assert queued == 1
+    [event] = queue.drain(10)
+    assert isinstance(event["custom_data"]["weird_blob"], str)
+    json.dumps(event)  # the failure mode this guards was an unserializable event
+
+
+def test_extra_attributes_large_collection_does_not_blow_the_event_cap(config):
+    # truncate_values bounds string leaves only, so a many-element array
+    # attribute would push the event past max_event_bytes — dropping it whole,
+    # since extras aren't in _enforce_size's shed set.
+    config = replace(config, extra_attributes=("bulk.list",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "bulk.list"
+    for _ in range(5000):
+        attr.value.array_value.values.add().string_value = "x" * 10
+    queued = pipeline.process_export(export)
+    assert queued == 1
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    assert len(json.dumps(event).encode()) <= config.max_event_bytes
+
+
+def test_key_collision_within_one_list_is_rejected(config):
+    # tenant-id and tenant.id both derive custom_data["tenant_id"]; which value
+    # wins would otherwise depend on iteration order.
+    with pytest.raises(ConfigError, match="both map to custom_data key"):
+        Pipeline(
+            replace(config, extra_attributes=("tenant-id", "tenant.id")), BoundedQueue(10), "k"
+        )
+
+
+def test_operator_owned_attributes_are_still_accepted(config):
+    # Over-rejection would make the feature useless; the intended shape works.
+    Pipeline(replace(config, extra_attributes=("corr.session", "tenant.id")), BoundedQueue(10), "k")

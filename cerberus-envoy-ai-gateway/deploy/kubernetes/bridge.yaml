@@ -71,11 +71,6 @@ spec:
             # Correlates LLM and MCP events when trace_id can't (see README):
             # - name: CERBERUS_EXTRA_ATTRIBUTES
             #   value: "tenant.id,request.id"
-            # Same, but stored as an HMAC digest — joins without the raw value.
-            # Must be an attribute you map yourself; attributes the bridge already
-            # reads (mcp.session.id, llm.system, http.user_agent, ...) are refused.
-            # - name: CERBERUS_HASH_ATTRIBUTES
-            #   value: "corr.session"
           livenessProbe:
             httpGet:
               path: /health
