@@ -341,3 +341,66 @@ def test_no_extra_attributes_configured_is_a_no_op(config):
     _, queue_off, _ = _run("llm_openai_chat", config)
     _, queue_on, _ = _run("llm_openai_chat", replace(config, extra_attributes=()))
     assert queue_off.drain(1)[0]["custom_data"] == queue_on.drain(1)[0]["custom_data"]
+
+
+def test_extra_attributes_redacts_namespaced_sensitive_names(config):
+    # sanitize_dict matches whole keys, so http.request.header.authorization
+    # flattens to a key matching nothing — it must still be redacted.
+    config = replace(config, extra_attributes=("http.request.header.authorization",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "http.request.header.authorization"
+    attr.value.string_value = "Bearer super-secret"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["http_request_header_authorization"] == REDACTED
+
+
+def test_extra_attributes_redacts_dotted_sensitive_suffix(config):
+    config = replace(config, extra_attributes=("auth.access.token",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "auth.access.token"
+    attr.value.string_value = "tok-123"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["auth_access_token"] == REDACTED
+
+
+def test_extra_attributes_non_sensitive_names_still_pass_through(config):
+    # The redaction guard must not swallow ordinary correlation attributes.
+    config = replace(config, extra_attributes=("tenant.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "tenant.id"
+    attr.value.string_value = "acme-42"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["tenant_id"] == "acme-42"
+
+
+def test_extra_attributes_bytes_value_does_not_drop_the_event(config):
+    # A bytes-valued attribute would fail json.dumps in _enforce_size and take
+    # the whole event with it.
+    config = replace(config, extra_attributes=("weird.blob",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "weird.blob"
+    attr.value.bytes_value = b"\xff\xfe binary"
+    queued = pipeline.process_export(export)
+    assert queued == 1
+    [event] = queue.drain(10)
+    assert isinstance(event["custom_data"]["weird_blob"], str)
+    json.dumps(event)  # the failure mode this guards was an unserializable event

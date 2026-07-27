@@ -11,9 +11,10 @@ All privacy-affecting work happens here, before anything reaches the queue:
 
 import json
 import logging
+import re
 from typing import Any
 
-from cerberus_core import hash_pii, normalize_ip, sanitize_dict
+from cerberus_core import REDACTED, SENSITIVE_KEYS, hash_pii, normalize_ip, sanitize_dict
 
 from .classify import KIND_LLM, KIND_MCP, classify
 from .config import Config
@@ -46,6 +47,37 @@ MAX_IP_CHARS = 64
 def extra_attribute_key(name: str) -> str:
     """Derive a ``custom_data`` key from a span attribute name (``a.b-c`` -> ``a_b_c``)."""
     return name.strip().replace(".", "_").replace("-", "_")
+
+
+def is_sensitive_attribute(name: str) -> bool:
+    """True when any segment of a span attribute name is a SENSITIVE_KEYS entry.
+
+    ``sanitize_dict`` matches whole keys, so a namespaced OTel name like
+    ``http.request.header.authorization`` flattens to
+    ``http_request_header_authorization`` — which matches nothing, and would
+    copy a bearer token through in cleartext. Splitting on ``.``/``-`` keeps
+    compound entries like ``api_key`` intact; also splitting on ``_`` catches
+    the dotted spelling (``access.token`` -> ``token``).
+    """
+    lowered = name.strip().lower()
+    segments = set(re.split(r"[.\-]", lowered)) | set(re.split(r"[.\-_]", lowered))
+    return any(segment in SENSITIVE_KEYS for segment in segments if segment)
+
+
+def coerce_json_safe(value: Any) -> Any:
+    """Convert OTLP values ``json.dumps`` can't encode (``bytes``) into text.
+
+    An unserializable value would fail the ``json.dumps`` in ``_enforce_size``
+    and take the whole event down with it, so a byte-valued attribute must not
+    reach the queue unconverted.
+    """
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, dict):
+        return {key: coerce_json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [coerce_json_safe(item) for item in value]
+    return value
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
@@ -134,6 +166,9 @@ class Pipeline:
             return
         custom_data = event["custom_data"]
         extras: dict[str, Any] = {}
+        # Keys whose *attribute name* is sensitive even though the flattened key
+        # isn't — sanitize_dict can't see those, so redact them ourselves.
+        redact: set[str] = set()
         for name in self.config.extra_attributes:
             value = attrs.get(name)
             if value is None:
@@ -149,9 +184,15 @@ class Pipeline:
                         key,
                     )
                 continue
-            extras[key] = value
-        if extras:
-            custom_data.update(truncate_values(sanitize_dict(extras), MAX_EXTRA_VALUE_CHARS))
+            extras[key] = coerce_json_safe(value)
+            if is_sensitive_attribute(name):
+                redact.add(key)
+        if not extras:
+            return
+        extras = truncate_values(sanitize_dict(extras), MAX_EXTRA_VALUE_CHARS)
+        for key in redact:
+            extras[key] = REDACTED
+        custom_data.update(extras)
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""
