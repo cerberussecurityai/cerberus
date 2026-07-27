@@ -245,6 +245,11 @@ class Pipeline:
         # Collision warnings are once-per-key: the condition is a static config
         # mistake, so re-logging it per event would just flood.
         self._extra_key_collisions: set[str] = set()
+        # Configured names are static for the life of the pipeline, so settle
+        # the sensitivity verdict once here rather than per span.
+        self._sensitive_extras = frozenset(
+            name for name in config.extra_attributes if is_sensitive_attribute(name)
+        )
         self.spans_ignored = 0
         self.spans_filtered = 0
         self.dropped_oversize = 0
@@ -331,7 +336,7 @@ class Pipeline:
             # Structure is preserved here so sanitize_dict can recurse into it;
             # serializing before that would hide nested credential keys.
             extras[key] = coerce_json_safe(value)
-            if is_sensitive_attribute(name):
+            if name in self._sensitive_extras:
                 redact.add(key)
         if extras:
             extras = {key: bound_extra_value(item) for key, item in sanitize_dict(extras).items()}
