@@ -68,7 +68,7 @@ def _env_attribute_list(name: str, maximum: int) -> tuple[str, ...]:
                 f"{name}: attribute name is {len(attribute)} characters, over the "
                 f"{MAX_EXTRA_ATTRIBUTE_NAME_CHARS}-character limit — the name becomes an "
                 "unsheddable custom_data key, so an oversized one would drop every event "
-                f"carrying it (got {attribute[:40]!r}...)"
+                f"carrying it (name starts {attribute[:40]!r})"
             )
         if attribute not in names:
             names.append(attribute)

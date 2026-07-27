@@ -9,6 +9,7 @@ All privacy-affecting work happens here, before anything reaches the queue:
   giant prompt can't blow the ingest server's per-event byte cap.
 """
 
+import base64
 import json
 import logging
 import re
@@ -98,9 +99,18 @@ def coerce_json_safe(value: Any) -> Any:
     An unserializable value would fail the ``json.dumps`` in ``_enforce_size``
     and take the whole event down with it, so a byte-valued attribute must not
     reach the queue unconverted.
+
+    Conversion is **lossless**: valid UTF-8 decodes to readable text, and
+    anything else becomes ``base64:<...>`` rather than replacement characters.
+    These values are advertised as correlation keys, so a lossy decode that
+    mapped ``b"\\xff"`` and ``b"\\xfe"`` both to U+FFFD would make distinct
+    identifiers collide and correlate unrelated events.
     """
     if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return "base64:" + base64.b64encode(value).decode("ascii")
     if isinstance(value, dict):
         return {key: coerce_json_safe(item) for key, item in value.items()}
     if isinstance(value, list):

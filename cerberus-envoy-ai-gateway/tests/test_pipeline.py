@@ -544,3 +544,33 @@ def test_key_collision_within_one_list_is_rejected(config):
 def test_operator_owned_attributes_are_still_accepted(config):
     # Over-rejection would make the feature useless; the intended shape works.
     Pipeline(replace(config, extra_attributes=("corr.session", "tenant.id")), BoundedQueue(10), "k")
+
+
+def test_extra_attributes_distinct_bytes_stay_distinct(config):
+    # Lossy UTF-8 replacement mapped b"\xff" and b"\xfe" both to U+FFFD, so two
+    # distinct correlation keys collapsed to the same stored value and
+    # correlated unrelated events. Encoding is now lossless.
+    outputs = []
+    for raw in (b"\xff", b"\xfe"):
+        config2 = replace(config, extra_attributes=("corr.blob",))
+        queue = BoundedQueue(100)
+        pipeline = Pipeline(config2, queue, None)
+        export = load_export("llm_openai_chat")
+        span = export.resource_spans[0].scope_spans[0].spans[0]
+        attr = span.attributes.add()
+        attr.key = "corr.blob"
+        attr.value.bytes_value = raw
+        pipeline.process_export(export)
+        outputs.append(queue.drain(10)[0]["custom_data"]["corr_blob"])
+    assert outputs[0] != outputs[1]
+    # valid UTF-8 still stored as readable text, not base64
+    config3 = replace(config, extra_attributes=("corr.blob",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config3, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "corr.blob"
+    attr.value.bytes_value = b"plain-text-id"
+    pipeline.process_export(export)
+    assert queue.drain(10)[0]["custom_data"]["corr_blob"] == "plain-text-id"
