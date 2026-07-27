@@ -601,3 +601,41 @@ def test_hash_attribute_joins_llm_and_mcp_despite_mapper_collision(config):
         pipeline.process_export(_with_attr(fixture, "session.id", "sess-shared"))
         digests.append(queue.drain(10)[0]["custom_data"]["session_id"])
     assert digests[0] == digests[1]
+
+
+def test_hash_attribute_scrubs_differently_named_mapper_alias(config):
+    # _SESSION_KEYS maps mcp.session.id onto custom_data["session_id"], a key the
+    # collision check never sees — so the digest landed under mcp_session_id
+    # while the raw identifier survived under session_id.
+    config = replace(config, hash_attributes=("mcp.session.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(load_export("mcp_tool_call_route_events"))
+    [event] = queue.drain(10)
+    assert "sess-1" not in json.dumps(event)
+    assert HEX64.match(event["custom_data"]["mcp_session_id"])
+    # The alias carries the same digest, so joins on either key still work.
+    assert event["custom_data"]["session_id"] == event["custom_data"]["mcp_session_id"]
+
+
+def test_hash_attribute_scrubs_user_id_alias(config):
+    # An operator mapping the same header to user.id would otherwise keep the
+    # raw identifier in the top-level user_id field.
+    config = replace(config, user_id_attribute="corr.id", hash_attributes=("corr.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.id", "who-am-i"))
+    [event] = queue.drain(10)
+    assert "who-am-i" not in json.dumps(event)
+    assert HEX64.match(event["user_id"])
+
+
+def test_alias_scrub_leaves_unrelated_values_alone(config):
+    config = replace(config, hash_attributes=("mcp.session.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(load_export("mcp_tool_call_route_events"))
+    [event] = queue.drain(10)
+    # Same event, unrelated mapper fields untouched.
+    assert event["custom_data"]["mcp_server"] == "weather-mcp"
+    assert event["endpoint"] == "mcp://weather-mcp/get_weather"

@@ -284,6 +284,8 @@ class Pipeline:
             extras[key] = coerce_json_safe(value)
             if is_sensitive_attribute(name):
                 redact.add(key)
+        if hashed:
+            self._scrub_hashed_aliases(event, attrs, hash_names, hashed)
         if extras:
             extras = {key: bound_extra_value(item) for key, item in sanitize_dict(extras).items()}
             for key in redact:
@@ -291,6 +293,43 @@ class Pipeline:
         extras.update(hashed)
         if extras:
             custom_data.update(extras)
+
+    def _scrub_hashed_aliases(
+        self,
+        event: dict[str, Any],
+        attrs: dict[str, Any],
+        hash_names: set[str],
+        hashed: dict[str, str],
+    ) -> None:
+        """Replace mapper-written copies of a hash-listed value with its digest.
+
+        A mapper may copy the selected source attribute to a *differently named*
+        destination — ``_SESSION_KEYS`` maps ``mcp.session.id`` onto
+        ``custom_data["session_id"]`` — which the key-collision check can't see,
+        so the raw identifier would sit in the event beside its own digest.
+        Matching on value rather than key catches every such alias without this
+        code having to track what each mapper happens to name things.
+
+        Deliberately scoped to bridge-derived fields (``custom_data`` scalars and
+        ``user_id``). Captured content in ``body`` comes from the payload, not
+        from attribute mapping; rewriting values inside a prompt would corrupt
+        the record of what was actually said.
+        """
+        aliases: dict[str, str] = {}
+        for name in hash_names:
+            value = attrs.get(name)
+            key = extra_attribute_key(name)
+            if value is not None and key in hashed:
+                aliases[stable_text(value)] = hashed[key]
+        if not aliases:
+            return
+        custom_data = event["custom_data"]
+        for key, existing in list(custom_data.items()):
+            if isinstance(existing, str) and existing in aliases:
+                custom_data[key] = aliases[existing]
+        user_id = event.get("user_id")
+        if isinstance(user_id, str) and user_id in aliases:
+            event["user_id"] = aliases[user_id]
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""
