@@ -22,6 +22,7 @@ from .config import Config, ConfigError
 from .mapper_llm import CONSUMED_ATTRIBUTE_PREFIXES as LLM_CONSUMED_PREFIXES
 from .mapper_llm import CONSUMED_ATTRIBUTES as LLM_CONSUMED
 from .mapper_llm import map_llm_span
+from .mapper_mcp import CONSUMED_ATTRIBUTE_PREFIXES as MCP_CONSUMED_PREFIXES
 from .mapper_mcp import CONSUMED_ATTRIBUTES as MCP_CONSUMED
 from .mapper_mcp import map_mcp_span
 from .otlp import iter_spans, span_attributes, span_event_attributes
@@ -56,13 +57,31 @@ MAX_IP_CHARS = 64
 _MAX_SENSITIVE_WORDS = max(len(key.split("_")) for key in SENSITIVE_KEYS)
 
 
-def extra_attribute_key(name: str) -> str:
-    """Derive a ``custom_data`` key from a span attribute name (``A.b-c`` -> ``a_b_c``).
+def attribute_words(name: str) -> list[str]:
+    """Split an attribute name into lower-case alphanumeric words.
 
-    Lower-cased so a header copy-pasted with mixed case still lands on the
-    snake_case key every other ``custom_data`` entry uses.
+    Splits on *every* non-alphanumeric run **and** camelCase boundaries. An
+    operator's attribute name is arbitrary text (it flows from
+    ``OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES``, and teams with Java/JS
+    conventions name things in camelCase), so ``http/request/header/authorization``
+    and ``httpRequestHeaderAuthorization`` must both decompose to their words —
+    otherwise the sensitive-name check never sees ``authorization`` and the
+    credential ships in cleartext. Case boundaries are inserted before
+    lower-casing, since lower-casing first would erase them.
     """
-    return name.strip().lower().replace(".", "_").replace("-", "_")
+    split_camel = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name.strip())
+    return [word for word in re.split(r"[^a-z0-9]+", split_camel.lower()) if word]
+
+
+def extra_attribute_key(name: str) -> str:
+    """Derive a ``custom_data`` key from a span attribute name (``A.b/c`` -> ``a_b_c``).
+
+    Lower-cased and every separator collapsed to ``_``, so the key is clean
+    snake_case whatever punctuation the source name used, and two names that
+    differ only in separator land on the same key (caught by
+    ``_reject_ambiguous_attribute_keys``).
+    """
+    return "_".join(attribute_words(name))
 
 
 def is_sensitive_attribute(name: str) -> bool:
@@ -79,11 +98,11 @@ def is_sensitive_attribute(name: str) -> bool:
     separator-preserving scheme fails on the kebab spelling HTTP headers
     actually use: ``http.request.header.x-api-key`` splits to
     ``… x | api | key`` with no ``api_key`` segment, and keeping ``_`` intact
-    instead fuses the leading ``x`` onto it as ``x_api_key``. Normalizing every
-    separator and testing contiguous runs catches both spellings — and this
+    instead fuses the leading ``x`` onto it as ``x_api_key``. Splitting on every
+    separator and testing contiguous runs catches all spellings — and this
     codebase already treats ``x-api-key`` as sensitive via ``SENSITIVE_HEADERS``.
     """
-    words = [word for word in re.split(r"[.\-_]", name.strip().lower()) if word]
+    words = attribute_words(name)
     for start in range(len(words)):
         for length in range(1, _MAX_SENSITIVE_WORDS + 1):
             if start + length > len(words):
@@ -91,6 +110,30 @@ def is_sensitive_attribute(name: str) -> bool:
             if "_".join(words[start : start + length]) in SENSITIVE_KEYS:
                 return True
     return False
+
+
+def redact_sensitive_nested_keys(value: Any) -> Any:
+    """Redact values under any dict key whose *name* is sensitive, recursively.
+
+    ``sanitize_dict`` matches whole keys only, so a nested namespaced key like
+    ``{"http.request.header.authorization": "Bearer ..."}`` inside a structured
+    extra evades it — the outer attribute name is benign and the inner key never
+    matches ``authorization`` exactly. Applying the same word-run test to every
+    nested key closes that, mirroring what ``is_sensitive_attribute`` does for
+    the top-level name.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                REDACTED
+                if isinstance(key, str) and is_sensitive_attribute(key)
+                else redact_sensitive_nested_keys(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_nested_keys(item) for item in value]
+    return value
 
 
 def coerce_json_safe(value: Any) -> Any:
@@ -208,7 +251,7 @@ def _reject_bridge_owned_attributes(config: Config) -> None:
     for label, names in (("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),):
         for name in names:
             lowered = name.strip().lower()
-            prefixes = LLM_CONSUMED_PREFIXES + ("mcp.request.argument.",)
+            prefixes = LLM_CONSUMED_PREFIXES + MCP_CONSUMED_PREFIXES
             if lowered in owned or lowered.startswith(prefixes):
                 raise ConfigError(
                     f"{label}: {name!r} is already read by the bridge, which copies it into "
@@ -259,6 +302,12 @@ class Pipeline:
         # the sensitivity verdict once here rather than per span.
         self._sensitive_extras = frozenset(
             name for name in config.extra_attributes if is_sensitive_attribute(name)
+        )
+        # custom_data keys the extras path adds. Sheddable in _enforce_size so a
+        # small max_event_bytes drops operator enrichment before it drops a
+        # whole event — a fixed per-value cap can otherwise exceed a low cap.
+        self._extra_derived_keys = frozenset(
+            extra_attribute_key(name) for name in config.extra_attributes
         )
         self.spans_ignored = 0
         self.spans_filtered = 0
@@ -349,7 +398,10 @@ class Pipeline:
             if name in self._sensitive_extras:
                 redact.add(key)
         if extras:
-            extras = {key: bound_extra_value(item) for key, item in sanitize_dict(extras).items()}
+            extras = {
+                key: bound_extra_value(redact_sensitive_nested_keys(item))
+                for key, item in sanitize_dict(extras).items()
+            }
             for key in redact:
                 extras[key] = REDACTED
         if extras:
@@ -432,6 +484,20 @@ class Pipeline:
         size = len(json.dumps(event).encode("utf-8"))
         if size <= self.config.max_event_bytes:
             return event
+
+        # Last resort before dropping the event whole: shed operator-added
+        # extras. They land in unsheddable-by-default custom_data keys, so a
+        # small max_event_bytes could otherwise let a bounded extra sink an
+        # otherwise-valid event. Losing enrichment beats losing the event.
+        shed = [key for key in self._extra_derived_keys if key in custom_data]
+        if shed:
+            for key in shed:
+                del custom_data[key]
+            custom_data["extras_dropped_oversize"] = True
+            size = len(json.dumps(event).encode("utf-8"))
+            if size <= self.config.max_event_bytes:
+                return event
+
         logger.warning(
             "Dropping oversized event (%dB > %dB) for endpoint %s",
             size,

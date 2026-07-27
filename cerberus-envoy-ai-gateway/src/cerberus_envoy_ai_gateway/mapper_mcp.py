@@ -80,6 +80,12 @@ _TOOL_LIST_KEYS = ("mcp.tools.list", "output.value")
 # operator also select one via CERBERUS_EXTRA_ATTRIBUTES:
 # the mapper copies these into custom_data (and some into `endpoint`) under its
 # own names, which would store the same value twice under two keys.
+# Per-index/per-name attributes this mapper reads, matched by prefix (the suffix
+# is the argument name). Declared so the pipeline can refuse an operator
+# selecting one without hand-copying the literal.
+CONSUMED_ATTRIBUTE_PREFIXES = (_ARGUMENT_PREFIX,)
+
+
 CONSUMED_ATTRIBUTES = frozenset(
     _SERVER_KEYS
     + _SESSION_KEYS
