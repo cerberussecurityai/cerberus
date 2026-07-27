@@ -170,6 +170,22 @@ class Pipeline:
                     self.events_mcp += 1
         return queued
 
+    def _pseudonymize_correlator(self, value: Any) -> str:
+        """HMAC a correlation value so events join on it without storing it raw.
+
+        Deterministic and key-scoped, so the same identifier on an LLM span and
+        an MCP span yields the same digest and the two join — which is the point,
+        given ``trace_id`` doesn't correlate the paths.
+
+        Unlike :meth:`_pseudonymize_ip` this **never** falls back to the raw
+        value. The operator asked for this attribute specifically not to be
+        stored in the clear, so with no secret available the only safe answer is
+        to drop it; failing open would do the exact opposite of what was asked.
+        """
+        if not self.secret_key:
+            return str(REDACTED)
+        return str(hash_pii(str(value), self.secret_key))
+
     def _apply_extra_attributes(self, event: dict[str, Any], attrs: dict[str, Any]) -> None:
         """Copy operator-selected span attributes into ``custom_data``.
 
@@ -182,14 +198,22 @@ class Pipeline:
         Mapper-set keys always win: gateway telemetry outranks operator config,
         so a stray mapping can never replace ``trace_id`` and friends.
         """
-        if not self.config.extra_attributes:
+        hash_names = set(self.config.hash_attributes)
+        # Hash-listed attributes are captured too, so an operator correlating on
+        # one identifier only has to name it once.
+        names = list(self.config.extra_attributes)
+        names += [name for name in self.config.hash_attributes if name not in names]
+        if not names:
             return
         custom_data = event["custom_data"]
         extras: dict[str, Any] = {}
         # Keys whose *attribute name* is sensitive even though the flattened key
         # isn't — sanitize_dict can't see those, so redact them ourselves.
         redact: set[str] = set()
-        for name in self.config.extra_attributes:
+        # Applied after sanitize_dict, which would otherwise redact a digest
+        # sitting under a sensitive-looking key (the session_id case).
+        hashed: dict[str, str] = {}
+        for name in names:
             value = attrs.get(name)
             if value is None:
                 continue
@@ -208,14 +232,20 @@ class Pipeline:
                         key,
                     )
                 continue
-            extras[key] = coerce_extra_value(value)
-            if is_sensitive_attribute(name):
+            coerced = coerce_extra_value(value)
+            extras[key] = coerced
+            if name in hash_names:
+                # Explicit opt-in beats the sensitive-name default: the operator
+                # wants to join on this, and a digest is not cleartext.
+                hashed[key] = self._pseudonymize_correlator(coerced)
+            elif is_sensitive_attribute(name):
                 redact.add(key)
         if not extras:
             return
         extras = truncate_values(sanitize_dict(extras), MAX_EXTRA_VALUE_CHARS)
         for key in redact:
             extras[key] = REDACTED
+        extras.update(hashed)
         custom_data.update(extras)
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:

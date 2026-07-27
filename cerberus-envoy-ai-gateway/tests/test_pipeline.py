@@ -456,3 +456,78 @@ def test_extra_attribute_keys_are_lowercased(config):
     pipeline.process_export(export)
     [event] = queue.drain(10)
     assert event["custom_data"]["tenant_id"] == "acme"
+
+
+def _with_attr(fixture: str, key: str, value: str):
+    export = load_export(fixture)
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = key
+    attr.value.string_value = value
+    return export
+
+
+def test_hash_attributes_produce_a_digest_not_cleartext(config):
+    config = replace(config, hash_attributes=("corr.session",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-abc"))
+    [event] = queue.drain(10)
+    digest = event["custom_data"]["corr_session"]
+    assert HEX64.match(digest)
+    assert "sess-abc" not in json.dumps(event)
+
+
+def test_hash_attributes_join_across_llm_and_mcp_events(config):
+    # The whole point: trace_id doesn't correlate the two paths, so the same
+    # identifier must produce the same digest on both.
+    config = replace(config, hash_attributes=("corr.session",))
+    digests = []
+    for fixture in ("llm_openai_chat", "mcp_tool_call_route_events"):
+        queue = BoundedQueue(100)
+        pipeline = Pipeline(config, queue, "secret-k")
+        pipeline.process_export(_with_attr(fixture, "corr.session", "sess-abc"))
+        digests.append(queue.drain(10)[0]["custom_data"]["corr_session"])
+    assert digests[0] == digests[1]
+
+
+def test_hash_attributes_fail_closed_without_a_secret(config):
+    # Must never fall back to the raw value the way _pseudonymize_ip does — the
+    # operator asked for this attribute specifically not to be stored in clear.
+    config = replace(config, hash_attributes=("corr.session",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-abc"))
+    [event] = queue.drain(10)
+    assert event["custom_data"]["corr_session"] == REDACTED
+    assert "sess-abc" not in json.dumps(event)
+
+
+def test_hash_attributes_are_captured_without_being_listed_twice(config):
+    config = replace(config, extra_attributes=(), hash_attributes=("corr.session",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-abc"))
+    [event] = queue.drain(10)
+    assert HEX64.match(event["custom_data"]["corr_session"])
+
+
+def test_hashing_beats_sensitive_name_redaction(config):
+    # session.id flattens to session_id, which is in SENSITIVE_KEYS and would
+    # otherwise be redacted — unusable for the correlation it exists to serve.
+    config = replace(config, hash_attributes=("session.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("llm_openai_chat", "session.id", "sess-abc"))
+    [event] = queue.drain(10)
+    assert HEX64.match(event["custom_data"]["session_id"])
+
+
+def test_unhashed_sensitive_attribute_still_redacted(config):
+    # The opt-in must not weaken the default for attributes not listed.
+    config = replace(config, extra_attributes=("session.id",), hash_attributes=())
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("llm_openai_chat", "session.id", "sess-abc"))
+    [event] = queue.drain(10)
+    assert event["custom_data"]["session_id"] == REDACTED
