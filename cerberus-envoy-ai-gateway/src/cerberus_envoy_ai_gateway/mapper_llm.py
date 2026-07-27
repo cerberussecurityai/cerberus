@@ -38,6 +38,20 @@ _INPUT_KEYS = ("input.value", "gen_ai.input.value", "gen_ai.request.input")
 _OUTPUT_KEYS = ("output.value", "gen_ai.output.value")
 _ROUTE_KEYS = ("http.route", "url.path", "http.target")
 
+# Attributes this mapper reads — see mapper_mcp.CONSUMED_ATTRIBUTES. Several
+# feed `endpoint` (llm://{provider}/{model}), which cannot be pseudonymized
+# without destroying the endpoint, so selecting them is rejected outright.
+CONSUMED_ATTRIBUTES = frozenset(
+    _PROVIDER_KEYS
+    + _RESPONSE_MODEL_KEYS
+    + _INPUT_KEYS
+    + _OUTPUT_KEYS
+    + _ROUTE_KEYS
+    + MODEL_KEYS
+    + ("llm.invocation_parameters", "embedding.invocation_parameters")
+    + ("gen_ai.operation.name", "openinference.span.kind")
+)
+
 # gen_ai.operation.name (or span name) → Cerberus event method. The values
 # must never start with "mcp_" — event_process routes on that prefix.
 _OPERATION_METHODS = {

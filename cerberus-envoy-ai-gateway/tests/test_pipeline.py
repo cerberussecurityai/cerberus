@@ -2,10 +2,12 @@ import json
 import re
 from dataclasses import replace
 
+import pytest
 from cerberus_core import REDACTED
 from helpers import load_export
 
 from cerberus_envoy_ai_gateway.classify import KIND_MCP
+from cerberus_envoy_ai_gateway.config import ConfigError
 from cerberus_envoy_ai_gateway.pipeline import Pipeline, truncate_values
 from cerberus_envoy_ai_gateway.queue import BoundedQueue
 
@@ -275,18 +277,22 @@ def test_raw_malformed_ip_bounded(config):
 
 
 def test_extra_attributes_copied_into_custom_data(config):
-    config = replace(config, extra_attributes=("llm.system",))
-    _, queue, _ = _run("llm_openai_chat", config)
+    config = replace(config, extra_attributes=("tenant.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "tenant.id", "acme"))
     [event] = queue.drain(10)
-    assert event["custom_data"]["llm_system"] == "openai"
+    assert event["custom_data"]["tenant_id"] == "acme"
 
 
 def test_extra_attributes_apply_to_mcp_events_too(config):
     # The whole point is correlating the two paths, so both must carry them.
-    config = replace(config, extra_attributes=("mcp.session.id",))
-    _, queue, _ = _run("mcp_tool_call", config)
+    config = replace(config, extra_attributes=("corr.session",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("mcp_tool_call", "corr.session", "abc"))
     [event] = queue.drain(10)
-    assert event["custom_data"]["mcp_session_id"] == "sess-1"
+    assert event["custom_data"]["corr_session"] == "abc"
 
 
 def test_extra_attributes_never_overwrite_mapper_keys(config):
@@ -513,24 +519,24 @@ def test_hash_attributes_are_captured_without_being_listed_twice(config):
 
 
 def test_hashing_beats_sensitive_name_redaction(config):
-    # session.id flattens to session_id, which is in SENSITIVE_KEYS and would
-    # otherwise be redacted — unusable for the correlation it exists to serve.
-    config = replace(config, hash_attributes=("session.id",))
+    # user.token has a sensitive segment and would otherwise be redacted —
+    # unusable for the correlation the opt-in exists to serve.
+    config = replace(config, hash_attributes=("user.token",))
     queue = BoundedQueue(100)
     pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "session.id", "sess-abc"))
+    pipeline.process_export(_with_attr("llm_openai_chat", "user.token", "sess-abc"))
     [event] = queue.drain(10)
-    assert HEX64.match(event["custom_data"]["session_id"])
+    assert HEX64.match(event["custom_data"]["user_token"])
 
 
 def test_unhashed_sensitive_attribute_still_redacted(config):
     # The opt-in must not weaken the default for attributes not listed.
-    config = replace(config, extra_attributes=("session.id",), hash_attributes=())
+    config = replace(config, extra_attributes=("user.token",), hash_attributes=())
     queue = BoundedQueue(100)
     pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "session.id", "sess-abc"))
+    pipeline.process_export(_with_attr("llm_openai_chat", "user.token", "sess-abc"))
     [event] = queue.drain(10)
-    assert event["custom_data"]["session_id"] == REDACTED
+    assert event["custom_data"]["user_token"] == REDACTED
 
 
 def _with_kvlist(fixture: str, key: str, pairs: dict):
@@ -578,64 +584,33 @@ def test_extra_attributes_bounded_by_encoded_bytes_not_characters(config):
     assert len(json.dumps(event).encode()) <= config.max_event_bytes
 
 
-def test_hash_attribute_replaces_colliding_mapper_key(config):
-    # map_mcp_span writes custom_data["session_id"] in the clear; a hash-listed
-    # session.id must not be skipped, or the raw value survives and the LLM/MCP
-    # join breaks.
-    config = replace(config, hash_attributes=("session.id",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("mcp_tool_call_route_events", "session.id", "sess-RAW"))
-    [event] = queue.drain(10)
-    assert HEX64.match(event["custom_data"]["session_id"])
-    assert "sess-RAW" not in json.dumps(event)
-    assert "sess-1" not in json.dumps(event)
+def test_selecting_a_bridge_owned_attribute_is_rejected(config):
+    # The bridge copies mcp.session.id into custom_data["session_id"] itself, so
+    # selecting it would leave the raw value beside the captured/hashed one.
+    # Refused at startup rather than scrubbed, which never caught every alias.
+    for field in ("extra_attributes", "hash_attributes"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, **{field: ("mcp.session.id",)}), BoundedQueue(10), "k")
 
 
-def test_hash_attribute_joins_llm_and_mcp_despite_mapper_collision(config):
-    config = replace(config, hash_attributes=("session.id",))
-    digests = []
-    for fixture in ("llm_openai_chat", "mcp_tool_call_route_events"):
-        queue = BoundedQueue(100)
-        pipeline = Pipeline(config, queue, "secret-k")
-        pipeline.process_export(_with_attr(fixture, "session.id", "sess-shared"))
-        digests.append(queue.drain(10)[0]["custom_data"]["session_id"])
-    assert digests[0] == digests[1]
+def test_endpoint_embedded_sources_are_rejected(config):
+    # provider/model build llm://{provider}/{model}; hashing them would either
+    # corrupt the endpoint or leave the raw value inside it.
+    for name in ("llm.system", "llm.model_name"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, hash_attributes=(name,)), BoundedQueue(10), "k")
 
 
-def test_hash_attribute_scrubs_differently_named_mapper_alias(config):
-    # _SESSION_KEYS maps mcp.session.id onto custom_data["session_id"], a key the
-    # collision check never sees — so the digest landed under mcp_session_id
-    # while the raw identifier survived under session_id.
-    config = replace(config, hash_attributes=("mcp.session.id",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(load_export("mcp_tool_call_route_events"))
-    [event] = queue.drain(10)
-    assert "sess-1" not in json.dumps(event)
-    assert HEX64.match(event["custom_data"]["mcp_session_id"])
-    # The alias carries the same digest, so joins on either key still work.
-    assert event["custom_data"]["session_id"] == event["custom_data"]["mcp_session_id"]
+def test_configured_header_attributes_are_rejected(config):
+    # user_agent/client_ip/user_id land in top-level fields the extras path
+    # doesn't touch, so selecting them dual-writes.
+    config = replace(config, user_id_attribute="corr.id")
+    for name in ("http.user_agent", "http.client_ip", "corr.id"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, hash_attributes=(name,)), BoundedQueue(10), "k")
 
 
-def test_hash_attribute_scrubs_user_id_alias(config):
-    # An operator mapping the same header to user.id would otherwise keep the
-    # raw identifier in the top-level user_id field.
-    config = replace(config, user_id_attribute="corr.id", hash_attributes=("corr.id",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(_with_attr("llm_openai_chat", "corr.id", "who-am-i"))
-    [event] = queue.drain(10)
-    assert "who-am-i" not in json.dumps(event)
-    assert HEX64.match(event["user_id"])
-
-
-def test_alias_scrub_leaves_unrelated_values_alone(config):
-    config = replace(config, hash_attributes=("mcp.session.id",))
-    queue = BoundedQueue(100)
-    pipeline = Pipeline(config, queue, "secret-k")
-    pipeline.process_export(load_export("mcp_tool_call_route_events"))
-    [event] = queue.drain(10)
-    # Same event, unrelated mapper fields untouched.
-    assert event["custom_data"]["mcp_server"] == "weather-mcp"
-    assert event["endpoint"] == "mcp://weather-mcp/get_weather"
+def test_operator_owned_attributes_are_still_accepted(config):
+    # Over-rejection would make the feature useless; the intended shape works.
+    Pipeline(replace(config, hash_attributes=("corr.session",)), BoundedQueue(10), "k")
+    Pipeline(replace(config, extra_attributes=("tenant.id",)), BoundedQueue(10), "k")

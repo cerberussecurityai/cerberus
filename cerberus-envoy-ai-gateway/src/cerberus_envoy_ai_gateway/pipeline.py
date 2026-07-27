@@ -17,8 +17,10 @@ from typing import Any
 from cerberus_core import REDACTED, SENSITIVE_KEYS, hash_pii, normalize_ip, sanitize_dict
 
 from .classify import KIND_LLM, KIND_MCP, classify
-from .config import Config
+from .config import Config, ConfigError
+from .mapper_llm import CONSUMED_ATTRIBUTES as LLM_CONSUMED
 from .mapper_llm import map_llm_span
+from .mapper_mcp import CONSUMED_ATTRIBUTES as MCP_CONSUMED
 from .mapper_mcp import map_mcp_span
 from .otlp import iter_spans, span_attributes, span_event_attributes
 from .queue import BoundedQueue
@@ -145,10 +147,48 @@ def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
     return data
 
 
+def _reject_bridge_owned_attributes(config: Config) -> None:
+    """Refuse to capture or hash an attribute the bridge already reads itself.
+
+    Selecting one produces a *dual write*: the mapper copies the same source
+    into ``custom_data``, a top-level field, or ``endpoint`` under its own name,
+    so the raw value survives beside any digest — and for endpoint-embedded
+    sources (``llm://{provider}/{model}``, ``mcp://{server}/{handler}``) it can't
+    be pseudonymized at all without destroying the endpoint.
+
+    Rejecting the configuration removes the whole class rather than chasing
+    destinations one at a time. It fails loudly at startup instead of leaking
+    quietly at runtime, and over-rejecting is safe — the operator maps their own
+    header (``corr.session``, ``tenant.id``) and gets a conflict-free key.
+    """
+    owned = set(LLM_CONSUMED) | set(MCP_CONSUMED)
+    for attribute in (
+        config.client_ip_attribute,
+        config.user_id_attribute,
+        config.user_agent_attribute,
+    ):
+        if attribute:
+            owned.add(attribute.strip().lower())
+    for label, names in (
+        ("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),
+        ("CERBERUS_HASH_ATTRIBUTES", config.hash_attributes),
+    ):
+        for name in names:
+            lowered = name.strip().lower()
+            if lowered in owned or lowered.startswith("mcp.request.argument."):
+                raise ConfigError(
+                    f"{label}: {name!r} is already read by the bridge, which copies it into "
+                    "the event under its own name — selecting it would leave the raw value "
+                    "alongside the captured one. Map your application's own header to a "
+                    "distinct attribute (e.g. 'corr.session') and select that instead."
+                )
+
+
 class Pipeline:
     """Stateful converter from OTLP export requests to queued Cerberus events."""
 
     def __init__(self, config: Config, queue: BoundedQueue, secret_key: str | None):
+        _reject_bridge_owned_attributes(config)
         self.config = config
         self.queue = queue
         self.secret_key = secret_key
@@ -251,12 +291,10 @@ class Pipeline:
                 continue
             key = extra_attribute_key(name)
             is_hashed = name in hash_names
-            # Mapper-set keys normally win, so operator config can't spoof
-            # trace_id and friends. Hash-listed attributes are the exception:
-            # the operator asked for this identifier *not* to be stored raw, and
-            # a mapper that wrote the same key in cleartext (session_id, from
-            # mcp.session.id) would defeat that and break the join besides.
-            if key in extras or (key in custom_data and not is_hashed):
+            # Guards keys the mappers set, so operator config can't spoof
+            # trace_id and friends. Sources the mappers *read* are refused at
+            # startup, so a hash-listed attribute can no longer alias one.
+            if key in extras or key in custom_data:
                 if key not in self._extra_key_collisions:
                     self._extra_key_collisions.add(key)
                     logger.warning(
@@ -267,14 +305,6 @@ class Pipeline:
                     )
                 continue
             if is_hashed:
-                if key in custom_data and key not in self._extra_key_collisions:
-                    self._extra_key_collisions.add(key)
-                    logger.warning(
-                        "CERBERUS_HASH_ATTRIBUTES: %r replaces gateway-set custom_data "
-                        "key %r with a digest, so the raw value is not stored",
-                        name,
-                        key,
-                    )
                 # Never routed through `extras` — the raw value must not exist
                 # in the event even transiently.
                 hashed[key] = self._pseudonymize_correlator(value)
@@ -284,8 +314,6 @@ class Pipeline:
             extras[key] = coerce_json_safe(value)
             if is_sensitive_attribute(name):
                 redact.add(key)
-        if hashed:
-            self._scrub_hashed_aliases(event, attrs, hash_names, hashed)
         if extras:
             extras = {key: bound_extra_value(item) for key, item in sanitize_dict(extras).items()}
             for key in redact:
@@ -293,43 +321,6 @@ class Pipeline:
         extras.update(hashed)
         if extras:
             custom_data.update(extras)
-
-    def _scrub_hashed_aliases(
-        self,
-        event: dict[str, Any],
-        attrs: dict[str, Any],
-        hash_names: set[str],
-        hashed: dict[str, str],
-    ) -> None:
-        """Replace mapper-written copies of a hash-listed value with its digest.
-
-        A mapper may copy the selected source attribute to a *differently named*
-        destination — ``_SESSION_KEYS`` maps ``mcp.session.id`` onto
-        ``custom_data["session_id"]`` — which the key-collision check can't see,
-        so the raw identifier would sit in the event beside its own digest.
-        Matching on value rather than key catches every such alias without this
-        code having to track what each mapper happens to name things.
-
-        Deliberately scoped to bridge-derived fields (``custom_data`` scalars and
-        ``user_id``). Captured content in ``body`` comes from the payload, not
-        from attribute mapping; rewriting values inside a prompt would corrupt
-        the record of what was actually said.
-        """
-        aliases: dict[str, str] = {}
-        for name in hash_names:
-            value = attrs.get(name)
-            key = extra_attribute_key(name)
-            if value is not None and key in hashed:
-                aliases[stable_text(value)] = hashed[key]
-        if not aliases:
-            return
-        custom_data = event["custom_data"]
-        for key, existing in list(custom_data.items()):
-            if isinstance(existing, str) and existing in aliases:
-                custom_data[key] = aliases[existing]
-        user_id = event.get("user_id")
-        if isinstance(user_id, str) and user_id in aliases:
-            event["user_id"] = aliases[user_id]
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""
