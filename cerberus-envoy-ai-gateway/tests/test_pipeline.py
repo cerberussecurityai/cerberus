@@ -652,3 +652,44 @@ def test_mcp_argument_prefix_attribute_is_rejected(config):
             BoundedQueue(10),
             "k",
         )
+
+
+def test_extra_attributes_redacts_acronym_prefixed_sensitive_name(config):
+    # HTTPAuthorization / HTTPPrivateKey: the acronym→word boundary the
+    # two-rule splitter missed, so the credential shipped in cleartext.
+    for name, key in (
+        ("HTTPAuthorization", "http_authorization"),
+        ("HTTPPrivateKey", "http_private_key"),
+    ):
+        config2 = replace(config, extra_attributes=(name,))
+        queue = BoundedQueue(100)
+        pipeline = Pipeline(config2, queue, None)
+        pipeline.process_export(_with_attr("llm_openai_chat", name, "Bearer SECRET"))
+        [event] = queue.drain(10)
+        assert "SECRET" not in json.dumps(event), name
+        assert event["custom_data"][key] == REDACTED, name
+
+
+def test_extras_shed_never_deletes_a_mapper_key(config):
+    # A configured extra that collides with a mapper key (trace.id -> trace_id)
+    # is skipped at insert; the oversized-shed must not then delete the mapper's
+    # real trace_id along with the actually-added extra.
+    config = replace(config, extra_attributes=("trace.id", "corr.x"), max_event_bytes=1024)
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.x", "y" * 900))
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    # the mapper's trace_id survives; only the real extra (corr_x) is shed
+    assert event["custom_data"]["trace_id"]  # present and non-empty
+    assert "corr_x" not in event["custom_data"]
+
+
+def test_concatenated_sensitive_name_is_a_documented_limit():
+    # Honest boundary: a name with no internal separator can't be word-split
+    # without a dictionary, so it is NOT caught. Locks the known limitation so a
+    # future reader doesn't mistake it for a bug (or silently "fix" it wrong).
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    assert is_sensitive_attribute("private.key")  # separated: caught
+    assert not is_sensitive_attribute("privatekey")  # fused: not caught, by design

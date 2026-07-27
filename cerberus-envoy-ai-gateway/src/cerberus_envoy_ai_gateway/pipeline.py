@@ -60,17 +60,23 @@ _MAX_SENSITIVE_WORDS = max(len(key.split("_")) for key in SENSITIVE_KEYS)
 def attribute_words(name: str) -> list[str]:
     """Split an attribute name into lower-case alphanumeric words.
 
-    Splits on *every* non-alphanumeric run **and** camelCase boundaries. An
-    operator's attribute name is arbitrary text (it flows from
-    ``OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES``, and teams with Java/JS
-    conventions name things in camelCase), so ``http/request/header/authorization``
-    and ``httpRequestHeaderAuthorization`` must both decompose to their words —
-    otherwise the sensitive-name check never sees ``authorization`` and the
-    credential ships in cleartext. Case boundaries are inserted before
-    lower-casing, since lower-casing first would erase them.
+    The standard three-rule identifier word-split, so every separator and case
+    convention an operator might use decomposes the same way (names flow in
+    arbitrary from ``OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES``):
+
+    1. non-alphanumeric runs   — ``http/request/header/authorization``
+    2. lower/digit → upper     — ``httpRequestHeaderAuthorization``
+    3. upper → upper+lower     — ``HTTPAuthorization`` (acronym then word)
+
+    Rule 3 is what an earlier two-rule version missed: without it
+    ``HTTPAuthorization`` stayed one token and the credential shipped in
+    cleartext. Case boundaries are marked before lower-casing, which would erase
+    them. This covers every *structural* spelling; it cannot split a run with no
+    boundary at all (``privatekey``) — see ``is_sensitive_attribute``.
     """
-    split_camel = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name.strip())
-    return [word for word in re.split(r"[^a-z0-9]+", split_camel.lower()) if word]
+    marked = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", name.strip())  # acronym → word
+    marked = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", marked)  # camelCase
+    return [word for word in re.split(r"[^a-z0-9]+", marked.lower()) if word]
 
 
 def extra_attribute_key(name: str) -> str:
@@ -94,13 +100,17 @@ def is_sensitive_attribute(name: str) -> bool:
 
     Word runs rather than single segments, because several SENSITIVE_KEYS
     entries are multi-word (``api_key``, ``private_key``, ``credit_card``,
-    ``session_id``) and none of their individual words is sensitive alone. Any
-    separator-preserving scheme fails on the kebab spelling HTTP headers
-    actually use: ``http.request.header.x-api-key`` splits to
-    ``… x | api | key`` with no ``api_key`` segment, and keeping ``_`` intact
-    instead fuses the leading ``x`` onto it as ``x_api_key``. Splitting on every
-    separator and testing contiguous runs catches all spellings — and this
-    codebase already treats ``x-api-key`` as sensitive via ``SENSITIVE_HEADERS``.
+    ``session_id``) and none of their individual words is sensitive alone.
+
+    **Best-effort, not a guarantee.** ``attribute_words`` decomposes every
+    *structural* spelling — separators (``x-api-key``), camelCase, acronyms — so
+    those are caught. It cannot split a name with no internal boundary
+    (``privatekey``, ``sessiontoken``), because telling that apart from an
+    ordinary word needs a dictionary, and it says nothing about a benign-named
+    attribute carrying a secret *value*. The real contract, as with
+    ``CERBERUS_CAPTURE_LLM_CONTENT``, is that operators must not select
+    attributes that carry secrets; this check is a safety net for the common
+    spellings of that mistake, not a content scanner.
     """
     words = attribute_words(name)
     for start in range(len(words)):
@@ -303,12 +313,13 @@ class Pipeline:
         self._sensitive_extras = frozenset(
             name for name in config.extra_attributes if is_sensitive_attribute(name)
         )
-        # custom_data keys the extras path adds. Sheddable in _enforce_size so a
-        # small max_event_bytes drops operator enrichment before it drops a
-        # whole event — a fixed per-value cap can otherwise exceed a low cap.
-        self._extra_derived_keys = frozenset(
-            extra_attribute_key(name) for name in config.extra_attributes
-        )
+        # custom_data keys the extras path added to the *current* event. Only
+        # these are sheddable in _enforce_size — the static configured set would
+        # also include names that collided with a mapper key and were skipped,
+        # so shedding those would delete the gateway's own trace_id/model/etc.
+        # Reset per event in _apply_extra_attributes; safe because process_export
+        # handles one span at a time (apply → finalize → enforce, no interleave).
+        self._pending_extra_keys: set[str] = set()
         self.spans_ignored = 0
         self.spans_filtered = 0
         self.dropped_oversize = 0
@@ -366,6 +377,7 @@ class Pipeline:
         Mapper-set keys always win: gateway telemetry outranks operator config,
         so a stray mapping can never replace ``trace_id`` and friends.
         """
+        self._pending_extra_keys = set()
         names = self.config.extra_attributes
         if not names:
             return
@@ -406,6 +418,7 @@ class Pipeline:
                 extras[key] = REDACTED
         if extras:
             custom_data.update(extras)
+            self._pending_extra_keys = set(extras)
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""
@@ -488,8 +501,10 @@ class Pipeline:
         # Last resort before dropping the event whole: shed operator-added
         # extras. They land in unsheddable-by-default custom_data keys, so a
         # small max_event_bytes could otherwise let a bounded extra sink an
-        # otherwise-valid event. Losing enrichment beats losing the event.
-        shed = [key for key in self._extra_derived_keys if key in custom_data]
+        # otherwise-valid event. Losing enrichment beats losing the event. Only
+        # the keys this event's extras path actually inserted — never a mapper
+        # key a collided extra was skipped over.
+        shed = [key for key in self._pending_extra_keys if key in custom_data]
         if shed:
             for key in shed:
                 del custom_data[key]
