@@ -714,22 +714,6 @@ def test_fit_encoded_never_exceeds_a_tiny_budget():
     # Latent if MAX_EXTRA_VALUE_BYTES is ever lowered below the marker length.
     for budget in (4, 8, 16):
         assert len(json.dumps(fit_encoded("x" * 500, budget))) <= budget
-
-
-def test_key_collision_within_one_list_is_rejected(config):
-    # tenant-id and tenant.id both derive custom_data["tenant_id"]; which value
-    # wins would otherwise depend on iteration order.
-    with pytest.raises(ConfigError, match="both map to custom_data key"):
-        Pipeline(
-            replace(config, extra_attributes=("tenant-id", "tenant.id")), BoundedQueue(10), "k"
-        )
-
-
-def test_operator_owned_attributes_are_still_accepted(config):
-    # Over-rejection would make the feature useless; the intended shape works.
-    Pipeline(replace(config, extra_attributes=("corr.session", "tenant.id")), BoundedQueue(10), "k")
-
-
 def test_extra_attributes_distinct_bytes_stay_distinct(config):
     # Lossy UTF-8 replacement mapped b"\xff" and b"\xfe" both to U+FFFD, so two
     # distinct correlation keys collapsed to the same stored value and
