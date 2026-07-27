@@ -36,8 +36,16 @@ MAX_VALUE_CHARS = 8192
 MAX_USER_AGENT_CHARS = 1024
 MAX_USER_ID_CHARS = 256
 MAX_ERROR_CHARS = 2048
+# Extra attributes are correlation keys (tenant/session/request ids), not
+# content — keep them tight, since they are unsheddable like user_id above.
+MAX_EXTRA_VALUE_CHARS = 1024
 # A valid IP (incl. IPv6 + zone) is <=45 chars; bound malformed raw values.
 MAX_IP_CHARS = 64
+
+
+def extra_attribute_key(name: str) -> str:
+    """Derive a ``custom_data`` key from a span attribute name (``a.b-c`` -> ``a_b_c``)."""
+    return name.strip().replace(".", "_").replace("-", "_")
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
@@ -62,6 +70,9 @@ class Pipeline:
         self.secret_key = secret_key
         self.events_llm = 0
         self.events_mcp = 0
+        # Collision warnings are once-per-key: the condition is a static config
+        # mistake, so re-logging it per event would just flood.
+        self._extra_key_collisions: set[str] = set()
         self.spans_ignored = 0
         self.spans_filtered = 0
         self.dropped_oversize = 0
@@ -95,6 +106,7 @@ class Pipeline:
                 # reserved for truly unclassified spans operators should chase.
                 self.spans_filtered += 1
                 continue
+            self._apply_extra_attributes(event, attrs)
             finalized = self._finalize(event, kind)
             if finalized is None:
                 continue
@@ -105,6 +117,41 @@ class Pipeline:
                 else:
                     self.events_mcp += 1
         return queued
+
+    def _apply_extra_attributes(self, event: dict[str, Any], attrs: dict[str, Any]) -> None:
+        """Copy operator-selected span attributes into ``custom_data``.
+
+        Correlating an agent's LLM events with its MCP events can't rely on
+        ``trace_id`` (the gateway parents the two paths from different carriers
+        and never joins them), so operators need a way to surface whatever
+        header their application already sends on both. This copies those
+        attributes through verbatim.
+
+        Mapper-set keys always win: gateway telemetry outranks operator config,
+        so a stray mapping can never replace ``trace_id`` and friends.
+        """
+        if not self.config.extra_attributes:
+            return
+        custom_data = event["custom_data"]
+        extras: dict[str, Any] = {}
+        for name in self.config.extra_attributes:
+            value = attrs.get(name)
+            if value is None:
+                continue
+            key = extra_attribute_key(name)
+            if key in custom_data or key in extras:
+                if key not in self._extra_key_collisions:
+                    self._extra_key_collisions.add(key)
+                    logger.warning(
+                        "CERBERUS_EXTRA_ATTRIBUTES: %r maps to custom_data key %r, "
+                        "which is already set — skipping (choose a different attribute)",
+                        name,
+                        key,
+                    )
+                continue
+            extras[key] = value
+        if extras:
+            custom_data.update(truncate_values(sanitize_dict(extras), MAX_EXTRA_VALUE_CHARS))
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""

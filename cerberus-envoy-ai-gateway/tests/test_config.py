@@ -1,6 +1,6 @@
 import pytest
 
-from cerberus_envoy_ai_gateway.config import Config, ConfigError
+from cerberus_envoy_ai_gateway.config import MAX_EXTRA_ATTRIBUTES, Config, ConfigError
 
 
 @pytest.fixture(autouse=True)
@@ -129,4 +129,29 @@ def test_ingest_service_requires_scheme(monkeypatch):
     monkeypatch.setenv("CERBERUS_TOKEN", "sk_live_abc")
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "ingest.example.com")
     with pytest.raises(ConfigError, match="CERBERUS_INGEST_SERVICE"):
+        Config.from_env()
+
+
+def test_extra_attributes_parsed_and_deduped(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", " a.b , c.d ,a.b, ,")
+    config = Config.from_env()
+    assert config.extra_attributes == ("a.b", "c.d")
+
+
+def test_extra_attributes_default_empty(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.delenv("CERBERUS_EXTRA_ATTRIBUTES", raising=False)
+    assert Config.from_env().extra_attributes == ()
+
+
+def test_extra_attributes_rejects_oversized_list(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv(
+        "CERBERUS_EXTRA_ATTRIBUTES", ",".join(f"a{i}" for i in range(MAX_EXTRA_ATTRIBUTES + 1))
+    )
+    with pytest.raises(ConfigError):
         Config.from_env()

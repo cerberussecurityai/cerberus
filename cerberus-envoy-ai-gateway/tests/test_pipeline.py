@@ -272,3 +272,72 @@ def test_raw_malformed_ip_bounded(config):
     [event] = queue.drain(10)
     assert len(event["remote_addr"]) <= 64
     assert pipeline.dropped_oversize == 0
+
+
+def test_extra_attributes_copied_into_custom_data(config):
+    config = replace(config, extra_attributes=("llm.system",))
+    _, queue, _ = _run("llm_openai_chat", config)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["llm_system"] == "openai"
+
+
+def test_extra_attributes_apply_to_mcp_events_too(config):
+    # The whole point is correlating the two paths, so both must carry them.
+    config = replace(config, extra_attributes=("mcp.session.id",))
+    _, queue, _ = _run("mcp_tool_call", config)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["mcp_session_id"] == "sess-1"
+
+
+def test_extra_attributes_never_overwrite_mapper_keys(config):
+    # Gateway telemetry outranks operator config: a mapping that collides with
+    # a mapper-set key is skipped, not applied.
+    config = replace(config, extra_attributes=("trace.id",))
+    _, queue, _ = _run("llm_openai_chat", config)
+    [event] = queue.drain(10)
+    # trace_id stays the span's real trace id, not the "trace.id" attribute.
+    assert event["custom_data"]["trace_id"] == "0102030405060708090a0b0c0d0e0f10"
+
+
+def test_extra_attributes_absent_from_span_are_skipped(config):
+    config = replace(config, extra_attributes=("not.present",))
+    _, queue, _ = _run("llm_openai_chat", config)
+    [event] = queue.drain(10)
+    assert "not_present" not in event["custom_data"]
+
+
+def test_extra_attributes_sanitized_by_key_name(config):
+    # A mapped attribute whose derived key looks credential-shaped is redacted
+    # like any other captured value.
+    config = replace(config, extra_attributes=("api.key",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "api.key"
+    attr.value.string_value = "super-secret"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["api_key"] == REDACTED
+
+
+def test_extra_attributes_truncated(config):
+    config = replace(config, extra_attributes=("big.value",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "big.value"
+    attr.value.string_value = "x" * 5000
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["big_value"].endswith("...[TRUNCATED]")
+    assert len(event["custom_data"]["big_value"]) < 5000
+
+
+def test_no_extra_attributes_configured_is_a_no_op(config):
+    _, queue_off, _ = _run("llm_openai_chat", config)
+    _, queue_on, _ = _run("llm_openai_chat", replace(config, extra_attributes=()))
+    assert queue_off.drain(1)[0]["custom_data"] == queue_on.drain(1)[0]["custom_data"]

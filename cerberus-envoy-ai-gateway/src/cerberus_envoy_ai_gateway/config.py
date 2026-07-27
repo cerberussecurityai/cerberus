@@ -24,6 +24,11 @@ MAX_EVENT_BYTES_CEILING = 63488  # 62KB
 
 MIN_FLUSH_INTERVAL_MS = 100
 
+# Operator-selected span attributes copied into custom_data. Bounded because
+# these land in unsheddable custom_data keys — _enforce_size can only shed
+# body/arguments, so anything else must be small by construction.
+MAX_EXTRA_ATTRIBUTES = 20
+
 _LOG_LEVELS = ("debug", "info", "warning", "error")
 
 
@@ -41,6 +46,21 @@ def _env_bool(name: str, default: bool) -> bool:
     if value in ("0", "false", "no", "off"):
         return False
     raise ConfigError(f"{name} must be a boolean (got {raw!r})")
+
+
+def _env_attribute_list(name: str, maximum: int) -> tuple[str, ...]:
+    """Parse a comma-separated span-attribute list, de-duplicated, order-preserving."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return ()
+    names: list[str] = []
+    for part in raw.split(","):
+        attribute = part.strip()
+        if attribute and attribute not in names:
+            names.append(attribute)
+    if len(names) > maximum:
+        raise ConfigError(f"{name} accepts at most {maximum} attributes (got {len(names)})")
+    return tuple(names)
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -69,6 +89,7 @@ class Config:
     client_ip_attribute: str = "http.client_ip"
     user_id_attribute: str | None = None
     user_agent_attribute: str = "http.user_agent"
+    extra_attributes: tuple[str, ...] = ()
 
     capture_llm_content: bool = True
     capture_mcp_arguments: bool = True
@@ -141,6 +162,7 @@ class Config:
             user_agent_attribute=(
                 os.environ.get("CERBERUS_USER_AGENT_ATTRIBUTE") or "http.user_agent"
             ).strip(),
+            extra_attributes=_env_attribute_list("CERBERUS_EXTRA_ATTRIBUTES", MAX_EXTRA_ATTRIBUTES),
             capture_llm_content=_env_bool("CERBERUS_CAPTURE_LLM_CONTENT", True),
             capture_mcp_arguments=_env_bool("CERBERUS_CAPTURE_MCP_ARGUMENTS", True),
             batch_size=_env_int("CERBERUS_BATCH_SIZE", 50, 1, MAX_SERVER_BATCH_SIZE),
