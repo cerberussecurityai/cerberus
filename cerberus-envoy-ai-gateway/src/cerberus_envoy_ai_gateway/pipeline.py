@@ -39,7 +39,9 @@ MAX_USER_ID_CHARS = 256
 MAX_ERROR_CHARS = 2048
 # Extra attributes are correlation keys (tenant/session/request ids), not
 # content — keep them tight, since they are unsheddable like user_id above.
-MAX_EXTRA_VALUE_CHARS = 1024
+# Measured in *encoded* bytes, not characters: json.dumps escapes non-ASCII, so
+# a character cap lets an emoji-heavy value cost 12x its length.
+MAX_EXTRA_VALUE_BYTES = 1024
 # A valid IP (incl. IPv6 + zone) is <=45 chars; bound malformed raw values.
 MAX_IP_CHARS = 64
 
@@ -84,20 +86,50 @@ def coerce_json_safe(value: Any) -> Any:
     return value
 
 
-def coerce_extra_value(value: Any) -> Any:
-    """Reduce an extra attribute to a scalar ``truncate_values`` can bound.
+def stable_text(value: Any) -> str:
+    """Deterministic text form of a value, so equal values hash alike.
 
-    Extras are correlation identifiers landing in ``custom_data`` keys that
-    ``_enforce_size`` cannot shed, so their size has to be settled here.
-    Truncation only bounds string *leaves*, so a structured attribute — an OTLP
-    ``array_value``/``kvlist_value`` with thousands of small elements — would
-    sail through it and push the event past the byte cap, dropping it whole.
-    Serializing anything non-scalar gives every extra a hard bound.
+    Sorted keys matter: an LLM span and an MCP span must produce the same digest
+    for the same structured value, or the join this exists for silently fails.
     """
     safe = coerce_json_safe(value)
-    if isinstance(safe, (str, int, float, bool)):
+    if isinstance(safe, str):
         return safe
-    return json.dumps(safe, ensure_ascii=False)
+    return json.dumps(safe, sort_keys=True, ensure_ascii=False)
+
+
+def fit_encoded(text: str, max_bytes: int) -> str:
+    """Trim ``text`` until its JSON-encoded form fits ``max_bytes``.
+
+    A character cap does **not** bound bytes: ``json.dumps`` escapes non-ASCII,
+    so one astral character costs 12 bytes — 1024 emoji encode to ~12 KB. Extras
+    land in ``custom_data`` keys ``_enforce_size`` can't shed, so an unbounded
+    value pushes the event past the cap and drops it whole rather than degrading.
+    """
+    if len(json.dumps(text)) <= max_bytes:
+        return text
+    suffix = "...[TRUNCATED]"
+    budget = max_bytes - len(json.dumps(suffix))
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if len(json.dumps(text[:mid])) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low] + suffix
+
+
+def bound_extra_value(value: Any) -> Any:
+    """Reduce a sanitized extra to a scalar bounded by encoded size.
+
+    Runs *after* ``sanitize_dict`` — serializing first would hide nested
+    credential-shaped keys from it, shipping an inner secret in cleartext under
+    a benign-looking outer key.
+    """
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    return fit_encoded(stable_text(value), MAX_EXTRA_VALUE_BYTES)
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
@@ -184,7 +216,7 @@ class Pipeline:
         """
         if not self.secret_key:
             return str(REDACTED)
-        return str(hash_pii(str(value), self.secret_key))
+        return str(hash_pii(stable_text(value), self.secret_key))
 
     def _apply_extra_attributes(self, event: dict[str, Any], attrs: dict[str, Any]) -> None:
         """Copy operator-selected span attributes into ``custom_data``.
@@ -218,11 +250,13 @@ class Pipeline:
             if value is None:
                 continue
             key = extra_attribute_key(name)
-            # Guards against keys the *mappers* set, all of which are present by
-            # now. Keys written later still win by overwriting — only
-            # `content_dropped_oversize` from _enforce_size, which an operator
-            # would have to name deliberately to collide with.
-            if key in custom_data or key in extras:
+            is_hashed = name in hash_names
+            # Mapper-set keys normally win, so operator config can't spoof
+            # trace_id and friends. Hash-listed attributes are the exception:
+            # the operator asked for this identifier *not* to be stored raw, and
+            # a mapper that wrote the same key in cleartext (session_id, from
+            # mcp.session.id) would defeat that and break the join besides.
+            if key in extras or (key in custom_data and not is_hashed):
                 if key not in self._extra_key_collisions:
                     self._extra_key_collisions.add(key)
                     logger.warning(
@@ -232,21 +266,31 @@ class Pipeline:
                         key,
                     )
                 continue
-            coerced = coerce_extra_value(value)
-            extras[key] = coerced
-            if name in hash_names:
-                # Explicit opt-in beats the sensitive-name default: the operator
-                # wants to join on this, and a digest is not cleartext.
-                hashed[key] = self._pseudonymize_correlator(coerced)
-            elif is_sensitive_attribute(name):
+            if is_hashed:
+                if key in custom_data and key not in self._extra_key_collisions:
+                    self._extra_key_collisions.add(key)
+                    logger.warning(
+                        "CERBERUS_HASH_ATTRIBUTES: %r replaces gateway-set custom_data "
+                        "key %r with a digest, so the raw value is not stored",
+                        name,
+                        key,
+                    )
+                # Never routed through `extras` — the raw value must not exist
+                # in the event even transiently.
+                hashed[key] = self._pseudonymize_correlator(value)
+                continue
+            # Structure is preserved here so sanitize_dict can recurse into it;
+            # serializing before that would hide nested credential keys.
+            extras[key] = coerce_json_safe(value)
+            if is_sensitive_attribute(name):
                 redact.add(key)
-        if not extras:
-            return
-        extras = truncate_values(sanitize_dict(extras), MAX_EXTRA_VALUE_CHARS)
-        for key in redact:
-            extras[key] = REDACTED
+        if extras:
+            extras = {key: bound_extra_value(item) for key, item in sanitize_dict(extras).items()}
+            for key in redact:
+                extras[key] = REDACTED
         extras.update(hashed)
-        custom_data.update(extras)
+        if extras:
+            custom_data.update(extras)
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""

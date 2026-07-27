@@ -531,3 +531,73 @@ def test_unhashed_sensitive_attribute_still_redacted(config):
     pipeline.process_export(_with_attr("llm_openai_chat", "session.id", "sess-abc"))
     [event] = queue.drain(10)
     assert event["custom_data"]["session_id"] == REDACTED
+
+
+def _with_kvlist(fixture: str, key: str, pairs: dict):
+    export = load_export(fixture)
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = key
+    for k, v in pairs.items():
+        kv = attr.value.kvlist_value.values.add()
+        kv.key = k
+        kv.value.string_value = v
+    return export
+
+
+def test_extra_attributes_sanitize_nested_credential_keys(config):
+    # Serializing a structured value before sanitize_dict would hide the inner
+    # key from it and ship the secret under a benign-looking outer key.
+    config = replace(config, extra_attributes=("request.metadata",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_kvlist("llm_openai_chat", "request.metadata", {"api_key": "sk-SECRET"})
+    )
+    [event] = queue.drain(10)
+    assert "sk-SECRET" not in json.dumps(event)
+    assert REDACTED in event["custom_data"]["request_metadata"]
+
+
+def test_extra_attributes_bounded_by_encoded_bytes_not_characters(config):
+    # json.dumps escapes non-ASCII, so a character cap lets an emoji value cost
+    # ~12x its length and push the event past max_event_bytes.
+    config = replace(config, extra_attributes=tuple(f"e{i}.v" for i in range(5)))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    for i in range(5):
+        attr = span.attributes.add()
+        attr.key = f"e{i}.v"
+        attr.value.string_value = "\U0001f600" * 2000
+    queued = pipeline.process_export(export)
+    assert queued == 1
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    assert len(json.dumps(event).encode()) <= config.max_event_bytes
+
+
+def test_hash_attribute_replaces_colliding_mapper_key(config):
+    # map_mcp_span writes custom_data["session_id"] in the clear; a hash-listed
+    # session.id must not be skipped, or the raw value survives and the LLM/MCP
+    # join breaks.
+    config = replace(config, hash_attributes=("session.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("mcp_tool_call_route_events", "session.id", "sess-RAW"))
+    [event] = queue.drain(10)
+    assert HEX64.match(event["custom_data"]["session_id"])
+    assert "sess-RAW" not in json.dumps(event)
+    assert "sess-1" not in json.dumps(event)
+
+
+def test_hash_attribute_joins_llm_and_mcp_despite_mapper_collision(config):
+    config = replace(config, hash_attributes=("session.id",))
+    digests = []
+    for fixture in ("llm_openai_chat", "mcp_tool_call_route_events"):
+        queue = BoundedQueue(100)
+        pipeline = Pipeline(config, queue, "secret-k")
+        pipeline.process_export(_with_attr(fixture, "session.id", "sess-shared"))
+        digests.append(queue.drain(10)[0]["custom_data"]["session_id"])
+    assert digests[0] == digests[1]
