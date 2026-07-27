@@ -331,6 +331,14 @@ class Pipeline:
         # Reset per event in _apply_extra_attributes; safe because process_export
         # handles one span at a time (apply → finalize → enforce, no interleave).
         self._pending_extra_keys: set[str] = set()
+        # Captured names (extras plus hash-only additions) and the hash set are
+        # static, so settle them once rather than rebuilding per span. Hash-listed
+        # attributes are captured too, so an operator correlating on one
+        # identifier only has to name it once.
+        self._hash_names = frozenset(config.hash_attributes)
+        self._captured_names: tuple[str, ...] = config.extra_attributes + tuple(
+            name for name in config.hash_attributes if name not in config.extra_attributes
+        )
         self.spans_ignored = 0
         self.spans_filtered = 0
         self.dropped_oversize = 0
@@ -405,13 +413,12 @@ class Pipeline:
         so a stray mapping can never replace ``trace_id`` and friends.
         """
         self._pending_extra_keys = set()
-        hash_names = set(self.config.hash_attributes)
-        # Hash-listed attributes are captured too, so an operator correlating on
-        # one identifier only has to name it once.
-        names = list(self.config.extra_attributes)
-        names += [name for name in self.config.hash_attributes if name not in names]
+        hash_names = self._hash_names
+        names = self._captured_names
         if not names:
             return
+        hash_names = self._hash_names
+        names = self._captured_names
         custom_data = event["custom_data"]
         extras: dict[str, Any] = {}
         # Keys whose *attribute name* is sensitive even though the flattened key
