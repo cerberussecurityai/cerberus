@@ -614,3 +614,44 @@ def test_operator_owned_attributes_are_still_accepted(config):
     # Over-rejection would make the feature useless; the intended shape works.
     Pipeline(replace(config, hash_attributes=("corr.session",)), BoundedQueue(10), "k")
     Pipeline(replace(config, extra_attributes=("tenant.id",)), BoundedQueue(10), "k")
+
+
+def test_two_attributes_claiming_one_key_are_rejected(config):
+    # tenant-id and tenant.id both derive custom_data["tenant_id"]. Split across
+    # the two lists, extras won on iteration order and the hash entry was skipped
+    # before its digest was computed — shipping the raw value in cleartext.
+    with pytest.raises(ConfigError, match="both map to custom_data key"):
+        Pipeline(
+            replace(config, extra_attributes=("tenant-id",), hash_attributes=("tenant.id",)),
+            BoundedQueue(10),
+            "k",
+        )
+
+
+def test_key_collision_within_one_list_is_rejected(config):
+    with pytest.raises(ConfigError, match="both map to custom_data key"):
+        Pipeline(
+            replace(config, extra_attributes=("tenant-id", "tenant.id")), BoundedQueue(10), "k"
+        )
+
+
+def test_case_variant_names_claiming_one_key_are_rejected(config):
+    # Span attribute lookup is case-sensitive, so these are two different
+    # sources, but extra_attribute_key lower-cases and they collide.
+    with pytest.raises(ConfigError, match="both map to custom_data key"):
+        Pipeline(
+            replace(config, extra_attributes=("Tenant.id",), hash_attributes=("tenant.id",)),
+            BoundedQueue(10),
+            "k",
+        )
+
+
+def test_same_attribute_in_both_lists_is_allowed_and_hashes(config):
+    # Naming one attribute in both lists is unambiguous: it means "hash it".
+    config = replace(config, extra_attributes=("corr.id",), hash_attributes=("corr.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, "secret-k")
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.id", "RAW-CORR"))
+    [event] = queue.drain(10)
+    assert HEX64.match(event["custom_data"]["corr_id"])
+    assert "RAW-CORR" not in json.dumps(event)

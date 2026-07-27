@@ -184,11 +184,44 @@ def _reject_bridge_owned_attributes(config: Config) -> None:
                 )
 
 
+def _reject_ambiguous_attribute_keys(config: Config) -> None:
+    """Refuse two different attributes that would claim the same ``custom_data`` key.
+
+    ``extra_attribute_key`` maps both ``.`` and ``-`` to ``_``, so ``tenant-id``
+    and ``tenant.id`` collapse together. With one in each list the outcome
+    depended on processing order: extras ran first, the hash entry then hit the
+    already-taken key and was skipped *before* its digest was computed, and the
+    raw value shipped in cleartext — defeating the one guarantee
+    ``CERBERUS_HASH_ATTRIBUTES`` exists to make.
+
+    Naming the same attribute in both lists is fine and means "hash it"; only
+    two *distinct* names claiming one key are ambiguous, so they are refused
+    rather than silently resolved by iteration order.
+    """
+    claimed: dict[str, str] = {}
+    for label, names in (
+        ("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),
+        ("CERBERUS_HASH_ATTRIBUTES", config.hash_attributes),
+    ):
+        for name in names:
+            stripped = name.strip()
+            key = extra_attribute_key(name)
+            prior = claimed.get(key)
+            if prior is not None and prior != stripped:
+                raise ConfigError(
+                    f"{label}: {name!r} and {prior!r} both map to custom_data key {key!r}. "
+                    "Only one attribute may claim a key — otherwise which value is stored, "
+                    "and whether it is hashed, depends on processing order. Rename one."
+                )
+            claimed[key] = stripped
+
+
 class Pipeline:
     """Stateful converter from OTLP export requests to queued Cerberus events."""
 
     def __init__(self, config: Config, queue: BoundedQueue, secret_key: str | None):
         _reject_bridge_owned_attributes(config)
+        _reject_ambiguous_attribute_keys(config)
         self.config = config
         self.queue = queue
         self.secret_key = secret_key
@@ -298,8 +331,9 @@ class Pipeline:
                 if key not in self._extra_key_collisions:
                     self._extra_key_collisions.add(key)
                     logger.warning(
-                        "CERBERUS_EXTRA_ATTRIBUTES: %r maps to custom_data key %r, "
-                        "which is already set — skipping (choose a different attribute)",
+                        "%s: %r maps to custom_data key %r, which the gateway already "
+                        "set — skipping (choose a different attribute)",
+                        "CERBERUS_HASH_ATTRIBUTES" if is_hashed else "CERBERUS_EXTRA_ATTRIBUTES",
                         name,
                         key,
                     )
