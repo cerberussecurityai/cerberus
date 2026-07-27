@@ -714,6 +714,8 @@ def test_fit_encoded_never_exceeds_a_tiny_budget():
     # Latent if MAX_EXTRA_VALUE_BYTES is ever lowered below the marker length.
     for budget in (4, 8, 16):
         assert len(json.dumps(fit_encoded("x" * 500, budget))) <= budget
+
+
 def test_extra_attributes_distinct_bytes_stay_distinct(config):
     # Lossy UTF-8 replacement mapped b"\xff" and b"\xfe" both to U+FFFD, so two
     # distinct correlation keys collapsed to the same stored value and

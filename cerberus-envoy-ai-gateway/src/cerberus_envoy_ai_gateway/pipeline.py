@@ -429,6 +429,11 @@ class Pipeline:
             # Guards keys the mappers set, so operator config can't spoof
             # trace_id and friends. Sources the mappers *read* are refused at
             # startup, so a hash-listed attribute can no longer alias one.
+            # Deliberately does not check the in-progress `hashed` dict:
+            # _reject_ambiguous_attribute_keys guarantees no two distinct names
+            # in either list share a derived key, so nothing reaches here with a
+            # pending hashed entry under `key`. If that invariant ever lapses,
+            # this check has to grow to cover `hashed` too.
             if key in extras or key in custom_data:
                 if key not in self._extra_key_collisions:
                     self._extra_key_collisions.add(key)
