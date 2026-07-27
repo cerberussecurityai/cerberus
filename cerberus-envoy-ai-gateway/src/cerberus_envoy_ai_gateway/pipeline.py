@@ -18,6 +18,7 @@ from cerberus_core import REDACTED, SENSITIVE_KEYS, hash_pii, normalize_ip, sani
 
 from .classify import KIND_LLM, KIND_MCP, classify
 from .config import Config, ConfigError
+from .mapper_llm import CONSUMED_ATTRIBUTE_PREFIXES as LLM_CONSUMED_PREFIXES
 from .mapper_llm import CONSUMED_ATTRIBUTES as LLM_CONSUMED
 from .mapper_llm import map_llm_span
 from .mapper_mcp import CONSUMED_ATTRIBUTES as MCP_CONSUMED
@@ -175,7 +176,8 @@ def _reject_bridge_owned_attributes(config: Config) -> None:
     ):
         for name in names:
             lowered = name.strip().lower()
-            if lowered in owned or lowered.startswith("mcp.request.argument."):
+            prefixes = LLM_CONSUMED_PREFIXES + ("mcp.request.argument.",)
+            if lowered in owned or lowered.startswith(prefixes):
                 raise ConfigError(
                     f"{label}: {name!r} is already read by the bridge, which copies it into "
                     "the event under its own name — selecting it would leave the raw value "

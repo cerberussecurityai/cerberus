@@ -38,19 +38,6 @@ _INPUT_KEYS = ("input.value", "gen_ai.input.value", "gen_ai.request.input")
 _OUTPUT_KEYS = ("output.value", "gen_ai.output.value")
 _ROUTE_KEYS = ("http.route", "url.path", "http.target")
 
-# Attributes this mapper reads — see mapper_mcp.CONSUMED_ATTRIBUTES. Several
-# feed `endpoint` (llm://{provider}/{model}), which cannot be pseudonymized
-# without destroying the endpoint, so selecting them is rejected outright.
-CONSUMED_ATTRIBUTES = frozenset(
-    _PROVIDER_KEYS
-    + _RESPONSE_MODEL_KEYS
-    + _INPUT_KEYS
-    + _OUTPUT_KEYS
-    + _ROUTE_KEYS
-    + MODEL_KEYS
-    + ("llm.invocation_parameters", "embedding.invocation_parameters")
-    + ("gen_ai.operation.name", "openinference.span.kind")
-)
 
 # gen_ai.operation.name (or span name) → Cerberus event method. The values
 # must never start with "mcp_" — event_process routes on that prefix.
@@ -97,6 +84,30 @@ def _method(span: Span, attrs: dict[str, Any]) -> str:
     if "completion" in compact:
         return "llm_completion"
     return "llm_call"
+
+
+# Attributes this mapper reads — see mapper_mcp.CONSUMED_ATTRIBUTES. Several
+# feed `endpoint` (llm://{provider}/{model}), which cannot be pseudonymized
+# without destroying the endpoint, so selecting them is rejected outright.
+CONSUMED_ATTRIBUTES = frozenset(
+    _PROVIDER_KEYS
+    + _RESPONSE_MODEL_KEYS
+    + _INPUT_KEYS
+    + _OUTPUT_KEYS
+    + _ROUTE_KEYS
+    + MODEL_KEYS
+    + ("llm.invocation_parameters", "embedding.invocation_parameters")
+    + ("gen_ai.operation.name", "openinference.span.kind")
+    + ("llm.input_messages", "llm.output_messages")
+    + tuple(candidate for candidates in _TOKEN_FIELDS.values() for candidate in candidates)
+    # Built from the table rather than re-listed, so a new token candidate can't
+    # be added there and silently escape the rejection set. An earlier
+    # hand-written version of this frozenset omitted all 14 of them.
+)
+
+# Flattened message attributes are per-index (llm.output_messages.0.message.…),
+# so they're matched by prefix rather than listed.
+CONSUMED_ATTRIBUTE_PREFIXES = ("llm.input_messages.", "llm.output_messages.")
 
 
 def _token_counts(attrs: dict[str, Any]) -> dict[str, int]:
