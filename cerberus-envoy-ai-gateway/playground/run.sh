@@ -43,7 +43,9 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4318"
 export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
 export OTEL_TRACES_EXPORTER="otlp"
 export OTEL_METRICS_EXPORTER="none"
-export OTEL_TRACES_SAMPLER="parentbased_always_on"
+# always_on, matching deploy/ai-gateway/extproc-env.yaml: parentbased_* honors an
+# upstream traceparent with sampled=0 and emits no span at all for that request.
+export OTEL_TRACES_SAMPLER="always_on"
 export OTEL_BSP_SCHEDULE_DELAY="1000"
 export OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES="x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
 # Playground demonstrates sanitized content capture, so do NOT hide content:
