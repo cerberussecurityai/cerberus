@@ -417,8 +417,6 @@ class Pipeline:
         names = self._captured_names
         if not names:
             return
-        hash_names = self._hash_names
-        names = self._captured_names
         custom_data = event["custom_data"]
         extras: dict[str, Any] = {}
         # Keys whose *attribute name* is sensitive even though the flattened key
