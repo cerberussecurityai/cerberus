@@ -68,6 +68,9 @@ spec:
             #   value: "user.id"
             # - name: CERBERUS_CAPTURE_LLM_CONTENT
             #   value: "false"
+            # Correlates LLM and MCP events when trace_id can't (see README):
+            # - name: CERBERUS_EXTRA_ATTRIBUTES
+            #   value: "tenant.id,request.id"
           livenessProbe:
             httpGet:
               path: /health

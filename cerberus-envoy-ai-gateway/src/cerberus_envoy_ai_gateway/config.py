@@ -24,6 +24,16 @@ MAX_EVENT_BYTES_CEILING = 63488  # 62KB
 
 MIN_FLUSH_INTERVAL_MS = 100
 
+# Operator-selected span attributes copied into custom_data. Bounded because
+# _enforce_size sheds only captured content (body/arguments, plus the
+# schema-report catalogues) — these keys survive to the byte cap, so they have
+# to be small by construction.
+MAX_EXTRA_ATTRIBUTES = 20
+# Attribute *names* become custom_data keys, which are unsheddable like the
+# values. Values are bounded in the pipeline; without this the key itself could
+# exceed the event cap and silently drop every event carrying that attribute.
+MAX_EXTRA_ATTRIBUTE_NAME_CHARS = 128
+
 _LOG_LEVELS = ("debug", "info", "warning", "error")
 
 
@@ -41,6 +51,30 @@ def _env_bool(name: str, default: bool) -> bool:
     if value in ("0", "false", "no", "off"):
         return False
     raise ConfigError(f"{name} must be a boolean (got {raw!r})")
+
+
+def _env_attribute_list(name: str, maximum: int) -> tuple[str, ...]:
+    """Parse a comma-separated span-attribute list, de-duplicated, order-preserving."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return ()
+    names: list[str] = []
+    for part in raw.split(","):
+        attribute = part.strip()
+        if not attribute:
+            continue
+        if len(attribute) > MAX_EXTRA_ATTRIBUTE_NAME_CHARS:
+            raise ConfigError(
+                f"{name}: attribute name is {len(attribute)} characters, over the "
+                f"{MAX_EXTRA_ATTRIBUTE_NAME_CHARS}-character limit — the name becomes an "
+                "unsheddable custom_data key, so an oversized one would drop every event "
+                f"carrying it (name starts {attribute[:40]!r})"
+            )
+        if attribute not in names:
+            names.append(attribute)
+    if len(names) > maximum:
+        raise ConfigError(f"{name} accepts at most {maximum} attributes (got {len(names)})")
+    return tuple(names)
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -69,6 +103,7 @@ class Config:
     client_ip_attribute: str = "http.client_ip"
     user_id_attribute: str | None = None
     user_agent_attribute: str = "http.user_agent"
+    extra_attributes: tuple[str, ...] = ()
 
     capture_llm_content: bool = True
     capture_mcp_arguments: bool = True
@@ -129,6 +164,8 @@ class Config:
                 f"CERBERUS_LOG_LEVEL must be one of {_LOG_LEVELS} (got {log_level!r})"
             )
 
+        extra_attributes = _env_attribute_list("CERBERUS_EXTRA_ATTRIBUTES", MAX_EXTRA_ATTRIBUTES)
+
         return cls(
             ingest_service=ingest_service,
             token=token,
@@ -141,6 +178,7 @@ class Config:
             user_agent_attribute=(
                 os.environ.get("CERBERUS_USER_AGENT_ATTRIBUTE") or "http.user_agent"
             ).strip(),
+            extra_attributes=extra_attributes,
             capture_llm_content=_env_bool("CERBERUS_CAPTURE_LLM_CONTENT", True),
             capture_mcp_arguments=_env_bool("CERBERUS_CAPTURE_MCP_ARGUMENTS", True),
             batch_size=_env_int("CERBERUS_BATCH_SIZE", 50, 1, MAX_SERVER_BATCH_SIZE),

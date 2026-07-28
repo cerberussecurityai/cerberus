@@ -13,6 +13,12 @@ _STATUS_ERROR = 2
 # detect an LLM span) and mapper_llm (to resolve it) so the two can't drift.
 MODEL_KEYS = ("llm.model_name", "embedding.model_name", "llm.model", "gen_ai.request.model")
 
+# Attributes these shared helpers read. Declared here rather than in the mappers
+# so the declaration surface matches the read surface: both mappers call
+# error_message(), which reads "error.type", and a guard that only scans the
+# mapper modules cannot see it.
+CONSUMED_ATTRIBUTES = frozenset(MODEL_KEYS + ("error.type",))
+
 # Cap for scalar fields that feed the endpoint (LLM provider/model, MCP
 # server/handler). _enforce_size can't shed these, so an overlong value would
 # push the whole event over the byte cap and drop it — bound them at the source.

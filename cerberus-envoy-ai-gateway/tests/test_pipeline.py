@@ -2,10 +2,12 @@ import json
 import re
 from dataclasses import replace
 
+import pytest
 from cerberus_core import REDACTED
 from helpers import load_export
 
 from cerberus_envoy_ai_gateway.classify import KIND_MCP
+from cerberus_envoy_ai_gateway.config import ConfigError
 from cerberus_envoy_ai_gateway.pipeline import Pipeline, truncate_values
 from cerberus_envoy_ai_gateway.queue import BoundedQueue
 
@@ -17,6 +19,15 @@ def _run(name: str, config, secret_key=None, capacity=100):
     pipeline = Pipeline(config, queue, secret_key)
     queued = pipeline.process_export(load_export(name))
     return pipeline, queue, queued
+
+
+def _with_attr(fixture: str, key: str, value: str):
+    export = load_export(fixture)
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = key
+    attr.value.string_value = value
+    return export
 
 
 def test_remote_addr_hashed_with_secret(config):
@@ -272,3 +283,413 @@ def test_raw_malformed_ip_bounded(config):
     [event] = queue.drain(10)
     assert len(event["remote_addr"]) <= 64
     assert pipeline.dropped_oversize == 0
+
+
+def test_extra_attributes_copied_into_custom_data(config):
+    config = replace(config, extra_attributes=("tenant.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "tenant.id", "acme"))
+    [event] = queue.drain(10)
+    assert event["custom_data"]["tenant_id"] == "acme"
+
+
+def test_extra_attributes_apply_to_mcp_events_too(config):
+    # The whole point is correlating the two paths, so both must carry them.
+    config = replace(config, extra_attributes=("corr.session",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("mcp_tool_call", "corr.session", "abc"))
+    [event] = queue.drain(10)
+    assert event["custom_data"]["corr_session"] == "abc"
+
+
+def test_extra_attributes_never_overwrite_mapper_keys(config):
+    # Gateway telemetry outranks operator config: a mapping that collides with
+    # a mapper-set key is skipped, not applied.
+    config = replace(config, extra_attributes=("trace.id",))
+    _, queue, _ = _run("llm_openai_chat", config)
+    [event] = queue.drain(10)
+    # trace_id stays the span's real trace id, not the "trace.id" attribute.
+    assert event["custom_data"]["trace_id"] == "0102030405060708090a0b0c0d0e0f10"
+
+
+def test_extra_attributes_absent_from_span_are_skipped(config):
+    config = replace(config, extra_attributes=("not.present",))
+    _, queue, _ = _run("llm_openai_chat", config)
+    [event] = queue.drain(10)
+    assert "not_present" not in event["custom_data"]
+
+
+def test_extra_attributes_sanitized_by_key_name(config):
+    # A mapped attribute whose derived key looks credential-shaped is redacted
+    # like any other captured value.
+    config = replace(config, extra_attributes=("api.key",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "api.key"
+    attr.value.string_value = "super-secret"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["api_key"] == REDACTED
+
+
+def test_extra_attributes_truncated(config):
+    config = replace(config, extra_attributes=("big.value",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "big.value"
+    attr.value.string_value = "x" * 5000
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["big_value"].endswith("...[TRUNCATED]")
+    assert len(event["custom_data"]["big_value"]) < 5000
+
+
+def test_no_extra_attributes_configured_is_a_no_op(config):
+    _, queue_off, _ = _run("llm_openai_chat", config)
+    _, queue_on, _ = _run("llm_openai_chat", replace(config, extra_attributes=()))
+    assert queue_off.drain(1)[0]["custom_data"] == queue_on.drain(1)[0]["custom_data"]
+
+
+def test_extra_attributes_redacts_namespaced_sensitive_names(config):
+    # sanitize_dict matches whole keys, so http.request.header.authorization
+    # flattens to a key matching nothing — it must still be redacted.
+    config = replace(config, extra_attributes=("http.request.header.authorization",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "http.request.header.authorization"
+    attr.value.string_value = "Bearer super-secret"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["http_request_header_authorization"] == REDACTED
+
+
+def test_extra_attributes_redacts_dotted_sensitive_suffix(config):
+    config = replace(config, extra_attributes=("auth.access.token",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "auth.access.token"
+    attr.value.string_value = "tok-123"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["auth_access_token"] == REDACTED
+
+
+def test_extra_attributes_non_sensitive_names_still_pass_through(config):
+    # The redaction guard must not swallow ordinary correlation attributes.
+    config = replace(config, extra_attributes=("tenant.id",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "tenant.id"
+    attr.value.string_value = "acme-42"
+    pipeline.process_export(export)
+    [event] = queue.drain(10)
+    assert event["custom_data"]["tenant_id"] == "acme-42"
+
+
+def _with_kvlist(fixture: str, key: str, pairs: dict):
+    export = load_export(fixture)
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = key
+    for k, v in pairs.items():
+        kv = attr.value.kvlist_value.values.add()
+        kv.key = k
+        kv.value.string_value = v
+    return export
+
+
+def test_extra_attributes_sanitize_nested_credential_keys(config):
+    # Serializing a structured value before sanitize_dict would hide the inner
+    # key from it and ship the secret under a benign-looking outer key.
+    config = replace(config, extra_attributes=("request.metadata",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_kvlist("llm_openai_chat", "request.metadata", {"api_key": "sk-SECRET"})
+    )
+    [event] = queue.drain(10)
+    assert "sk-SECRET" not in json.dumps(event)
+    assert REDACTED in event["custom_data"]["request_metadata"]
+
+
+def test_extra_attributes_bounded_by_encoded_bytes_not_characters(config):
+    # json.dumps escapes non-ASCII, so a character cap lets an emoji value cost
+    # ~12x its length and push the event past max_event_bytes.
+    config = replace(config, extra_attributes=tuple(f"e{i}.v" for i in range(5)))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    for i in range(5):
+        attr = span.attributes.add()
+        attr.key = f"e{i}.v"
+        attr.value.string_value = "\U0001f600" * 2000
+    queued = pipeline.process_export(export)
+    assert queued == 1
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    assert len(json.dumps(event).encode()) <= config.max_event_bytes
+
+
+def test_selecting_a_bridge_owned_attribute_is_rejected(config):
+    # The bridge copies mcp.session.id into custom_data["session_id"] itself, so
+    # selecting it would leave the raw value beside the captured/hashed one.
+    # Refused at startup rather than scrubbed, which never caught every alias.
+    with pytest.raises(ConfigError, match="already read by the bridge"):
+        Pipeline(replace(config, extra_attributes=("mcp.session.id",)), BoundedQueue(10), "k")
+
+
+def test_endpoint_embedded_sources_are_rejected(config):
+    # provider/model build llm://{provider}/{model}; hashing them would either
+    # corrupt the endpoint or leave the raw value inside it.
+    for name in ("llm.system", "llm.model_name"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, extra_attributes=(name,)), BoundedQueue(10), "k")
+
+
+def test_configured_header_attributes_are_rejected(config):
+    # user_agent/client_ip/user_id land in top-level fields the extras path
+    # doesn't touch, so selecting them dual-writes.
+    config = replace(config, user_id_attribute="corr.id")
+    for name in ("http.user_agent", "http.client_ip", "corr.id"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, extra_attributes=(name,)), BoundedQueue(10), "k")
+
+
+def test_extra_attributes_redacts_kebab_case_sensitive_compound(config):
+    # x-api-key is the spelling HTTP headers actually use, and this codebase
+    # already treats it as sensitive via SENSITIVE_HEADERS. Segment-wise
+    # matching missed it: neither "api" nor "key" is sensitive alone, and the
+    # compound never survives as its own segment under any single split.
+    config = replace(config, extra_attributes=("http.request.header.x-api-key",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_attr("llm_openai_chat", "http.request.header.x-api-key", "sk-SECRET")
+    )
+    [event] = queue.drain(10)
+    assert "sk-SECRET" not in json.dumps(event)
+    assert event["custom_data"]["http_request_header_x_api_key"] == REDACTED
+
+
+def test_multiword_sensitive_compounds_detected_in_both_spellings():
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    # Compounds whose individual words are not sensitive on their own — these
+    # are the ones segment matching let through.
+    for compound in ("api-key", "private-key", "ssh-key", "credit-card", "card-number"):
+        assert is_sensitive_attribute(f"http.request.header.x-{compound}"), compound
+        assert is_sensitive_attribute(f"req.{compound.replace('-', '_')}"), compound
+
+
+def test_operator_correlation_names_are_not_over_redacted():
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    # The documented examples must stay usable, or the wider match breaks the
+    # configuration the README tells operators to use.
+    for name in ("corr.session", "tenant.id", "request.id", "corr.trace"):
+        assert not is_sensitive_attribute(name), name
+
+
+def test_shared_helper_attributes_are_rejected(config):
+    # error.type is read by spanfields.error_message(), which both mappers call,
+    # and feeds custom_data["error"] — a different key than the derived one, so
+    # neither the startup set nor the runtime collision check saw it.
+    with pytest.raises(ConfigError, match="already read by the bridge"):
+        Pipeline(replace(config, extra_attributes=("error.type",)), BoundedQueue(10), "k")
+
+
+def test_mapper_request_params_are_rejected(config):
+    # gen_ai.request.temperature lands in custom_data["temperature"] — again a
+    # different key than the derived gen_ai_request_temperature.
+    for name in ("gen_ai.request.temperature", "gen_ai.request.top_p"):
+        with pytest.raises(ConfigError, match="already read by the bridge"):
+            Pipeline(replace(config, extra_attributes=(name,)), BoundedQueue(10), "k")
+
+
+def test_fit_encoded_never_exceeds_a_tiny_budget():
+    from cerberus_envoy_ai_gateway.pipeline import fit_encoded
+
+    # Latent if MAX_EXTRA_VALUE_BYTES is ever lowered below the marker length.
+    for budget in (4, 8, 16):
+        assert len(json.dumps(fit_encoded("x" * 500, budget))) <= budget
+
+
+def test_key_collision_within_one_list_is_rejected(config):
+    # tenant-id and tenant.id both derive custom_data["tenant_id"]; which value
+    # wins would otherwise depend on iteration order.
+    with pytest.raises(ConfigError, match="both map to custom_data key"):
+        Pipeline(
+            replace(config, extra_attributes=("tenant-id", "tenant.id")), BoundedQueue(10), "k"
+        )
+
+
+def test_operator_owned_attributes_are_still_accepted(config):
+    # Over-rejection would make the feature useless; the intended shape works.
+    Pipeline(replace(config, extra_attributes=("corr.session", "tenant.id")), BoundedQueue(10), "k")
+
+
+def test_extra_attributes_distinct_bytes_stay_distinct(config):
+    # Lossy UTF-8 replacement mapped b"\xff" and b"\xfe" both to U+FFFD, so two
+    # distinct correlation keys collapsed to the same stored value and
+    # correlated unrelated events. Encoding is now lossless.
+    outputs = []
+    for raw in (b"\xff", b"\xfe"):
+        config2 = replace(config, extra_attributes=("corr.blob",))
+        queue = BoundedQueue(100)
+        pipeline = Pipeline(config2, queue, None)
+        export = load_export("llm_openai_chat")
+        span = export.resource_spans[0].scope_spans[0].spans[0]
+        attr = span.attributes.add()
+        attr.key = "corr.blob"
+        attr.value.bytes_value = raw
+        pipeline.process_export(export)
+        outputs.append(queue.drain(10)[0]["custom_data"]["corr_blob"])
+    assert outputs[0] != outputs[1]
+    # valid UTF-8 still stored as readable text, not base64
+    config3 = replace(config, extra_attributes=("corr.blob",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config3, queue, None)
+    export = load_export("llm_openai_chat")
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = "corr.blob"
+    attr.value.bytes_value = b"plain-text-id"
+    pipeline.process_export(export)
+    assert queue.drain(10)[0]["custom_data"]["corr_blob"] == "plain-text-id"
+
+
+def test_extra_attributes_redacts_slash_separated_sensitive_name(config):
+    # Attribute names are operator-controlled arbitrary text; a slash-separated
+    # credential name evaded the dot/hyphen/underscore-only word split.
+    config = replace(config, extra_attributes=("http/request/header/authorization",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_attr("llm_openai_chat", "http/request/header/authorization", "Bearer SECRET")
+    )
+    [event] = queue.drain(10)
+    assert "SECRET" not in json.dumps(event)
+    assert event["custom_data"]["http_request_header_authorization"] == REDACTED
+
+
+def test_extra_attributes_redacts_nested_namespaced_credential_key(config):
+    # A kvlist with a benign outer name but a nested namespaced credential key —
+    # sanitize_dict matches whole keys, so the nested one evaded it.
+    config = replace(config, extra_attributes=("request.metadata",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_kvlist(
+            "llm_openai_chat",
+            "request.metadata",
+            {"http.request.header.authorization": "Bearer SECRET"},
+        )
+    )
+    [event] = queue.drain(10)
+    assert "SECRET" not in json.dumps(event)
+    assert REDACTED in event["custom_data"]["request_metadata"]
+
+
+def test_extras_shed_before_dropping_a_whole_event(config):
+    # With a small max_event_bytes, a bounded extra could otherwise sink an
+    # otherwise-valid event. The extra is shed; the event survives.
+    config = replace(config, extra_attributes=("corr.x",), max_event_bytes=1024)
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.x", "y" * 900))
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    assert "corr_x" not in event["custom_data"]
+    assert event["custom_data"]["extras_dropped_oversize"] is True
+    assert len(json.dumps(event).encode()) <= config.max_event_bytes
+
+
+def test_extra_attributes_redacts_camelcase_sensitive_name(config):
+    # camelCase carries no separators; case boundaries must be broken or the
+    # word scan never sees the sensitive word.
+    config = replace(config, extra_attributes=("httpRequestHeaderAuthorization",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(
+        _with_attr("llm_openai_chat", "httpRequestHeaderAuthorization", "Bearer SECRET")
+    )
+    [event] = queue.drain(10)
+    assert "SECRET" not in json.dumps(event)
+    assert event["custom_data"]["http_request_header_authorization"] == REDACTED
+
+
+def test_camelcase_multiword_sensitive_compounds():
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    for name in ("xApiKey", "userPrivateKey", "reqSessionId", "creditCardNumber"):
+        assert is_sensitive_attribute(name), name
+
+
+def test_mcp_argument_prefix_attribute_is_rejected(config):
+    # The per-argument prefix is a mapper read; selecting one dual-writes.
+    # Also guards the deduplicated prefix constant against silent breakage.
+    with pytest.raises(ConfigError, match="already read by the bridge"):
+        Pipeline(
+            replace(config, extra_attributes=("mcp.request.argument.location",)),
+            BoundedQueue(10),
+            "k",
+        )
+
+
+def test_extra_attributes_redacts_acronym_prefixed_sensitive_name(config):
+    # HTTPAuthorization / HTTPPrivateKey: the acronym→word boundary the
+    # two-rule splitter missed, so the credential shipped in cleartext.
+    for name, key in (
+        ("HTTPAuthorization", "http_authorization"),
+        ("HTTPPrivateKey", "http_private_key"),
+    ):
+        config2 = replace(config, extra_attributes=(name,))
+        queue = BoundedQueue(100)
+        pipeline = Pipeline(config2, queue, None)
+        pipeline.process_export(_with_attr("llm_openai_chat", name, "Bearer SECRET"))
+        [event] = queue.drain(10)
+        assert "SECRET" not in json.dumps(event), name
+        assert event["custom_data"][key] == REDACTED, name
+
+
+def test_extras_shed_never_deletes_a_mapper_key(config):
+    # A configured extra that collides with a mapper key (trace.id -> trace_id)
+    # is skipped at insert; the oversized-shed must not then delete the mapper's
+    # real trace_id along with the actually-added extra.
+    config = replace(config, extra_attributes=("trace.id", "corr.x"), max_event_bytes=1024)
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.x", "y" * 900))
+    assert pipeline.dropped_oversize == 0
+    [event] = queue.drain(10)
+    # the mapper's trace_id survives; only the real extra (corr_x) is shed
+    assert event["custom_data"]["trace_id"]  # present and non-empty
+    assert "corr_x" not in event["custom_data"]
+
+
+def test_concatenated_sensitive_name_is_a_documented_limit():
+    # Honest boundary: a name with no internal separator can't be word-split
+    # without a dictionary, so it is NOT caught. Locks the known limitation so a
+    # future reader doesn't mistake it for a bug (or silently "fix" it wrong).
+    from cerberus_envoy_ai_gateway.pipeline import is_sensitive_attribute
+
+    assert is_sensitive_attribute("private.key")  # separated: caught
+    assert not is_sensitive_attribute("privatekey")  # fused: not caught, by design

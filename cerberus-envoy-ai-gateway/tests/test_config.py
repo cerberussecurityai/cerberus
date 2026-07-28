@@ -1,6 +1,11 @@
 import pytest
 
-from cerberus_envoy_ai_gateway.config import Config, ConfigError
+from cerberus_envoy_ai_gateway.config import (
+    MAX_EXTRA_ATTRIBUTE_NAME_CHARS,
+    MAX_EXTRA_ATTRIBUTES,
+    Config,
+    ConfigError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -129,4 +134,48 @@ def test_ingest_service_requires_scheme(monkeypatch):
     monkeypatch.setenv("CERBERUS_TOKEN", "sk_live_abc")
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "ingest.example.com")
     with pytest.raises(ConfigError, match="CERBERUS_INGEST_SERVICE"):
+        Config.from_env()
+
+
+def test_extra_attributes_parsed_and_deduped(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", " a.b , c.d ,a.b, ,")
+    config = Config.from_env()
+    assert config.extra_attributes == ("a.b", "c.d")
+
+
+def test_extra_attribute_name_length_is_capped(monkeypatch):
+    # The name becomes an unsheddable custom_data key. Values are bounded in the
+    # pipeline; an unbounded name would blow the event cap and silently drop
+    # every event carrying that attribute.
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", "a." + "x" * MAX_EXTRA_ATTRIBUTE_NAME_CHARS)
+    with pytest.raises(ConfigError, match="over the"):
+        Config.from_env()
+
+
+def test_normal_attribute_names_are_unaffected(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", "corr.session,tenant.id")
+    assert Config.from_env().extra_attributes == ("corr.session", "tenant.id")
+
+
+def test_extra_attributes_default_empty(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.delenv("CERBERUS_EXTRA_ATTRIBUTES", raising=False)
+    assert Config.from_env().extra_attributes == ()
+
+
+def test_extra_attributes_rejects_oversized_list(monkeypatch):
+    # Each captured attribute occupies an unsheddable custom_data key.
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv(
+        "CERBERUS_EXTRA_ATTRIBUTES", ",".join(f"a{i}" for i in range(MAX_EXTRA_ATTRIBUTES + 1))
+    )
+    with pytest.raises(ConfigError):
         Config.from_env()

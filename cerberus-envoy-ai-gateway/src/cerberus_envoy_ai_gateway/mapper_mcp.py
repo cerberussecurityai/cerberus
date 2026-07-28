@@ -76,6 +76,27 @@ _ARGUMENT_PREFIX = "mcp.request.argument."
 # mcp_schema_report events (currently a documented known gap).
 _TOOL_LIST_KEYS = ("mcp.tools.list", "output.value")
 
+# Attributes this mapper reads. Declared so the pipeline can refuse to let an
+# operator also select one via CERBERUS_EXTRA_ATTRIBUTES:
+# the mapper copies these into custom_data (and some into `endpoint`) under its
+# own names, which would store the same value twice under two keys.
+# Per-index/per-name attributes this mapper reads, matched by prefix (the suffix
+# is the argument name). Declared so the pipeline can refuse an operator
+# selecting one without hand-copying the literal.
+CONSUMED_ATTRIBUTE_PREFIXES = (_ARGUMENT_PREFIX,)
+
+
+CONSUMED_ATTRIBUTES = frozenset(
+    _SERVER_KEYS
+    + _SESSION_KEYS
+    + _CLIENT_NAME_KEYS
+    + _CLIENT_VERSION_KEYS
+    + _ARGUMENT_KEYS
+    + _TOOL_LIST_KEYS
+    + ("mcp.request.id", "mcp.method.name", "mcp.tool.name", "mcp.prompt.name")
+    + ("mcp.resource.uri", "mcp.protocol.version", "mcp.transport")
+)
+
 
 def _arguments(attrs: dict[str, Any]) -> dict[str, Any]:
     """Extract handler arguments as a dict (MCPDiscoveryUpdater requires a dict)."""

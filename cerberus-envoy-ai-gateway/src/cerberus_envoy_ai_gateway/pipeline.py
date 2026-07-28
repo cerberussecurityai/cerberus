@@ -9,18 +9,25 @@ All privacy-affecting work happens here, before anything reaches the queue:
   giant prompt can't blow the ingest server's per-event byte cap.
 """
 
+import base64
 import json
 import logging
+import re
 from typing import Any
 
-from cerberus_core import hash_pii, normalize_ip, sanitize_dict
+from cerberus_core import REDACTED, SENSITIVE_KEYS, hash_pii, normalize_ip, sanitize_dict
 
 from .classify import KIND_LLM, KIND_MCP, classify
-from .config import Config
+from .config import Config, ConfigError
+from .mapper_llm import CONSUMED_ATTRIBUTE_PREFIXES as LLM_CONSUMED_PREFIXES
+from .mapper_llm import CONSUMED_ATTRIBUTES as LLM_CONSUMED
 from .mapper_llm import map_llm_span
+from .mapper_mcp import CONSUMED_ATTRIBUTE_PREFIXES as MCP_CONSUMED_PREFIXES
+from .mapper_mcp import CONSUMED_ATTRIBUTES as MCP_CONSUMED
 from .mapper_mcp import map_mcp_span
 from .otlp import iter_spans, span_attributes, span_event_attributes
 from .queue import BoundedQueue
+from .spanfields import CONSUMED_ATTRIBUTES as SPANFIELDS_CONSUMED
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +43,184 @@ MAX_VALUE_CHARS = 8192
 MAX_USER_AGENT_CHARS = 1024
 MAX_USER_ID_CHARS = 256
 MAX_ERROR_CHARS = 2048
+# Extra attributes are correlation keys (tenant/session/request ids), not
+# content — keep them tight, since they are unsheddable like user_id above.
+# Measured in *encoded* bytes, not characters: json.dumps escapes non-ASCII, so
+# a character cap lets an emoji-heavy value cost 12x its length.
+MAX_EXTRA_VALUE_BYTES = 1024
 # A valid IP (incl. IPv6 + zone) is <=45 chars; bound malformed raw values.
 MAX_IP_CHARS = 64
+
+# Longest SENSITIVE_KEYS entry in words, bounding the n-gram scan in
+# is_sensitive_attribute. Derived so a longer entry added upstream widens the
+# scan automatically instead of silently falling outside it.
+_MAX_SENSITIVE_WORDS = max(len(key.split("_")) for key in SENSITIVE_KEYS)
+
+
+def attribute_words(name: str) -> list[str]:
+    """Split an attribute name into lower-case alphanumeric words.
+
+    The standard three-rule identifier word-split, so every separator and case
+    convention an operator might use decomposes the same way (names flow in
+    arbitrary from ``OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES``):
+
+    1. non-alphanumeric runs   — ``http/request/header/authorization``
+    2. lower/digit → upper     — ``httpRequestHeaderAuthorization``
+    3. upper → upper+lower     — ``HTTPAuthorization`` (acronym then word)
+
+    Rule 3 is what an earlier two-rule version missed: without it
+    ``HTTPAuthorization`` stayed one token and the credential shipped in
+    cleartext. Case boundaries are marked before lower-casing, which would erase
+    them. This covers every *structural* spelling; it cannot split a run with no
+    boundary at all (``privatekey``) — see ``is_sensitive_attribute``.
+    """
+    marked = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", name.strip())  # acronym → word
+    marked = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", marked)  # camelCase
+    return [word for word in re.split(r"[^a-z0-9]+", marked.lower()) if word]
+
+
+def extra_attribute_key(name: str) -> str:
+    """Derive a ``custom_data`` key from a span attribute name (``A.b/c`` -> ``a_b_c``).
+
+    Lower-cased and every separator collapsed to ``_``, so the key is clean
+    snake_case whatever punctuation the source name used, and two names that
+    differ only in separator land on the same key (caught by
+    ``_reject_ambiguous_attribute_keys``).
+    """
+    return "_".join(attribute_words(name))
+
+
+def is_sensitive_attribute(name: str) -> bool:
+    """True when any run of words in a span attribute name is a SENSITIVE_KEYS entry.
+
+    ``sanitize_dict`` matches whole keys, so a namespaced OTel name like
+    ``http.request.header.authorization`` flattens to
+    ``http_request_header_authorization``, matches nothing, and would copy a
+    bearer token through in cleartext.
+
+    Word runs rather than single segments, because several SENSITIVE_KEYS
+    entries are multi-word (``api_key``, ``private_key``, ``credit_card``,
+    ``session_id``) and none of their individual words is sensitive alone.
+
+    **Best-effort, not a guarantee.** ``attribute_words`` decomposes every
+    *structural* spelling — separators (``x-api-key``), camelCase, acronyms — so
+    those are caught. It cannot split a name with no internal boundary
+    (``privatekey``, ``sessiontoken``), because telling that apart from an
+    ordinary word needs a dictionary, and it says nothing about a benign-named
+    attribute carrying a secret *value*. The real contract, as with
+    ``CERBERUS_CAPTURE_LLM_CONTENT``, is that operators must not select
+    attributes that carry secrets; this check is a safety net for the common
+    spellings of that mistake, not a content scanner.
+    """
+    words = attribute_words(name)
+    for start in range(len(words)):
+        for length in range(1, _MAX_SENSITIVE_WORDS + 1):
+            if start + length > len(words):
+                break
+            if "_".join(words[start : start + length]) in SENSITIVE_KEYS:
+                return True
+    return False
+
+
+def redact_sensitive_nested_keys(value: Any) -> Any:
+    """Redact values under any dict key whose *name* is sensitive, recursively.
+
+    ``sanitize_dict`` matches whole keys only, so a nested namespaced key like
+    ``{"http.request.header.authorization": "Bearer ..."}`` inside a structured
+    extra evades it — the outer attribute name is benign and the inner key never
+    matches ``authorization`` exactly. Applying the same word-run test to every
+    nested key closes that, mirroring what ``is_sensitive_attribute`` does for
+    the top-level name.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                REDACTED
+                if isinstance(key, str) and is_sensitive_attribute(key)
+                else redact_sensitive_nested_keys(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_nested_keys(item) for item in value]
+    return value
+
+
+def coerce_json_safe(value: Any) -> Any:
+    """Convert OTLP values ``json.dumps`` can't encode (``bytes``) into text.
+
+    An unserializable value would fail the ``json.dumps`` in ``_enforce_size``
+    and take the whole event down with it, so a byte-valued attribute must not
+    reach the queue unconverted.
+
+    Conversion is **lossless**: valid UTF-8 decodes to readable text, and
+    anything else becomes ``base64:<...>`` rather than replacement characters.
+    These values are advertised as correlation keys, so a lossy decode that
+    mapped ``b"\\xff"`` and ``b"\\xfe"`` both to U+FFFD would make distinct
+    identifiers collide and correlate unrelated events.
+    """
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return "base64:" + base64.b64encode(value).decode("ascii")
+    if isinstance(value, dict):
+        return {key: coerce_json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [coerce_json_safe(item) for item in value]
+    return value
+
+
+def stable_text(value: Any) -> str:
+    """Deterministic text form of a value.
+
+    Sorted keys so the same structured attribute serializes identically on an
+    LLM span and an MCP span, which is what makes the captured values
+    comparable across the two paths.
+    """
+    safe = coerce_json_safe(value)
+    if isinstance(safe, str):
+        return safe
+    return json.dumps(safe, sort_keys=True, ensure_ascii=False)
+
+
+def fit_encoded(text: str, max_bytes: int) -> str:
+    """Trim ``text`` until its JSON-encoded form fits ``max_bytes``.
+
+    A character cap does **not** bound bytes: ``json.dumps`` escapes non-ASCII,
+    so one astral character costs 12 bytes — 1024 emoji encode to ~12 KB. Extras
+    land in ``custom_data`` keys ``_enforce_size`` can't shed, so an unbounded
+    value pushes the event past the cap and drops it whole rather than degrading.
+    """
+    if len(json.dumps(text)) <= max_bytes:
+        return text
+    suffix = "...[TRUNCATED]"
+    budget = max_bytes - len(json.dumps(suffix))
+    if budget <= 0:
+        # max_bytes is smaller than the marker itself. Drop the marker rather
+        # than return something that still exceeds the cap it was handed —
+        # unreachable at the current MAX_EXTRA_VALUE_BYTES, latent if lowered.
+        suffix, budget = "", max_bytes
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if len(json.dumps(text[:mid])) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low] + suffix
+
+
+def bound_extra_value(value: Any) -> Any:
+    """Reduce a sanitized extra to a scalar bounded by encoded size.
+
+    Runs *after* ``sanitize_dict`` — serializing first would hide nested
+    credential-shaped keys from it, shipping an inner secret in cleartext under
+    a benign-looking outer key.
+    """
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    return fit_encoded(stable_text(value), MAX_EXTRA_VALUE_BYTES)
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
@@ -53,15 +236,90 @@ def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
     return data
 
 
+def _reject_bridge_owned_attributes(config: Config) -> None:
+    """Refuse to capture an attribute the bridge already reads itself.
+
+    Selecting one produces a *dual write*: the mapper copies the same source
+    into ``custom_data``, a top-level field, or ``endpoint`` under its own name,
+    so the value is stored twice under two names, and any later treatment of the
+    captured copy (redaction, and pseudonymization when that lands) silently
+    fails to cover the mapper's.
+
+    Rejecting the configuration removes the whole class rather than chasing
+    destinations one at a time. It fails loudly at startup instead of leaking
+    quietly at runtime, and over-rejecting is safe — the operator maps their own
+    header (``corr.session``, ``tenant.id``) and gets a conflict-free key.
+    """
+    owned = set(LLM_CONSUMED) | set(MCP_CONSUMED) | set(SPANFIELDS_CONSUMED)
+    for attribute in (
+        config.client_ip_attribute,
+        config.user_id_attribute,
+        config.user_agent_attribute,
+    ):
+        if attribute:
+            owned.add(attribute.strip().lower())
+    for label, names in (("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),):
+        for name in names:
+            lowered = name.strip().lower()
+            prefixes = LLM_CONSUMED_PREFIXES + MCP_CONSUMED_PREFIXES
+            if lowered in owned or lowered.startswith(prefixes):
+                raise ConfigError(
+                    f"{label}: {name!r} is already read by the bridge, which copies it into "
+                    "the event under its own name — selecting it would leave the raw value "
+                    "alongside the captured one. Map your application's own header to a "
+                    "distinct attribute (e.g. 'corr.session') and select that instead."
+                )
+
+
+def _reject_ambiguous_attribute_keys(config: Config) -> None:
+    """Refuse two different attributes that would claim the same ``custom_data`` key.
+
+    ``extra_attribute_key`` maps both ``.`` and ``-`` to ``_``, so ``tenant-id``
+    and ``tenant.id`` collapse together and which value is stored comes down to
+    iteration order — with the loser dropped to a log line. Refused rather than
+    silently resolved, since neither outcome is what the operator asked for.
+    """
+    claimed: dict[str, str] = {}
+    for label, names in (("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),):
+        for name in names:
+            stripped = name.strip()
+            key = extra_attribute_key(name)
+            prior = claimed.get(key)
+            if prior is not None and prior != stripped:
+                raise ConfigError(
+                    f"{label}: {name!r} and {prior!r} both map to custom_data key {key!r}. "
+                    "Only one attribute may claim a key — otherwise which value is stored, "
+                    "and whether it is hashed, depends on processing order. Rename one."
+                )
+            claimed[key] = stripped
+
+
 class Pipeline:
     """Stateful converter from OTLP export requests to queued Cerberus events."""
 
     def __init__(self, config: Config, queue: BoundedQueue, secret_key: str | None):
+        _reject_bridge_owned_attributes(config)
+        _reject_ambiguous_attribute_keys(config)
         self.config = config
         self.queue = queue
         self.secret_key = secret_key
         self.events_llm = 0
         self.events_mcp = 0
+        # Collision warnings are once-per-key: the condition is a static config
+        # mistake, so re-logging it per event would just flood.
+        self._extra_key_collisions: set[str] = set()
+        # Configured names are static for the life of the pipeline, so settle
+        # the sensitivity verdict once here rather than per span.
+        self._sensitive_extras = frozenset(
+            name for name in config.extra_attributes if is_sensitive_attribute(name)
+        )
+        # custom_data keys the extras path added to the *current* event. Only
+        # these are sheddable in _enforce_size — the static configured set would
+        # also include names that collided with a mapper key and were skipped,
+        # so shedding those would delete the gateway's own trace_id/model/etc.
+        # Reset per event in _apply_extra_attributes; safe because process_export
+        # handles one span at a time (apply → finalize → enforce, no interleave).
+        self._pending_extra_keys: set[str] = set()
         self.spans_ignored = 0
         self.spans_filtered = 0
         self.dropped_oversize = 0
@@ -95,6 +353,7 @@ class Pipeline:
                 # reserved for truly unclassified spans operators should chase.
                 self.spans_filtered += 1
                 continue
+            self._apply_extra_attributes(event, attrs)
             finalized = self._finalize(event, kind)
             if finalized is None:
                 continue
@@ -105,6 +364,61 @@ class Pipeline:
                 else:
                     self.events_mcp += 1
         return queued
+
+    def _apply_extra_attributes(self, event: dict[str, Any], attrs: dict[str, Any]) -> None:
+        """Copy operator-selected span attributes into ``custom_data``.
+
+        Correlating an agent's LLM events with its MCP events can't rely on
+        ``trace_id`` (the gateway parents the two paths from different carriers
+        and never joins them), so operators need a way to surface whatever
+        header their application already sends on both. This copies those
+        attributes through verbatim.
+
+        Mapper-set keys always win: gateway telemetry outranks operator config,
+        so a stray mapping can never replace ``trace_id`` and friends.
+        """
+        self._pending_extra_keys = set()
+        names = self.config.extra_attributes
+        if not names:
+            return
+        custom_data = event["custom_data"]
+        extras: dict[str, Any] = {}
+        # Keys whose *attribute name* is sensitive even though the flattened key
+        # isn't — sanitize_dict can't see those, so redact them ourselves.
+        redact: set[str] = set()
+        for name in names:
+            value = attrs.get(name)
+            if value is None:
+                continue
+            key = extra_attribute_key(name)
+            # Guards keys the mappers set, so operator config can't spoof
+            # trace_id and friends. Sources the mappers *read* are refused at
+            # startup, so a selected attribute can no longer alias one.
+            if key in extras or key in custom_data:
+                if key not in self._extra_key_collisions:
+                    self._extra_key_collisions.add(key)
+                    logger.warning(
+                        "CERBERUS_EXTRA_ATTRIBUTES: %r maps to custom_data key %r, which "
+                        "the gateway already set — skipping (choose a different attribute)",
+                        name,
+                        key,
+                    )
+                continue
+            # Structure is preserved here so sanitize_dict can recurse into it;
+            # serializing before that would hide nested credential keys.
+            extras[key] = coerce_json_safe(value)
+            if name in self._sensitive_extras:
+                redact.add(key)
+        if extras:
+            extras = {
+                key: bound_extra_value(redact_sensitive_nested_keys(item))
+                for key, item in sanitize_dict(extras).items()
+            }
+            for key in redact:
+                extras[key] = REDACTED
+        if extras:
+            custom_data.update(extras)
+            self._pending_extra_keys = set(extras)
 
     def _finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Hash PII, sanitize captured content, and enforce the event byte cap."""
@@ -183,6 +497,22 @@ class Pipeline:
         size = len(json.dumps(event).encode("utf-8"))
         if size <= self.config.max_event_bytes:
             return event
+
+        # Last resort before dropping the event whole: shed operator-added
+        # extras. They land in unsheddable-by-default custom_data keys, so a
+        # small max_event_bytes could otherwise let a bounded extra sink an
+        # otherwise-valid event. Losing enrichment beats losing the event. Only
+        # the keys this event's extras path actually inserted — never a mapper
+        # key a collided extra was skipped over.
+        shed = [key for key in self._pending_extra_keys if key in custom_data]
+        if shed:
+            for key in shed:
+                del custom_data[key]
+            custom_data["extras_dropped_oversize"] = True
+            size = len(json.dumps(event).encode("utf-8"))
+            if size <= self.config.max_event_bytes:
+                return event
+
         logger.warning(
             "Dropping oversized event (%dB > %dB) for endpoint %s",
             size,
