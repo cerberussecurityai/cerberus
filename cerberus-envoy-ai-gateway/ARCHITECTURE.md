@@ -192,8 +192,11 @@ If you run the bridge against an older backend, watch `server_skipped` in
   identical to the other integrations.
 - Source IPs are HMAC-SHA256 pseudonymized; redaction is **key-name based**
   (`SENSITIVE_KEYS`), so secrets embedded in free-form prompt text are *not*
-  scrubbed — LLM content capture is therefore off by default and double-gated
-  (the bridge flag plus the gateway's `OPENINFERENCE_HIDE_*`).
+  scrubbed. LLM content capture is double-gated (the bridge flag plus the
+  gateway's `OPENINFERENCE_HIDE_*`), but **both gates default open**: the
+  bridge ships content and the recommended gateway env records it. To
+  withhold it, set `CERBERUS_CAPTURE_LLM_CONTENT=false` on the bridge **and**
+  `OPENINFERENCE_HIDE_INPUTS/OUTPUTS=true` on the gateway.
 - The `/v1/traces` receiver is unauthenticated (standard for in-cluster OTLP)
   and signs everything it forwards with the tenant API key, so deployments
   should restrict who can reach it (NetworkPolicy template in `deploy/`).
