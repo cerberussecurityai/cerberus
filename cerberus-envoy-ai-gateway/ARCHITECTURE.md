@@ -104,8 +104,8 @@ export to `Pipeline.process_export`. For each span (`pipeline.py:66`):
      silently drop its telemetry (an evasion vector).
    - MCP arguments / LLM body run through `cerberus_core.sanitize_dict`
      (key-name redaction of `SENSITIVE_KEYS`) and value truncation; MCP
-     arguments are gated by `CERBERUS_CAPTURE_MCP_ARGUMENTS` (default on), LLM
-     content by `CERBERUS_CAPTURE_LLM_CONTENT` (default off).
+     arguments are gated by `CERBERUS_CAPTURE_MCP_ARGUMENTS` and LLM content
+     by `CERBERUS_CAPTURE_LLM_CONTENT` (both default on).
    - `_enforce_size` keeps each event under `CERBERUS_MAX_EVENT_BYTES`
      (default 56 KB, headroom under the server's 64 KB skip threshold): first
      it sheds captured content (`body=null`, `arguments={}`,
