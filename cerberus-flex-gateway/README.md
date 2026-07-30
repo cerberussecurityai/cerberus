@@ -4,10 +4,14 @@ A MuleSoft Flex Gateway custom policy (Rust → WASM, built with the PDK)
 that captures HTTP request metadata, sanitizes PII, and ships events to
 the Cerberus backend.
 
-## Status: **scaffold (v1)**
+## Status: **released**
 
-The Rust source compiles with PDK 1.8.0 (`make build` requires the
-toolchain — see [Setup](#setup) below). The shipped policy provides:
+The policy is feature-complete for its initial release: prebuilt
+distribution bundles are attached to `flex-gateway-v*` GitHub Releases,
+and customers install them into their own Anypoint org without a Rust
+toolchain (see [Deployment](#deployment)). Built with PDK 1.8.0;
+building from source requires the toolchain — see [Setup](#setup)
+below. The shipped policy provides:
 
 - Request metadata capture (header / query / body sanitization, IP
   normalization + HMAC, source IP resolution, health-endpoint filter).
@@ -27,9 +31,14 @@ toolchain — see [Setup](#setup) below). The shipped policy provides:
 - Batched outbound POST to the Cerberus backend every `flushIntervalMs`.
 - Init-time HMAC secret fetch with 5-second timeout.
 
-### Known gaps in v1
+### Planned improvements
 
-| Gap | Why |
+There is a decent-sized backlog of follow-up improvements, but none of
+them block production use — each was deliberately scoped out of the
+initial release, and in every case the current behavior is documented
+and safe. Each row records today's behavior and the reasoning.
+
+| Improvement | Current behavior / why deferred |
 |---|---|
 | `_cerberus_metrics` extraction (response body inspection) | Mutating response bodies interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
 | Retry / backoff on backend failures | Currently at-most-once: failed batches are dropped. |
@@ -305,7 +314,7 @@ make sync-fixtures
 ## Build / test
 
 ```bash
-make build   # compile to wasm32-wasip1; emits target/wasm32-wasip1/release/cerberus-flex-gateway.wasm
+make build   # compile to wasm32-wasip1; emits target/wasm32-wasip1/release/cerberus_flex_gateway.wasm + GCL manifests
 make test    # cargo test (parity + unit)
 make run     # boots a local Flex Gateway in Docker Compose with the policy attached
 ```
@@ -316,7 +325,7 @@ a symlink to the repo-root `parity-fixtures/` directory.
 
 ## Deployment
 
-Two operator-facing modes are supported in v1.
+Two operator-facing modes are supported.
 
 ### Customer installation (Connected Mode)
 
@@ -352,8 +361,8 @@ test.
 
 ### Local mode (development + air-gapped operators)
 
-1. `make build` → produces `bin/cerberus_flex_gateway.wasm` and the GCL
-   manifests.
+1. `make build` → produces `cerberus_flex_gateway.wasm` and the GCL
+   manifests under `target/wasm32-wasip1/release/`.
 2. Copy `.wasm` and `gcl.yaml` onto every Flex Gateway pod (via
    ConfigMap / volume mount).
 3. Apply a `PolicyBinding` CR scoped to your API instance with the
@@ -427,6 +436,7 @@ cerberus-flex-gateway/
 ├── Cargo.toml
 ├── Makefile                  # `make bundle` assembles the customer tarball
 ├── README.md (this file)
+├── DEVELOPMENT.md            # dev-env setup (Anypoint account → `make run` walkthrough)
 ├── INSTALL.md                # customer install guide (also ships in the bundle)
 ├── install.sh                # customer installer (publishes into their org)
 ├── rust-toolchain.toml       # pinned build toolchain (build-side only)
@@ -452,7 +462,9 @@ cerberus-flex-gateway/
 │   ├── path_filter.rs        # capturePaths / excludePaths globs
 │   ├── sampler.rs            # sampleRate coin flip (SplitMix64)
 │   ├── queue.rs              # bounded RefCell<VecDeque>
-│   └── sink.rs               # POST /v1/ingest/batch
+│   ├── sink.rs               # POST /v1/ingest/batch
+│   ├── pipeline_tests.rs     # in-crate request-pipeline tests (pdk-unit)
+│   └── generated/            # toolchain-generated from definition/gcl.yaml (committed)
 └── tests/
     ├── fixtures              # symlink → ../../parity-fixtures (created by `make sync-fixtures`)
     └── parity_runner.rs      # consumes the YAML fixtures
