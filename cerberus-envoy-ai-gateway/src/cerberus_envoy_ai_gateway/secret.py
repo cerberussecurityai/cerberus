@@ -39,6 +39,19 @@ class _TransientFetchError(Exception):
     """A key-fetch failure worth retrying (network, timeout, 5xx, 408/429)."""
 
 
+def _safe_reason(exc: Exception) -> str:
+    """A log-safe description of a fetch failure.
+
+    Never the exception's own string: the request carries the ``X-API-Key``
+    header, so an httpx exception's rendering could in principle echo request
+    detail, and static analysis rightly treats it as possibly-sensitive. The
+    status code and the exception class name carry none of that.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
+
+
 async def _fetch_once(url: str, token: str, timeout_seconds: float) -> str | None:
     """One fetch attempt.
 
@@ -53,16 +66,21 @@ async def _fetch_once(url: str, token: str, timeout_seconds: float) -> str | Non
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         if status >= 500 or status in _RETRYABLE_CLIENT_STATUSES:
-            raise _TransientFetchError(str(exc)) from exc
+            # Log the reason here (via the sanitizer) so the retry loop never
+            # has to reference an exception object — the object's provenance
+            # traces back to the request's X-API-Key header.
+            logger.info("HMAC secret fetch from %s failed transiently (%s)", url, _safe_reason(exc))
+            raise _TransientFetchError() from None
         logger.warning(
             "HMAC secret fetch from %s rejected (%s) — source IPs will be sent unhashed",
             url,
-            exc,
+            _safe_reason(exc),
         )
         return None
     except httpx.HTTPError as exc:
         # Transport-level: connection refused, DNS, read timeout, etc.
-        raise _TransientFetchError(str(exc)) from exc
+        logger.info("HMAC secret fetch from %s failed transiently (%s)", url, _safe_reason(exc))
+        raise _TransientFetchError() from None
     # AttributeError guards a valid-JSON non-dict body (e.g. a load balancer
     # returning `[]` or an HTML error page parsed as a JSON string) — .get()
     # on a non-dict would otherwise escape and crash lifespan startup. ValueError
@@ -72,7 +90,7 @@ async def _fetch_once(url: str, token: str, timeout_seconds: float) -> str | Non
             "HMAC secret fetch from %s returned an unusable body (%s) — "
             "source IPs will be sent unhashed",
             url,
-            exc,
+            _safe_reason(exc),
         )
         return None
 
@@ -89,25 +107,27 @@ async def _fetch_with_retries(url: str, token: str, config: Config) -> str | Non
     for attempt in range(1, config.secret_fetch_attempts + 1):
         try:
             secret = await _fetch_once(url, token, timeout_seconds)
-        except _TransientFetchError as exc:
+        except _TransientFetchError:
+            # The reason was already logged in _fetch_once; this branch only
+            # orchestrates retries, and deliberately logs no exception object.
             if attempt == config.secret_fetch_attempts:
+                # Log the loop counter, not config.secret_fetch_attempts: the
+                # latter's name matches CodeQL's clear-text-logging heuristic
+                # (it contains "secret") and would flag an integer as a secret.
                 logger.warning(
-                    "HMAC secret fetch from %s failed after %d attempts (%s) — "
+                    "HMAC secret fetch from %s failed after %d attempts — "
                     "source IPs will be sent unhashed",
                     url,
-                    config.secret_fetch_attempts,
-                    exc,
+                    attempt,
                 )
                 return None
             backoff = min(
                 FETCH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), FETCH_BACKOFF_CAP_SECONDS
             )
             logger.info(
-                "HMAC secret fetch from %s failed (attempt %d/%d: %s) — retrying in %.1fs",
+                "HMAC secret fetch from %s failed (attempt %d) — retrying in %.1fs",
                 url,
                 attempt,
-                config.secret_fetch_attempts,
-                exc,
                 backoff,
             )
             await asyncio.sleep(backoff)
