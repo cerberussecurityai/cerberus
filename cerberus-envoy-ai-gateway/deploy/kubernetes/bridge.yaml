@@ -75,7 +75,11 @@ spec:
           # fetch) completes. A startupProbe gives that its own budget so the
           # liveness probe below doesn't kill the pod mid-fetch during a backend
           # blip. 30 × 2s = 60s comfortably covers CERBERUS_SECRET_FETCH_DEADLINE_MS
-          # (10s default); raise failureThreshold if you widen that deadline.
+          # (10s default, plus a small backstop grace); raise failureThreshold if
+          # you widen that deadline.
+          # Note both probes below are held off until this one succeeds — that's
+          # how Kubernetes treats a startupProbe — so the readinessProbe's own
+          # initialDelaySeconds doesn't shorten the window.
           startupProbe:
             httpGet:
               path: /health

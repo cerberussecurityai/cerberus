@@ -202,9 +202,20 @@ def test_secret_fetch_knob_defaults(monkeypatch):
     assert config.secret_fetch_deadline_ms == 10000
 
 
-def test_secret_fetch_attempts_out_of_range_rejected(monkeypatch):
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("CERBERUS_SECRET_FETCH_ATTEMPTS", "0"),  # below the 1-attempt floor
+        ("CERBERUS_SECRET_FETCH_ATTEMPTS", "11"),  # above the 10-attempt cap
+        ("CERBERUS_SECRET_FETCH_TIMEOUT_MS", "99"),  # below the 100ms floor
+        ("CERBERUS_SECRET_FETCH_TIMEOUT_MS", "60001"),  # above the 60s cap
+        ("CERBERUS_SECRET_FETCH_DEADLINE_MS", "99"),  # below the 100ms floor
+        ("CERBERUS_SECRET_FETCH_DEADLINE_MS", "120001"),  # above the 120s cap
+    ],
+)
+def test_secret_fetch_knobs_out_of_range_rejected(monkeypatch, name, value):
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
     monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
-    monkeypatch.setenv("CERBERUS_SECRET_FETCH_ATTEMPTS", "0")
+    monkeypatch.setenv(name, value)
     with pytest.raises(ConfigError):
         Config.from_env()

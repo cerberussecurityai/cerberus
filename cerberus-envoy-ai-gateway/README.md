@@ -64,9 +64,9 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 | `CERBERUS_TOKEN` (or `CERBERUS_TOKEN_FILE`) | ✓ | — | Cerberus API key, sent as `X-API-Key`. |
 | `CERBERUS_SECRET_KEY` | | unset | HMAC-SHA256 key for PII hashing. Inline alternative to `CERBERUS_BACKEND_URL`. |
 | `CERBERUS_BACKEND_URL` | | unset | Fetch the HMAC key from `{value}/api/secret-key` at startup, with bounded retry (see the three `CERBERUS_SECRET_FETCH_*` knobs below). If the key can't be obtained, IPs are sent unhashed. |
-| `CERBERUS_SECRET_FETCH_ATTEMPTS` | | `4` | Max key-fetch attempts on transient failure (connection error, timeout, 5xx, 408/429). |
-| `CERBERUS_SECRET_FETCH_TIMEOUT_MS` | | `5000` | Per-attempt HTTP timeout for the key fetch. |
-| `CERBERUS_SECRET_FETCH_DEADLINE_MS` | | `10000` | Total wall-clock budget across all fetch attempts + backoff. Bounds how long startup can block so the pod isn't killed mid-fetch; keep it under the deploy manifest's `startupProbe` allowance. |
+| `CERBERUS_SECRET_FETCH_ATTEMPTS` | | `4` | Ceiling on key-fetch attempts for transient failures (connection error, timeout, 5xx, 408/429). Reached only when failures are fast — `CERBERUS_SECRET_FETCH_DEADLINE_MS` can stop the retries first, see below. |
+| `CERBERUS_SECRET_FETCH_TIMEOUT_MS` | | `5000` | Per-attempt HTTP timeout for the key fetch. The last attempt is clamped to whatever is left of the deadline. |
+| `CERBERUS_SECRET_FETCH_DEADLINE_MS` | | `10000` | Total wall-clock budget across all fetch attempts + backoff, and the bound that wins when it and the attempt count don't fit. The defaults can't run 4 × 5s of attempts inside 10s, so a backend that *hangs* gets ~2 attempts rather than 4 (one that fails fast, e.g. connection refused, gets all 4). This keeps startup from stalling for the full attempt budget chasing a key the bridge can run without; the give-up log line names which bound it hit. Raise both this and the deploy manifest's `startupProbe` allowance if you want the full attempt count against a slow backend. |
 | `CERBERUS_CLIENT_IP_ATTRIBUTE` | | `http.client_ip` | Span attribute holding the client IP. Populate it via `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` (see below). First hop before any comma is used. |
 | `CERBERUS_USER_ID_ATTRIBUTE` | | unset | Span attribute holding end-user identity (map a header like `x-user-id`). Required for per-end-user analytics. |
 | `CERBERUS_USER_AGENT_ATTRIBUTE` | | `http.user_agent` | Span attribute holding the client User-Agent. |

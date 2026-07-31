@@ -11,7 +11,8 @@ unavailable at pod start doesn't leave the bridge in raw-PII mode for its whole
 lifetime. **Permanent** failures (auth 4xx, empty/malformed body) are not
 retried. The whole thing is bounded by a total wall-clock deadline
 (``CERBERUS_SECRET_FETCH_DEADLINE_MS``) so the FastAPI lifespan can't outrun the
-Kubernetes startup budget and get the pod killed mid-fetch.
+Kubernetes startup budget and get the pod killed mid-fetch. That deadline wins
+over the attempt count when the two don't fit — see :func:`_fetch_with_retries`.
 """
 
 import asyncio
@@ -33,6 +34,13 @@ _RETRYABLE_CLIENT_STATUSES = frozenset({408, 429})
 # Warn if we receive it so operators know to configure a real key — but don't
 # refuse service; running without a configured key is a valid (unhashed) mode.
 _KNOWN_DEFAULT_KEY = "default-hmac-secret-change-in-production"
+
+# _fetch_with_retries enforces the configured deadline itself, clamping its last
+# attempt to exactly the budget left — which would tie with an outer bound set to
+# the same instant. The backstop is deliberately a little looser so the loop wins
+# that race and reports the specific bound it hit; the backstop then only fires
+# for a stall the per-attempt timeout couldn't interrupt at all.
+_DEADLINE_BACKSTOP_GRACE_SECONDS = 0.5
 
 
 class _TransientFetchError(Exception):
@@ -103,27 +111,45 @@ async def _fetch_once(url: str, token: str, timeout_seconds: float) -> str | Non
 
 
 async def _fetch_with_retries(url: str, token: str, config: Config) -> str | None:
+    """Retry until the fetch resolves, the attempt cap is hit, or the budget runs out.
+
+    Those last two are independent bounds and either can bind first, depending
+    on how the backend fails. Fast failures (connection refused) spend attempts
+    while barely touching the clock; slow ones (connection accepted, never
+    answered) spend the clock instead — with the defaults, 4 × 5s of attempts
+    can't fit in a 10s budget, so a hanging backend stops around attempt 2
+    rather than reaching the cap. That's the intended priority (the budget
+    protects the pod's startup probe, and hashing is a fallback rather than a
+    gate), but it does mean ``CERBERUS_SECRET_FETCH_ATTEMPTS`` is a ceiling and
+    not a promise.
+
+    Tracking the budget here, rather than leaving it entirely to the outer
+    ``wait_for``, is what lets that be visible: each attempt is clamped to the
+    time actually left, a backoff we can't afford is skipped instead of being
+    cancelled mid-sleep, and the give-up log names the bound that stopped us.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + config.secret_fetch_deadline_ms / 1000
     timeout_seconds = config.secret_fetch_timeout_ms / 1000
+    attempts_run = 0
+
     for attempt in range(1, config.secret_fetch_attempts + 1):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        attempts_run = attempt
         try:
-            secret = await _fetch_once(url, token, timeout_seconds)
+            secret = await _fetch_once(url, token, min(timeout_seconds, remaining))
         except _TransientFetchError:
             # The reason was already logged in _fetch_once; this branch only
             # orchestrates retries, and deliberately logs no exception object.
             if attempt == config.secret_fetch_attempts:
-                # Log the loop counter, not config.secret_fetch_attempts: the
-                # latter's name matches CodeQL's clear-text-logging heuristic
-                # (it contains "secret") and would flag an integer as a secret.
-                logger.warning(
-                    "HMAC secret fetch from %s failed after %d attempts — "
-                    "source IPs will be sent unhashed",
-                    url,
-                    attempt,
-                )
-                return None
+                break
             backoff = min(
                 FETCH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), FETCH_BACKOFF_CAP_SECONDS
             )
+            if loop.time() + backoff >= deadline:
+                break  # nothing would be left for the attempt on the other side
             logger.info(
                 "HMAC secret fetch from %s failed (attempt %d) — retrying in %.1fs",
                 url,
@@ -137,6 +163,18 @@ async def _fetch_with_retries(url: str, token: str, config: Config) -> str | Non
             return None
         logger.info("Fetched HMAC secret key from backend")
         return _warn_if_default(secret)
+
+    # Log the loop counter, not config.secret_fetch_attempts: the latter's name
+    # matches CodeQL's clear-text-logging heuristic (it contains "secret") and
+    # would flag an integer as a secret.
+    bound = "attempt limit" if attempts_run == config.secret_fetch_attempts else "startup budget"
+    logger.warning(
+        "HMAC secret fetch from %s gave up after %d attempt(s) — %s reached; "
+        "source IPs will be sent unhashed",
+        url,
+        attempts_run,
+        bound,
+    )
     return None
 
 
@@ -153,13 +191,18 @@ async def resolve_secret_key(config: Config) -> str | None:
 
     url = f"{config.backend_url}/api/secret-key"
     deadline_seconds = config.secret_fetch_deadline_ms / 1000
+    # _fetch_with_retries tracks this budget itself and normally returns before
+    # the wait_for fires; wait_for stays as the hard backstop for a stall the
+    # per-attempt timeout can't interrupt, which is why this path logs its own
+    # (less specific) message.
     try:
         return await asyncio.wait_for(
-            _fetch_with_retries(url, config.token, config), deadline_seconds
+            _fetch_with_retries(url, config.token, config),
+            deadline_seconds + _DEADLINE_BACKSTOP_GRACE_SECONDS,
         )
     except TimeoutError:
         logger.warning(
-            "HMAC secret fetch from %s exceeded the %.1fs startup budget — "
+            "HMAC secret fetch from %s stalled past its %.1fs startup budget — "
             "source IPs will be sent unhashed",
             url,
             deadline_seconds,
