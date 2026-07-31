@@ -149,7 +149,12 @@ async def _fetch_with_retries(url: str, token: str, config: Config) -> str | Non
                 FETCH_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), FETCH_BACKOFF_CAP_SECONDS
             )
             if loop.time() + backoff >= deadline:
-                break  # nothing would be left for the attempt on the other side
+                # Give up rather than spend the remainder on an immediate retry:
+                # skipping the wait would mean hammering a backend that just
+                # returned 503 or 429 with no delay at all, which is what the
+                # backoff exists to prevent. Any leftover time is forfeit on
+                # purpose.
+                break
             logger.info(
                 "HMAC secret fetch from %s failed (attempt %d) — retrying in %.1fs",
                 url,
