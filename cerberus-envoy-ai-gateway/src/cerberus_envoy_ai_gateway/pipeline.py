@@ -395,7 +395,19 @@ class Pipeline:
         value. The operator asked for this attribute specifically not to be
         stored in the clear, so with no secret available the only safe answer is
         to drop it; failing open would do the exact opposite of what was asked.
+
+        Note what the no-secret case costs on the *other* side: every value
+        collapses to the same ``REDACTED`` sentinel, so events that share only
+        this attribute stop being distinguishable by it. Anything treating an
+        equal correlator as "same entity" would read that window as one giant
+        join rather than as absent data — see the README caveat. The sentinel is
+        kept (rather than omitting the key) so the gap is visible in the data
+        instead of looking like the attribute was never configured.
         """
+        # The str() calls look redundant — REDACTED is already a str and
+        # hash_pii returns a hexdigest — but cerberus-core ships no type
+        # information, so both are Any here and dropping them trips mypy's
+        # no-any-return.
         if not self.secret_key:
             return str(REDACTED)
         return str(hash_pii(stable_text(value), self.secret_key))

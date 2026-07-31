@@ -509,6 +509,26 @@ def test_hash_attributes_fail_closed_without_a_secret(config):
     assert "sess-abc" not in json.dumps(event)
 
 
+def test_fail_closed_collapses_distinct_correlators_to_one_sentinel(config):
+    # The cost of failing closed, pinned as an intentional contract rather than
+    # left as incidental behaviour: with no secret, two *different* identifiers
+    # produce the same sentinel, so they are no longer distinguishable by this
+    # attribute. A consumer treating an equal correlator as "same entity" would
+    # read such a window as one join across unrelated traffic — which is why the
+    # README tells them to exclude the sentinel before correlating.
+    config = replace(config, hash_attributes=("corr.session",))
+    queue = BoundedQueue(100)
+    pipeline = Pipeline(config, queue, None)
+    pipeline.process_export(_with_attr("llm_openai_chat", "corr.session", "sess-aaa"))
+    pipeline.process_export(_with_attr("mcp_tool_call", "corr.session", "sess-bbb"))
+    first, second = queue.drain(10)
+    assert first["custom_data"]["corr_session"] == REDACTED
+    assert second["custom_data"]["corr_session"] == REDACTED
+    # ...and neither raw value survives, which is the half that must hold.
+    assert "sess-aaa" not in json.dumps(first)
+    assert "sess-bbb" not in json.dumps(second)
+
+
 def test_hash_attributes_are_captured_without_being_listed_twice(config):
     config = replace(config, extra_attributes=(), hash_attributes=("corr.session",))
     queue = BoundedQueue(100)
