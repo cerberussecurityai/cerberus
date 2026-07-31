@@ -115,6 +115,22 @@ class Config:
 
     mcp_server_fallback: str = "envoy-ai-gateway"
 
+    # HMAC key fetch at startup. The total deadline bounds all attempts + backoff
+    # so the FastAPI lifespan can't outrun the Kubernetes startup/liveness budget
+    # and get the pod killed mid-fetch; keep it below the deploy manifest's
+    # startupProbe allowance.
+    #
+    # The deadline outranks the attempt count when the two don't fit — these
+    # defaults can't run 4 × 5s of attempts inside 10s, so a backend that hangs
+    # (rather than failing fast) gets ~2 attempts, not 4. That ordering is
+    # deliberate: startup shouldn't stall for the full attempt budget to chase a
+    # key that the bridge can run without. Raise the deadline, and the manifest's
+    # startupProbe allowance with it, if you want the full count against a slow
+    # backend.
+    secret_fetch_attempts: int = 4
+    secret_fetch_timeout_ms: int = 5000
+    secret_fetch_deadline_ms: int = 10000
+
     listen_port: int = 4318
     log_level: str = "info"
     dump_spans: bool = field(default=False)
@@ -192,6 +208,11 @@ class Config:
             mcp_server_fallback=(
                 os.environ.get("CERBERUS_MCP_SERVER_FALLBACK") or "envoy-ai-gateway"
             ).strip(),
+            secret_fetch_attempts=_env_int("CERBERUS_SECRET_FETCH_ATTEMPTS", 4, 1, 10),
+            secret_fetch_timeout_ms=_env_int("CERBERUS_SECRET_FETCH_TIMEOUT_MS", 5000, 100, 60000),
+            secret_fetch_deadline_ms=_env_int(
+                "CERBERUS_SECRET_FETCH_DEADLINE_MS", 10000, 100, 120000
+            ),
             listen_port=_env_int("CERBERUS_LISTEN_PORT", 4318, 1, 65535),
             log_level=log_level,
             dump_spans=_env_bool("CERBERUS_DUMP_SPANS", False),
