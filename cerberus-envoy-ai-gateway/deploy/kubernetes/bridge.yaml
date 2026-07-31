@@ -71,6 +71,17 @@ spec:
             # Correlates LLM and MCP events when trace_id can't (see README):
             # - name: CERBERUS_EXTRA_ATTRIBUTES
             #   value: "tenant.id,request.id"
+          # /health isn't served until FastAPI startup (incl. the HMAC key
+          # fetch) completes. A startupProbe gives that its own budget so the
+          # liveness probe below doesn't kill the pod mid-fetch during a backend
+          # blip. 30 × 2s = 60s comfortably covers CERBERUS_SECRET_FETCH_DEADLINE_MS
+          # (10s default); raise failureThreshold if you widen that deadline.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: otlp-http
+            periodSeconds: 2
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health

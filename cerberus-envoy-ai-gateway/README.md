@@ -54,7 +54,7 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 | Multi-replica dedup | Run **1 replica**; N replicas would each receive a share of spans (fine), but the OTel exporter load-balances — never fan the same endpoint into multiple bridges via a mesh that duplicates. |
 | OTLP receiver is unauthenticated | Standard for in-cluster collectors, but the bridge signs everything it receives with your API key — the NetworkPolicy in `deploy/kubernetes/bridge.yaml` ships **active** (preset to `envoy-gateway-system`) so only the gateway can reach `:4318`; change its `namespaceSelector` if your proxy pods run elsewhere. Request bodies are capped at 16MB. |
 | Backend version requirement | MCP/LLM events need a Cerberus backend that includes the AI-scheme guards (event_ingest exempts `mcp://`/`llm://` from the health-endpoint filter; event_process keeps `llm://` out of HTTP endpoint discovery). On older backends, tools named `health`/`ready`/`live` are silently skipped at ingest, and `llm_*` methods break the endpoint-discovery flush. Watch `server_skipped` in `/stats`. |
-| HMAC key not re-fetched *after* startup | The key fetch retries transient failures (timeouts, connection errors, 5xx) with exponential backoff at pod start, so a briefly-unavailable backend no longer drops the bridge into raw-PII mode. But once startup finishes there is no background refresh: if every retry is exhausted (or the backend was reachable but returned an auth/empty error, which isn't retried), source IPs ship **unhashed** for the process lifetime until the pod restarts. |
+| HMAC key not re-fetched *after* startup | The key fetch retries transient failures (timeouts, connection errors, 5xx, 408/429) with exponential backoff at pod start, bounded by a total deadline (`CERBERUS_SECRET_FETCH_DEADLINE_MS`) so it can't outrun the `startupProbe` budget, so a briefly-unavailable backend no longer drops the bridge into raw-PII mode. But once startup finishes there is no background refresh: if the deadline is hit, every retry is exhausted, or the backend returned an auth/empty error (not retried), source IPs ship **unhashed** for the process lifetime until the pod restarts. |
 
 ## Configuration (environment variables)
 
@@ -63,7 +63,10 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 | `CERBERUS_INGEST_SERVICE` | ✓ | — | Cerberus backend URL. The bridge POSTs to `{value}/v1/ingest/batch`. |
 | `CERBERUS_TOKEN` (or `CERBERUS_TOKEN_FILE`) | ✓ | — | Cerberus API key, sent as `X-API-Key`. |
 | `CERBERUS_SECRET_KEY` | | unset | HMAC-SHA256 key for PII hashing. Inline alternative to `CERBERUS_BACKEND_URL`. |
-| `CERBERUS_BACKEND_URL` | | unset | Fetch the HMAC key from `{value}/api/secret-key` at startup (5s timeout; failure → one-time warning, IPs sent unhashed). |
+| `CERBERUS_BACKEND_URL` | | unset | Fetch the HMAC key from `{value}/api/secret-key` at startup, with bounded retry (see the three `CERBERUS_SECRET_FETCH_*` knobs below). If the key can't be obtained, IPs are sent unhashed. |
+| `CERBERUS_SECRET_FETCH_ATTEMPTS` | | `4` | Max key-fetch attempts on transient failure (connection error, timeout, 5xx, 408/429). |
+| `CERBERUS_SECRET_FETCH_TIMEOUT_MS` | | `5000` | Per-attempt HTTP timeout for the key fetch. |
+| `CERBERUS_SECRET_FETCH_DEADLINE_MS` | | `10000` | Total wall-clock budget across all fetch attempts + backoff. Bounds how long startup can block so the pod isn't killed mid-fetch; keep it under the deploy manifest's `startupProbe` allowance. |
 | `CERBERUS_CLIENT_IP_ATTRIBUTE` | | `http.client_ip` | Span attribute holding the client IP. Populate it via `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` (see below). First hop before any comma is used. |
 | `CERBERUS_USER_ID_ATTRIBUTE` | | unset | Span attribute holding end-user identity (map a header like `x-user-id`). Required for per-end-user analytics. |
 | `CERBERUS_USER_AGENT_ATTRIBUTE` | | `http.user_agent` | Span attribute holding the client User-Agent. |

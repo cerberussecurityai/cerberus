@@ -1,6 +1,7 @@
 """Tests for the HMAC secret-key fetch: retry on transient failure, give up on
 permanent failure, and the built-in-placeholder-key warning."""
 
+import asyncio
 from dataclasses import replace
 
 import httpx
@@ -70,7 +71,41 @@ async def test_transient_connect_error_is_retried_then_gives_up(backend_config, 
 
     calls = _mock_backend(monkeypatch, handler)
     assert await resolve_secret_key(backend_config) is None
-    assert len(calls) == secret.FETCH_MAX_ATTEMPTS  # bounded
+    assert len(calls) == backend_config.secret_fetch_attempts  # bounded
+
+
+async def test_transient_429_then_success(backend_config, monkeypatch):
+    # 429 (rate limited) is temporary — retry it, unlike other 4xx.
+    def handler(n, r):
+        if n < 2:
+            return httpx.Response(429)
+        return httpx.Response(200, json={"secret_key": "abc"})
+
+    calls = _mock_backend(monkeypatch, handler)
+    assert await resolve_secret_key(backend_config) == "abc"
+    assert len(calls) == 2
+
+
+async def test_transient_408_is_retried(backend_config, monkeypatch):
+    calls = _mock_backend(monkeypatch, lambda n, r: httpx.Response(408))
+    assert await resolve_secret_key(backend_config) is None
+    assert len(calls) == backend_config.secret_fetch_attempts  # retried, not permanent
+
+
+async def test_total_deadline_bails_to_unhashed(backend_config, monkeypatch, caplog):
+    # A backend that accepts the connection but stalls must not keep the FastAPI
+    # lifespan blocking past the Kubernetes startup budget — the total deadline
+    # cuts it and falls back to unhashed.
+    import logging
+
+    async def _hang(*_args, **_kwargs):
+        await asyncio.Event().wait()  # never completes
+
+    monkeypatch.setattr(secret, "_fetch_once", _hang)
+    tiny = replace(backend_config, secret_fetch_deadline_ms=20)
+    with caplog.at_level(logging.WARNING):
+        assert await resolve_secret_key(tiny) is None
+    assert any("startup budget" in rec.message for rec in caplog.records)
 
 
 async def test_permanent_4xx_is_not_retried(backend_config, monkeypatch):

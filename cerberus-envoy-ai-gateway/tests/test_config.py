@@ -179,3 +179,32 @@ def test_extra_attributes_rejects_oversized_list(monkeypatch):
     )
     with pytest.raises(ConfigError):
         Config.from_env()
+
+
+def test_secret_fetch_knobs_parsed(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_SECRET_FETCH_ATTEMPTS", "6")
+    monkeypatch.setenv("CERBERUS_SECRET_FETCH_TIMEOUT_MS", "3000")
+    monkeypatch.setenv("CERBERUS_SECRET_FETCH_DEADLINE_MS", "15000")
+    config = Config.from_env()
+    assert config.secret_fetch_attempts == 6
+    assert config.secret_fetch_timeout_ms == 3000
+    assert config.secret_fetch_deadline_ms == 15000
+
+
+def test_secret_fetch_knob_defaults(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    config = Config.from_env()
+    assert config.secret_fetch_attempts == 4
+    assert config.secret_fetch_timeout_ms == 5000
+    assert config.secret_fetch_deadline_ms == 10000
+
+
+def test_secret_fetch_attempts_out_of_range_rejected(monkeypatch):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    monkeypatch.setenv("CERBERUS_SECRET_FETCH_ATTEMPTS", "0")
+    with pytest.raises(ConfigError):
+        Config.from_env()
