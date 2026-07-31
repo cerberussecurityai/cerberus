@@ -7,7 +7,14 @@
 #   2. The GatewayConfig CRD's extproc Kubernetes spec, where exposed.
 #   3. Escape hatch: kubectl set env on the extproc workload.
 #
-# For `aigw run` (standalone mode), export these as process env vars instead.
+# For `aigw run` (standalone mode), export these as process env vars instead —
+# but swap OTEL_EXPORTER_OTLP_PROTOCOL below for the signal-specific
+# OTEL_EXPORTER_OTLP_TRACES_PROTOCOL (plus OTEL_LOGS_EXPORTER=none). The CLI also
+# autoconfigures OTEL logging from the generic variable and its log exporter is
+# gRPC-only, so the generic form makes it exit at startup with "OTEL logs support
+# gRPC protocol only" (verified on v0.7.0). The extproc below is unaffected —
+# that autoconfig path belongs to cmd/aigw. See playground/run.sh for a worked
+# standalone env block.
 - name: OTEL_EXPORTER_OTLP_ENDPOINT
   value: http://cerberus-bridge.cerberus.svc.cluster.local:4318
 # REQUIRED: the OTel default protocol is gRPC; the bridge speaks OTLP/HTTP.
