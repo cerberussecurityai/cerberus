@@ -21,6 +21,15 @@ def _run(name: str, config, secret_key=None, capacity=100):
     return pipeline, queue, queued
 
 
+def _with_attr(fixture: str, key: str, value: str):
+    export = load_export(fixture)
+    span = export.resource_spans[0].scope_spans[0].spans[0]
+    attr = span.attributes.add()
+    attr.key = key
+    attr.value.string_value = value
+    return export
+
+
 def test_remote_addr_hashed_with_secret(config):
     _, queue, queued = _run("llm_openai_chat", config, secret_key="test-secret")
     assert queued == 1
@@ -462,15 +471,6 @@ def test_extra_attribute_keys_are_lowercased(config):
     pipeline.process_export(export)
     [event] = queue.drain(10)
     assert event["custom_data"]["tenant_id"] == "acme"
-
-
-def _with_attr(fixture: str, key: str, value: str):
-    export = load_export(fixture)
-    span = export.resource_spans[0].scope_spans[0].spans[0]
-    attr = span.attributes.add()
-    attr.key = key
-    attr.value.string_value = value
-    return export
 
 
 def test_hash_attributes_produce_a_digest_not_cleartext(config):
