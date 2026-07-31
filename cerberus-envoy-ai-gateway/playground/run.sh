@@ -40,7 +40,14 @@ export OPENAI_API_KEY="${OPENAI_API_KEY:-playground-dummy}"
 export OPENAI_BASE_URL="http://127.0.0.1:9081/v1"
 # Trace export -> the Cerberus bridge.
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4318"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+# Signal-specific, NOT the generic OTEL_EXPORTER_OTLP_PROTOCOL: `aigw run` also
+# autoconfigures OTEL *logging* from the generic variable, and its log exporter
+# accepts gRPC only, so setting it to http/protobuf makes the gateway exit at
+# startup with "OTEL logs support gRPC protocol only" (verified on aigw v0.7.0).
+# This is standalone-only — internal/autoconfig is imported by cmd/aigw alone,
+# so the Kubernetes extproc still takes the generic variable.
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_LOGS_EXPORTER="none"
 export OTEL_TRACES_EXPORTER="otlp"
 export OTEL_METRICS_EXPORTER="none"
 # always_on, matching deploy/ai-gateway/extproc-env.yaml: parentbased_* honors an
