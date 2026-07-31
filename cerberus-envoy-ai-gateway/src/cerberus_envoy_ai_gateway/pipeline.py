@@ -172,11 +172,10 @@ def coerce_json_safe(value: Any) -> Any:
 
 
 def stable_text(value: Any) -> str:
-    """Deterministic text form of a value.
+    """Deterministic text form of a value, so equal values hash alike.
 
-    Sorted keys so the same structured attribute serializes identically on an
-    LLM span and an MCP span, which is what makes the captured values
-    comparable across the two paths.
+    Sorted keys matter: an LLM span and an MCP span must produce the same digest
+    for the same structured value, or the join this exists for silently fails.
     """
     safe = coerce_json_safe(value)
     if isinstance(safe, str):
@@ -237,13 +236,13 @@ def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
 
 
 def _reject_bridge_owned_attributes(config: Config) -> None:
-    """Refuse to capture an attribute the bridge already reads itself.
+    """Refuse to capture or hash an attribute the bridge already reads itself.
 
     Selecting one produces a *dual write*: the mapper copies the same source
     into ``custom_data``, a top-level field, or ``endpoint`` under its own name,
-    so the value is stored twice under two names, and any later treatment of the
-    captured copy (redaction, and pseudonymization when that lands) silently
-    fails to cover the mapper's.
+    so the raw value survives beside any digest — and for endpoint-embedded
+    sources (``llm://{provider}/{model}``, ``mcp://{server}/{handler}``) it can't
+    be pseudonymized at all without destroying the endpoint.
 
     Rejecting the configuration removes the whole class rather than chasing
     destinations one at a time. It fails loudly at startup instead of leaking
@@ -258,7 +257,10 @@ def _reject_bridge_owned_attributes(config: Config) -> None:
     ):
         if attribute:
             owned.add(attribute.strip().lower())
-    for label, names in (("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),):
+    for label, names in (
+        ("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),
+        ("CERBERUS_HASH_ATTRIBUTES", config.hash_attributes),
+    ):
         for name in names:
             lowered = name.strip().lower()
             prefixes = LLM_CONSUMED_PREFIXES + MCP_CONSUMED_PREFIXES
@@ -275,12 +277,21 @@ def _reject_ambiguous_attribute_keys(config: Config) -> None:
     """Refuse two different attributes that would claim the same ``custom_data`` key.
 
     ``extra_attribute_key`` maps both ``.`` and ``-`` to ``_``, so ``tenant-id``
-    and ``tenant.id`` collapse together and which value is stored comes down to
-    iteration order — with the loser dropped to a log line. Refused rather than
-    silently resolved, since neither outcome is what the operator asked for.
+    and ``tenant.id`` collapse together. With one in each list the outcome
+    depended on processing order: extras ran first, the hash entry then hit the
+    already-taken key and was skipped *before* its digest was computed, and the
+    raw value shipped in cleartext — defeating the one guarantee
+    ``CERBERUS_HASH_ATTRIBUTES`` exists to make.
+
+    Naming the same attribute in both lists is fine and means "hash it"; only
+    two *distinct* names claiming one key are ambiguous, so they are refused
+    rather than silently resolved by iteration order.
     """
     claimed: dict[str, str] = {}
-    for label, names in (("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),):
+    for label, names in (
+        ("CERBERUS_EXTRA_ATTRIBUTES", config.extra_attributes),
+        ("CERBERUS_HASH_ATTRIBUTES", config.hash_attributes),
+    ):
         for name in names:
             stripped = name.strip()
             key = extra_attribute_key(name)
@@ -320,6 +331,14 @@ class Pipeline:
         # Reset per event in _apply_extra_attributes; safe because process_export
         # handles one span at a time (apply → finalize → enforce, no interleave).
         self._pending_extra_keys: set[str] = set()
+        # Captured names (extras plus hash-only additions) and the hash set are
+        # static, so settle them once rather than rebuilding per span. Hash-listed
+        # attributes are captured too, so an operator correlating on one
+        # identifier only has to name it once.
+        self._hash_names = frozenset(config.hash_attributes)
+        self._captured_names: tuple[str, ...] = config.extra_attributes + tuple(
+            name for name in config.hash_attributes if name not in config.extra_attributes
+        )
         self.spans_ignored = 0
         self.spans_filtered = 0
         self.dropped_oversize = 0
@@ -365,6 +384,34 @@ class Pipeline:
                     self.events_mcp += 1
         return queued
 
+    def _pseudonymize_correlator(self, value: Any) -> str:
+        """HMAC a correlation value so events join on it without storing it raw.
+
+        Deterministic and key-scoped, so the same identifier on an LLM span and
+        an MCP span yields the same digest and the two join — which is the point,
+        given ``trace_id`` doesn't correlate the paths.
+
+        Unlike :meth:`_pseudonymize_ip` this **never** falls back to the raw
+        value. The operator asked for this attribute specifically not to be
+        stored in the clear, so with no secret available the only safe answer is
+        to drop it; failing open would do the exact opposite of what was asked.
+
+        Note what the no-secret case costs on the *other* side: every value
+        collapses to the same ``REDACTED`` sentinel, so events that share only
+        this attribute stop being distinguishable by it. Anything treating an
+        equal correlator as "same entity" would read that window as one giant
+        join rather than as absent data — see the README caveat. The sentinel is
+        kept (rather than omitting the key) so the gap is visible in the data
+        instead of looking like the attribute was never configured.
+        """
+        # The str() calls look redundant — REDACTED is already a str and
+        # hash_pii returns a hexdigest — but cerberus-core ships no type
+        # information, so both are Any here and dropping them trips mypy's
+        # no-any-return.
+        if not self.secret_key:
+            return str(REDACTED)
+        return str(hash_pii(stable_text(value), self.secret_key))
+
     def _apply_extra_attributes(self, event: dict[str, Any], attrs: dict[str, Any]) -> None:
         """Copy operator-selected span attributes into ``custom_data``.
 
@@ -378,7 +425,8 @@ class Pipeline:
         so a stray mapping can never replace ``trace_id`` and friends.
         """
         self._pending_extra_keys = set()
-        names = self.config.extra_attributes
+        hash_names = self._hash_names
+        names = self._captured_names
         if not names:
             return
         custom_data = event["custom_data"]
@@ -386,23 +434,38 @@ class Pipeline:
         # Keys whose *attribute name* is sensitive even though the flattened key
         # isn't — sanitize_dict can't see those, so redact them ourselves.
         redact: set[str] = set()
+        # Applied after sanitize_dict, which would otherwise redact a digest
+        # sitting under a sensitive-looking key (the session_id case).
+        hashed: dict[str, str] = {}
         for name in names:
             value = attrs.get(name)
             if value is None:
                 continue
             key = extra_attribute_key(name)
+            is_hashed = name in hash_names
             # Guards keys the mappers set, so operator config can't spoof
             # trace_id and friends. Sources the mappers *read* are refused at
-            # startup, so a selected attribute can no longer alias one.
+            # startup, so a hash-listed attribute can no longer alias one.
+            # Deliberately does not check the in-progress `hashed` dict:
+            # _reject_ambiguous_attribute_keys guarantees no two distinct names
+            # in either list share a derived key, so nothing reaches here with a
+            # pending hashed entry under `key`. If that invariant ever lapses,
+            # this check has to grow to cover `hashed` too.
             if key in extras or key in custom_data:
                 if key not in self._extra_key_collisions:
                     self._extra_key_collisions.add(key)
                     logger.warning(
-                        "CERBERUS_EXTRA_ATTRIBUTES: %r maps to custom_data key %r, which "
-                        "the gateway already set — skipping (choose a different attribute)",
+                        "%s: %r maps to custom_data key %r, which the gateway already "
+                        "set — skipping (choose a different attribute)",
+                        "CERBERUS_HASH_ATTRIBUTES" if is_hashed else "CERBERUS_EXTRA_ATTRIBUTES",
                         name,
                         key,
                     )
+                continue
+            if is_hashed:
+                # Never routed through `extras` — the raw value must not exist
+                # in the event even transiently.
+                hashed[key] = self._pseudonymize_correlator(value)
                 continue
             # Structure is preserved here so sanitize_dict can recurse into it;
             # serializing before that would hide nested credential keys.
@@ -416,6 +479,7 @@ class Pipeline:
             }
             for key in redact:
                 extras[key] = REDACTED
+        extras.update(hashed)
         if extras:
             custom_data.update(extras)
             self._pending_extra_keys = set(extras)
