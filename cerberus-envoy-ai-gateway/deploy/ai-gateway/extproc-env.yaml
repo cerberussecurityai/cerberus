@@ -33,7 +33,8 @@
 # HTTP header, MCP reads params._meta): with the sampler left at its parent-based
 # default a sampled=0 parent exported 0 of 3 requests, and with always_on it
 # exported 3 of 3 while still inheriting the upstream trace_id — so this setting
-# buys capture without costing correlation.
+# buys capture without costing correlation. Scope: sampling behaviour only; span
+# attribute names remain verified against v0.7.0 (see mapper_llm.py/mapper_mcp.py).
 - name: OTEL_TRACES_SAMPLER
   value: always_on
 - name: OTEL_SERVICE_NAME

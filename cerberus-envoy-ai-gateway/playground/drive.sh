@@ -25,6 +25,28 @@ while [[ $# -gt 0 ]]; do
 done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 
+# Validate before use. The value is spliced into a JSON body below, so anything
+# containing a quote would otherwise produce a malformed payload that curl still
+# sends — you'd debug a confusing gateway error instead of a typo. Rejecting
+# non-W3C input also means the splice can never introduce stray JSON structure.
+TP_RE='^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$'
+if [[ -n "$TRACEPARENT" ]]; then
+  if [[ ! "$TRACEPARENT" =~ $TP_RE ]]; then
+    echo "--traceparent must be W3C format <2hex>-<32hex>-<16hex>-<2hex>, e.g." >&2
+    echo "  00-11111111111111111111111111111111-2222222222222222-00" >&2
+    exit 2
+  fi
+  # An all-zero trace or parent id is invalid per W3C and makes the gateway treat
+  # the request as having NO parent — which here would look exactly like "the
+  # unsampled parent wasn't dropped", the false pass this harness exists to catch.
+  case "$TRACEPARENT" in
+    *-00000000000000000000000000000000-*|*-0000000000000000-*)
+      echo "--traceparent has an all-zero trace or parent id; the gateway would" >&2
+      echo "treat this as no parent at all, silently invalidating the test." >&2
+      exit 2 ;;
+  esac
+fi
+
 # Injected into params._meta for MCP; leading comma only when actually set.
 MCP_META=""
 [[ -n "$TRACEPARENT" ]] && MCP_META=", \"_meta\": {\"traceparent\": \"$TRACEPARENT\"}"
