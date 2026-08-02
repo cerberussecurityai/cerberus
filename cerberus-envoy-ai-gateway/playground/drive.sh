@@ -3,7 +3,12 @@
 #
 #   ./drive.sh           # through the gateway (requires run.sh with aigw)
 #   ./drive.sh --direct  # POST recorded OTLP fixtures straight to the bridge
-#   ./drive.sh --traceparent 00-<32hex>-<16hex>-00   # unsampled upstream parent
+#   ./drive.sh --traceparent 00-11111111111111111111111111111111-2222222222222222-00
+#
+# --traceparent=VALUE works too. It cannot be combined with --direct, which never
+# reaches the gateway and so cannot exercise sampling at all; unknown options are
+# a usage error rather than being ignored (both would otherwise give you a clean
+# run that tested nothing). The value is checked against the W3C shape.
 #
 # --traceparent sends the same W3C context on BOTH carriers the gateway reads:
 # an HTTP header (the only one the LLM path looks at) and the JSON-RPC
@@ -34,7 +39,8 @@ while [[ $# -gt 0 ]]; do
     # the same false pass the --direct guard below exists to prevent.
     -*)
       echo "unknown option: $1" >&2
-      echo "usage: drive.sh [--direct] [--traceparent <2hex>-<32hex>-<16hex>-<2hex>]" >&2
+      echo "usage: drive.sh [--direct] [--traceparent 00-<32 hex>-<16 hex>-00]" >&2
+      echo "   eg: drive.sh --traceparent 00-11111111111111111111111111111111-2222222222222222-00" >&2
       exit 2 ;;
     *) ARGS+=("$1"); shift ;;
   esac
