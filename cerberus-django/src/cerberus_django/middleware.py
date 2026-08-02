@@ -507,13 +507,11 @@ class CerberusMiddleware:
         self.config = dict(getattr(settings, 'CERBERUS_CONFIG', {}))
         self._warned_no_secret_key = False
 
-        # Response-body capture is OPT-IN.
-        # TODO: from the first deploy with this enabled, customer response
-        # content (e.g. LLM completions) is stored at rest in the backend's
-        # processed_events.event_data, which today has no retention/TTL, no
-        # per-org/per-key capture opt-out, and raw exposure through the
-        # dashboard events API. The retention/opt-out story is a larger
-        # product decision; until it exists this knob stays default-off.
+        # Response-body capture is OPT-IN and stays default-off.
+        # TODO: with this enabled, customer response content (for example LLM
+        # completions) is stored at rest in the backend. Retention limits and
+        # a per-key capture opt-out are a product decision that has not been
+        # made yet. Do not change this default until it has.
         self.capture_response_body = bool(self.config.get('capture_response_body', False))
         self.response_head_bytes = _config_byte_knob(
             self.config, 'response_head_bytes', RESPONSE_HEAD_BYTES_DEFAULT)

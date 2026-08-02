@@ -15,7 +15,7 @@ them — re-check with CERBERUS_DUMP_SPANS=true when bumping versions.
 
 Events follow the cerberus-mcp contract (cerberus-mcp/src/cerberus_mcp/structs.py):
 endpoint ``mcp://{server}/{handler}``, scheme ``"mcp"``, method ``mcp_*``, and
-custom_data keys consumed by event_process's MCPDiscoveryUpdater.
+custom_data keys consumed by the backend's MCP discovery.
 """
 
 from typing import Any
@@ -98,7 +98,7 @@ CONSUMED_ATTRIBUTES = frozenset(
 
 
 def _arguments(attrs: dict[str, Any]) -> dict[str, Any]:
-    """Extract handler arguments as a dict (MCPDiscoveryUpdater requires a dict)."""
+    """Extract handler arguments as a dict (MCP discovery requires a dict)."""
     value = parse_json_value(first_attr(attrs, _ARGUMENT_KEYS))
     if isinstance(value, dict):
         # tools/call payloads nest as {"name": ..., "arguments": {...}}, or — if a
