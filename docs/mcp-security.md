@@ -141,10 +141,45 @@ Worth being clear about the limits:
   not what the model was thinking.
 - Instrumenting at a gateway instead
   ([`cerberus-envoy-ai-gateway`](../cerberus-envoy-ai-gateway/README.md))
-  gives you coverage without touching each server, but gateway spans
-  currently carry tool names without arguments. Server-side instrumentation
-  is the only way to observe the arguments a tool actually received.
+  covers every server behind it without touching any of them, and the
+  argument picture there is more subtle than it first looks. See below.
 - Detection is downstream. This package is the sensor, not the analysis.
+
+## Requested arguments versus observed arguments
+
+Worth separating, because they are different facts and they come from
+different places.
+
+**Observed** arguments are what an MCP server actually received. Only
+instrumentation on the server sees them, because that is the only vantage
+point where the call has finished being assembled.
+
+**Requested** arguments are what the model asked for. They appear in the LLM
+call, before any MCP server is involved, and a gateway can capture them
+there.
+
+That distinction matters for coverage. Envoy AI Gateway's MCP spans record
+the tool name and not its arguments, so at first glance a gateway gives you a
+call graph without argument detail. But the same gateway's LLM spans carry
+the model's requested tool calls, and
+[`cerberus-envoy-ai-gateway`](../cerberus-envoy-ai-gateway/README.md)
+reconstructs them onto the LLM event by default. In practice you get
+argument-level visibility from the gateway alone for:
+
+| Path | Requested arguments |
+|---|---|
+| Anthropic Messages, streaming included | Captured |
+| OpenAI non-streaming, and the Responses API | Captured |
+| OpenAI streaming | Lost upstream: the gateway reassembles streamed responses without accumulating tool-call deltas |
+
+The OpenAI streaming gap is the one to plan around, because streaming is what
+most agent traffic uses. If argument fidelity from the gateway matters to
+you, prefer Anthropic backends or non-streamed OpenAI until that is fixed
+upstream.
+
+And the two are not interchangeable even when both are present. A gap
+between what the model asked for and what the server received is itself
+worth looking at: it is where an intermediary rewrote the call.
 
 ## Frequently asked
 
@@ -172,8 +207,10 @@ credentials rather than only of the tool descriptions.
 
 **What about MCP servers I do not control?**
 
-Instrument the client side or the gateway. You lose observed arguments but
-keep the call graph, which is what most of the detection above depends on.
+Instrument the gateway in front of them. You keep the call graph, which is
+what most of the detection above depends on, and you still get the
+arguments the model requested on the paths listed in the previous section.
+What you give up is confirmation that the server received what was sent.
 
 ## See also
 
