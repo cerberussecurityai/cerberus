@@ -28,6 +28,12 @@
 # always_on (NOT parentbased_*): the gateway may extract an upstream traceparent
 # with sampled=0, and parentbased would honor it and emit NO span for this
 # Cerberus exporter — silently dropping that request from monitoring.
+#
+# Measured on aigw v0.7.0 and v1.0.0, both trace-context carriers (LLM reads the
+# HTTP header, MCP reads params._meta): with the sampler left at its parent-based
+# default a sampled=0 parent exported 0 of 3 requests, and with always_on it
+# exported 3 of 3 while still inheriting the upstream trace_id — so this setting
+# buys capture without costing correlation.
 - name: OTEL_TRACES_SAMPLER
   value: always_on
 - name: OTEL_SERVICE_NAME

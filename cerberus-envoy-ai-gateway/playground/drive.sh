@@ -3,11 +3,31 @@
 #
 #   ./drive.sh           # through the gateway (requires run.sh with aigw)
 #   ./drive.sh --direct  # POST recorded OTLP fixtures straight to the bridge
+#   ./drive.sh --traceparent 00-<32hex>-<16hex>-00   # unsampled upstream parent
+#
+# --traceparent sends the same W3C context on BOTH carriers the gateway reads:
+# an HTTP header (the only one the LLM path looks at) and the JSON-RPC
+# params._meta map (the only one the MCP path looks at). Ending it in -00 is how
+# you reproduce the sampling drop documented in the README's known-gaps table.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 GATEWAY="http://127.0.0.1:1975"
 BRIDGE="http://127.0.0.1:4318"
+
+TRACEPARENT=""
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --traceparent) TRACEPARENT="${2:?--traceparent needs a value}"; shift 2 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+
+# Injected into params._meta for MCP; leading comma only when actually set.
+MCP_META=""
+[[ -n "$TRACEPARENT" ]] && MCP_META=", \"_meta\": {\"traceparent\": \"$TRACEPARENT\"}"
 
 if [[ "${1:-}" == "--direct" ]]; then
   echo "==> Posting recorded OTLP fixtures directly to the bridge..."
@@ -23,6 +43,7 @@ else
     -H 'Content-Type: application/json' \
     -H 'x-user-id: demo-user' \
     -H 'x-forwarded-for: 203.0.113.7' \
+    ${TRACEPARENT:+-H "traceparent: $TRACEPARENT"} \
     -d '{"model": "mock-gpt", "messages": [{"role": "user", "content": "hello from the playground"}]}' \
     | head -c 400; echo
 
@@ -45,7 +66,7 @@ else
     -H 'Accept: application/json, text/event-stream' \
     -H 'x-user-id: demo-user' \
     ${SESSION:+-H "Mcp-Session-Id: $SESSION"} \
-    -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "mock-mcp__echo", "arguments": {"message": "hi mcp", "api_key": "should-be-redacted"}}}' \
+    -d "{\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"tools/call\", \"params\": {\"name\": \"mock-mcp__echo\", \"arguments\": {\"message\": \"hi mcp\", \"api_key\": \"should-be-redacted\"}$MCP_META}}" \
     | head -c 400; echo
 fi
 
