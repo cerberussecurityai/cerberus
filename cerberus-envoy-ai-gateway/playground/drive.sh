@@ -22,6 +22,20 @@ while [[ $# -gt 0 ]]; do
     --traceparent)
       [[ $# -ge 2 && -n "$2" ]] || { echo "--traceparent needs a value" >&2; exit 2; }
       TRACEPARENT="$2"; shift 2 ;;
+    --traceparent=*)
+      TRACEPARENT="${1#*=}"
+      [[ -n "$TRACEPARENT" ]] || { echo "--traceparent needs a value" >&2; exit 2; }
+      shift ;;
+    --direct) ARGS+=("$1"); shift ;;
+    # Reject unknown options rather than passing them through. A mistyped
+    # --tracepatent (or --traceparent=X before the alias above existed) would
+    # otherwise be swallowed as a positional and the run would proceed with no
+    # trace context at all — a clean, silent run that tested nothing, which is
+    # the same false pass the --direct guard below exists to prevent.
+    -*)
+      echo "unknown option: $1" >&2
+      echo "usage: drive.sh [--direct] [--traceparent <2hex>-<32hex>-<16hex>-<2hex>]" >&2
+      exit 2 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
