@@ -1,10 +1,18 @@
 # Cerberus — Client Instrumentation Packages
 
-> Client-side instrumentation that captures HTTP request/event metadata and streams it to the **Cerberus** API monitoring & analytics platform.
+> Instrumentation for API and AI agent security monitoring: what your APIs served, what your agents called, and what your models spent.
 
-This repository is a monorepo of the **client-side** Cerberus integrations — the libraries and gateway policy you add to your application (or place in front of it) to send request metrics to Cerberus. Each integration targets a different runtime but emits the **same event schema**, so they're interchangeable from the backend's point of view.
+These are the libraries and gateway policies you add to your application, or place in front of it, so that a request, an MCP tool call, or an LLM call becomes something you can see. Each integration targets a different runtime and they all emit the same event schema, so they are interchangeable and can be mixed in one deployment.
+
+Sensitive values are redacted and PII is pseudonymized in the client, before anything is transmitted.
 
 > Looking for the backend/platform (event ingestion, processing, dashboards, infrastructure)? That lives in the separate **`cerberus-int`** repository.
+
+## Guides
+
+Background on what these packages are for, independent of which one you use:
+
+- [**Securing MCP servers**](./docs/mcp-security.md): tool poisoning, prompt injection that becomes a tool call, excessive agency and exfiltration by chaining. Why network controls miss them, what to record, and how it maps to OWASP.
 
 ## Packages
 
