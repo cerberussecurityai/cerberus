@@ -52,7 +52,15 @@ export OTEL_TRACES_EXPORTER="otlp"
 export OTEL_METRICS_EXPORTER="none"
 # always_on, matching deploy/ai-gateway/extproc-env.yaml: parentbased_* honors an
 # upstream traceparent with sampled=0 and emits no span at all for that request.
-export OTEL_TRACES_SAMPLER="always_on"
+# Overridable so that behaviour can actually be reproduced here: pass the variable
+# through as EMPTY and aigw falls back to the OTel parent-based default, which is
+# what drops a `-00` traceparent.
+#   OTEL_TRACES_SAMPLER= ./run.sh     # in another shell: see drive.sh --traceparent
+# Note `-` and not `:-`: `:-` would substitute always_on for the empty string too,
+# which silently defeats that recipe. Don't "simplify" it.
+# Passing it empty makes the OTel SDK log `unsupported sampler:` and fall back to
+# its parent-based default — that message is the recipe working, not an error.
+export OTEL_TRACES_SAMPLER="${OTEL_TRACES_SAMPLER-always_on}"
 export OTEL_BSP_SCHEDULE_DELAY="1000"
 export OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES="x-forwarded-for:http.client_ip,x-user-id:user.id,user-agent:http.user_agent"
 # Playground demonstrates sanitized content capture, so do NOT hide content:
