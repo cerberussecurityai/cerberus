@@ -19,7 +19,9 @@ TRACEPARENT=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --traceparent) TRACEPARENT="${2:?--traceparent needs a value}"; shift 2 ;;
+    --traceparent)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "--traceparent needs a value" >&2; exit 2; }
+      TRACEPARENT="$2"; shift 2 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -50,6 +52,16 @@ fi
 # Injected into params._meta for MCP; leading comma only when actually set.
 MCP_META=""
 [[ -n "$TRACEPARENT" ]] && MCP_META=", \"_meta\": {\"traceparent\": \"$TRACEPARENT\"}"
+
+# Refuse rather than warn: --direct never reaches the gateway, so it cannot
+# exercise sampling at all. Accepting the combination would hand you a clean run
+# that looks like "the unsampled parent was captured" while proving nothing —
+# the exact false pass this flag exists to detect.
+if [[ "${1:-}" == "--direct" && -n "$TRACEPARENT" ]]; then
+  echo "--direct posts recorded fixtures straight to the bridge and never reaches" >&2
+  echo "the gateway, so --traceparent cannot affect it. Drop one of the two." >&2
+  exit 2
+fi
 
 if [[ "${1:-}" == "--direct" ]]; then
   echo "==> Posting recorded OTLP fixtures directly to the bridge..."
