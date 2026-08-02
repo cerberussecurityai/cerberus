@@ -231,7 +231,7 @@ def test_schema_report_tools_sanitized(config):
 def test_oversize_schema_report_sheds_tools_but_keeps_skeleton(config):
     # A large tool catalogue has no body/arguments to shed, so without shedding
     # tools/resources/prompts it would be dropped whole; it should instead land
-    # as a schema_only skeleton the backend can still record.
+    # as a declaration-only skeleton the backend can still record.
     config = replace(config, max_event_bytes=1024)
     pipeline = Pipeline(config, BoundedQueue(10), None)
     big_tools = [

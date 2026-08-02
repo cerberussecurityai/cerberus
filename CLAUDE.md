@@ -138,7 +138,7 @@ Standalone OTLP/HTTP trace bridge for [Envoy AI Gateway](https://aigateway.envoy
 
 **Key behavior:**
 - LLM spans (`llm.model_name`, `llm.system`, `llm.token_count.*`, `input.value`/`output.value`) → events with `endpoint=llm://{provider}/{model}`, `scheme="llm"`, `method=llm_chat_completion|llm_messages|llm_embeddings|llm_completion|llm_call`
-- MCP spans (`mcp.method.name`, `mcp.tool.name`, `mcp.backend.name`, ...) → standard MCP events (`mcp://{server}/{handler}`, `mcp_tool_call` etc.) feeding the discovery tables. ai-gateway v0.7.0 does **not** record tool arguments in spans, so gateway-observed tool calls are name-level only (`arguments_observed` empty)
+- MCP spans (`mcp.method.name`, `mcp.tool.name`, `mcp.backend.name`, ...) → standard MCP events (`mcp://{server}/{handler}`, `mcp_tool_call` etc.) feeding the discovery tables. ai-gateway v0.7.0 does **not** record tool arguments in spans, so gateway-observed tool calls are name-level only, with no observed arguments
 - Sanitization/hashing via **direct `cerberus-core` import** — an importer, not a port, so **no parity runner needed**
 - Same operational pattern as flex-gateway: bounded queue (drop-on-full), batched POST, init-time HMAC secret fetch, at-most-once delivery
 - Attribute names verified against ai-gateway v0.7.0 source; mappers probe candidate keys defensively — re-verify with `CERBERUS_DUMP_SPANS=true` via the playground when bumping supported gateway versions

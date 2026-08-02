@@ -1,9 +1,8 @@
 """Sink tests against an in-process stub of the Cerberus ingest API.
 
-The stub mirrors event_ingest's /v1/ingest/batch contract (see
-cerberus-int/services/event_ingest/main.py and test/test_http_ingest.py):
-X-API-Key auth (401 missing / 403 unknown), 413 over 1000 events,
-health-endpoint skipping, and {"accepted": N, "skipped": M} responses.
+The stub mirrors the documented /v1/ingest/batch contract: X-API-Key auth
+(401 missing / 403 unknown), 413 over the batch limit, health-endpoint
+skipping, and {"accepted": N, "skipped": M} responses.
 """
 
 import asyncio

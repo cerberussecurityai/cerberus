@@ -43,7 +43,7 @@ _REQUEST_PARAMS = ("temperature", "top_p", "max_tokens")
 
 
 # gen_ai.operation.name (or span name) → Cerberus event method. The values
-# must never start with "mcp_" — event_process routes on that prefix.
+# must never start with "mcp_" — the backend routes on that prefix.
 _OPERATION_METHODS = {
     "chat": "llm_chat_completion",
     "chat_completions": "llm_chat_completion",

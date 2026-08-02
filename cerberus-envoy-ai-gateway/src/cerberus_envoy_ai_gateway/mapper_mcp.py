@@ -9,7 +9,7 @@ Attribute names verified against the ai-gateway v0.7.0 source
 v0.7.0 does NOT record tool-call arguments in span attributes (confirmed —
 only ``CallToolParams.Name`` is captured), so gateway-observed tool calls
 land in MCP discovery at tool-name granularity with empty
-``arguments_observed``. The argument extraction below probes candidate keys
+the observed arguments. The argument extraction below probes candidate keys
 anyway so argument capture lights up if a future gateway version records
 them — re-check with CERBERUS_DUMP_SPANS=true when bumping versions.
 

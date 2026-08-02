@@ -104,7 +104,8 @@ export to `Pipeline.process_export`. For each span (`pipeline.py:66`):
      arguments are gated by `CERBERUS_CAPTURE_MCP_ARGUMENTS` and LLM content
      by `CERBERUS_CAPTURE_LLM_CONTENT` (both default on).
    - `_enforce_size` keeps each event under `CERBERUS_MAX_EVENT_BYTES`
-     (default 56 KB, headroom under the server's 64 KB skip threshold): first
+     (default 56 KB, chosen to leave headroom under the ingest API's own
+     per-event limit): first
      it sheds captured content (`body=null`, `arguments={}`,
      `content_dropped_oversize=true`), then drops the event entirely as a last
      resort, counting `dropped_oversize`.
@@ -157,7 +158,7 @@ exactly the keys the backend's MCP discovery consumes: `mcp_server`,
 
 > **Known limitation:** ai-gateway v0.7.0 does **not** record tool-call
 > arguments in span attributes (only `CallToolParams.Name`), so MCP discovery
-> lands at tool-name granularity with empty `arguments_observed`. The mapper
+> lands at tool-name granularity with no observed arguments. The mapper
 > probes candidate argument keys anyway, so capture lights up automatically if
 > a future gateway version records them.
 

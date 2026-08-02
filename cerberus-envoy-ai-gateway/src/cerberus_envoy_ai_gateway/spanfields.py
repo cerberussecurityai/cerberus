@@ -28,7 +28,7 @@ MAX_LABEL_CHARS = 256
 def iso_timestamp(span: Span) -> str:
     """Span start time as an ISO 8601 string with a UTC offset.
 
-    event_process parses timestamps with ``datetime.fromisoformat`` and
+    The backend parses timestamps with ``datetime.fromisoformat`` and
     requires an explicit offset (or trailing Z); ``+00:00`` satisfies it.
     """
     seconds = span.start_time_unix_nano / 1e9

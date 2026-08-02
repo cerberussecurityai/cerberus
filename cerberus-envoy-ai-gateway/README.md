@@ -75,11 +75,11 @@ feed tool discovery.
 
 > **Both lists reject attributes the bridge already reads** (`mcp.session.id`, `llm.system`, `http.user_agent`, whatever you set `CERBERUS_USER_ID_ATTRIBUTE` to, …) with a startup error. The mappers copy those into `custom_data`, a top-level field, or the `endpoint` under their own names, so selecting one would leave the raw value beside the captured or hashed copy — and endpoint-embedded sources like `llm://{provider}/{model}` can't be pseudonymized at all without destroying the endpoint. Map your **own** header to a distinct attribute (`corr.session`, `tenant.id`) via `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` and select that. That is also the shape that correlates cleanly: your application sends the same header on its LLM and MCP calls, so the value lands on both span types.
 | `CERBERUS_CAPTURE_LLM_CONTENT` | | `true` | Ship LLM prompts/completions in the event body (key-based redaction only — secrets inside free-form prompt text are NOT scrubbed). Needs the gateway to record content too (`OPENINFERENCE_HIDE_INPUTS/OUTPUTS` not `"true"`). Set to `false` to drop content. |
-| `CERBERUS_CAPTURE_MCP_ARGUMENTS` | | `true` | Ship sanitized MCP tool/prompt arguments (feeds `arguments_observed` in MCP discovery). |
+| `CERBERUS_CAPTURE_MCP_ARGUMENTS` | | `true` | Ship sanitized MCP tool/prompt arguments, which is what populates the observed arguments on a discovered tool. |
 | `CERBERUS_BATCH_SIZE` | | `50` | Events per POST (server cap 1000). |
 | `CERBERUS_FLUSH_INTERVAL_MS` | | `2000` | Flush cadence (min 100). |
 | `CERBERUS_QUEUE_CAPACITY` | | `10000` | Bounded queue; drop-on-full with counter. Memory ≈ capacity × ~2–10KB. |
-| `CERBERUS_MAX_EVENT_BYTES` | | `57344` | Per-event cap (headroom under the server's 64KB skip threshold). Oversized events shed content, then drop. |
+| `CERBERUS_MAX_EVENT_BYTES` | | `57344` | Per-event cap, sized to leave headroom under the ingest API's own per-event limit. Oversized events shed content, then drop. |
 | `CERBERUS_MCP_SERVER_FALLBACK` | | `envoy-ai-gateway` | MCP server name when the backend attribute is absent from spans. |
 | `CERBERUS_LISTEN_PORT` | | `4318` | OTLP/HTTP listen port. |
 | `CERBERUS_LOG_LEVEL` | | `info` | `debug` / `info` / `warning` / `error`. |
