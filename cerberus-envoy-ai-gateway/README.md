@@ -31,14 +31,14 @@ path**: if it's down, gateway traffic is unaffected.
 ## Status: **experimental (v1 scaffold)**
 
 Working end-to-end: span decode → classify → map → sanitize/hash → batch
-POST. Events land in `processed_events`, and MCP tool calls feed the
-`mcp_tool_discovery` pipeline.
+POST. Events are stored like any other Cerberus event, and MCP tool calls
+feed tool discovery.
 
 ### Known gaps in v1
 
 | Gap | Why |
 |---|---|
-| MCP tool **arguments** are not recorded by the gateway (re-confirmed on `main` @ `6722cca` — MCP spans carry only the tool name) | Discovery works at tool-name level: tool calls land in `mcp_tool_discovery` with counts/errors/durations, but `arguments_observed` stays empty. The mapper already probes candidate keys (`mcp.tool.arguments`, `mcp.request.arguments`, `mcp.request.argument.*`, `input.value`) so argument capture lights up if a future gateway version records them — re-check with `CERBERUS_DUMP_SPANS=true` after upgrades. **Partial workaround:** the *model's requested* arguments for a tool call are captured on the **LLM** event instead, under `body.output[].tool_calls[].arguments`, when `CERBERUS_CAPTURE_LLM_CONTENT` is on. Note these are what the model asked for, not what the server observed, and see the OpenAI-streaming caveat below. Full server-side argument observation requires `cerberus-mcp` on the MCP server itself. |
+| MCP tool **arguments** are not recorded by the gateway (re-confirmed on `main` @ `6722cca` — MCP spans carry only the tool name) | Discovery works at tool-name level: tool calls arrive with counts, errors and durations, but observed arguments stay empty. The mapper already probes candidate keys (`mcp.tool.arguments`, `mcp.request.arguments`, `mcp.request.argument.*`, `input.value`) so argument capture lights up if a future gateway version records them — re-check with `CERBERUS_DUMP_SPANS=true` after upgrades. **Partial workaround:** the *model's requested* arguments for a tool call are captured on the **LLM** event instead, under `body.output[].tool_calls[].arguments`, when `CERBERUS_CAPTURE_LLM_CONTENT` is on. Note these are what the model asked for, not what the server observed, and see the OpenAI-streaming caveat below. Full server-side argument observation requires `cerberus-mcp` on the MCP server itself. |
 | LLM tool-call arguments are lost for **streamed OpenAI** responses | The gateway reassembles streamed OpenAI chat completions without accumulating tool-call deltas, so `tool_calls` are absent from both the span attributes and the raw content blob — for streaming traffic, which is most agent traffic. **Anthropic streaming is unaffected** (it reassembles tool arguments correctly), as is OpenAI non-streaming. If tool-call argument fidelity matters to you, prefer Anthropic backends or non-streamed OpenAI until this is fixed upstream. |
 | `mcp_schema_report` / `input_schema` | Gateway spans don't carry `tools/list` response payloads (hook exists in `mapper_mcp.py` if that changes). Tool schemas come only from `cerberus-mcp`-instrumented servers. |
 | `result_summary` for MCP calls | Tool results are not recorded in gateway spans. |
@@ -53,7 +53,7 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 | Hosted container image | Build it yourself (`make image`) and push to your registry. |
 | Multi-replica dedup | Run **1 replica**; N replicas would each receive a share of spans (fine), but the OTel exporter load-balances — never fan the same endpoint into multiple bridges via a mesh that duplicates. |
 | OTLP receiver is unauthenticated | Standard for in-cluster collectors, but the bridge signs everything it receives with your API key — the NetworkPolicy in `deploy/kubernetes/bridge.yaml` ships **active** (preset to `envoy-gateway-system`) so only the gateway can reach `:4318`; change its `namespaceSelector` if your proxy pods run elsewhere. Request bodies are capped at 16MB. |
-| Backend version requirement | MCP/LLM events need a Cerberus backend that includes the AI-scheme guards (event_ingest exempts `mcp://`/`llm://` from the health-endpoint filter; event_process keeps `llm://` out of HTTP endpoint discovery). On older backends, tools named `health`/`ready`/`live` are silently skipped at ingest, and `llm_*` methods break the endpoint-discovery flush. Watch `server_skipped` in `/stats`. |
+| Backend support for the AI schemes | MCP and LLM events need a Cerberus backend that understands the `mcp://` and `llm://` schemes. That support shipped alongside this bridge, so there is no older backend to run against. One consequence worth knowing: Cerberus filters health-probe traffic by endpoint name, and these schemes are exempt, because the last path segment of an `mcp://` endpoint is a tool name and an MCP tool called `health` is real traffic. Ordinary HTTP health, ready and live probes are still filtered out, as they always have been. |
 | HMAC key not re-fetched *after* startup | The key fetch retries transient failures (timeouts, connection errors, 5xx, 408/429) with exponential backoff at pod start, bounded by a total deadline (`CERBERUS_SECRET_FETCH_DEADLINE_MS`) so it can't outrun the `startupProbe` budget, so a briefly-unavailable backend no longer drops the bridge into raw-PII mode. But once startup finishes there is no background refresh: if the deadline is hit, every retry is exhausted, or the backend returned an auth/empty error (not retried), source IPs ship **unhashed** for the process lifetime until the pod restarts. |
 
 ## Configuration (environment variables)
@@ -75,11 +75,11 @@ POST. Events land in `processed_events`, and MCP tool calls feed the
 
 > **Both lists reject attributes the bridge already reads** (`mcp.session.id`, `llm.system`, `http.user_agent`, whatever you set `CERBERUS_USER_ID_ATTRIBUTE` to, …) with a startup error. The mappers copy those into `custom_data`, a top-level field, or the `endpoint` under their own names, so selecting one would leave the raw value beside the captured or hashed copy — and endpoint-embedded sources like `llm://{provider}/{model}` can't be pseudonymized at all without destroying the endpoint. Map your **own** header to a distinct attribute (`corr.session`, `tenant.id`) via `OTEL_AIGW_SPAN_REQUEST_HEADER_ATTRIBUTES` and select that. That is also the shape that correlates cleanly: your application sends the same header on its LLM and MCP calls, so the value lands on both span types.
 | `CERBERUS_CAPTURE_LLM_CONTENT` | | `true` | Ship LLM prompts/completions in the event body (key-based redaction only — secrets inside free-form prompt text are NOT scrubbed). Needs the gateway to record content too (`OPENINFERENCE_HIDE_INPUTS/OUTPUTS` not `"true"`). Set to `false` to drop content. |
-| `CERBERUS_CAPTURE_MCP_ARGUMENTS` | | `true` | Ship sanitized MCP tool/prompt arguments (feeds `arguments_observed` in MCP discovery). |
+| `CERBERUS_CAPTURE_MCP_ARGUMENTS` | | `true` | Ship sanitized MCP tool/prompt arguments, which is what populates the observed arguments on a discovered tool. |
 | `CERBERUS_BATCH_SIZE` | | `50` | Events per POST (server cap 1000). |
 | `CERBERUS_FLUSH_INTERVAL_MS` | | `2000` | Flush cadence (min 100). |
 | `CERBERUS_QUEUE_CAPACITY` | | `10000` | Bounded queue; drop-on-full with counter. Memory ≈ capacity × ~2–10KB. |
-| `CERBERUS_MAX_EVENT_BYTES` | | `57344` | Per-event cap (headroom under the server's 64KB skip threshold). Oversized events shed content, then drop. |
+| `CERBERUS_MAX_EVENT_BYTES` | | `57344` | Per-event cap, sized to leave headroom under the ingest API's own per-event limit. Oversized events shed content, then drop. |
 | `CERBERUS_MCP_SERVER_FALLBACK` | | `envoy-ai-gateway` | MCP server name when the backend attribute is absent from spans. |
 | `CERBERUS_LISTEN_PORT` | | `4318` | OTLP/HTTP listen port. |
 | `CERBERUS_LOG_LEVEL` | | `info` | `debug` / `info` / `warning` / `error`. |

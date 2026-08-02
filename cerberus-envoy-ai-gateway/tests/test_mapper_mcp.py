@@ -14,7 +14,7 @@ def test_tool_call_golden(config):
 
 
 def test_tool_call_satisfies_backend_mcp_detection(config):
-    # event_process requires endpoint mcp://... AND method mcp_* to route
+    # the backend requires endpoint mcp://... AND method mcp_* to route
     # events into the MCP discovery pipeline.
     event = _map("mcp_tool_call", config)
     assert event["endpoint"].startswith("mcp://")

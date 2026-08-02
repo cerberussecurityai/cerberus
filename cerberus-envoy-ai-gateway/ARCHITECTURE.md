@@ -36,10 +36,7 @@ is down the gateway's data plane is unaffected.
                     └────────────┼──────────────────┘
                                  │ POST /v1/ingest/batch (X-API-Key)
                                  ▼
-        cerberus-int:  event_ingest ─▶ Kafka ─▶ event_process ─▶ PostgreSQL
-                                                     │
-                                                     ├─ processed_events
-                                                     └─ mcp_*_discovery
+                          Cerberus backend
 ```
 
 ## Why an OTLP trace bridge (design decision)
@@ -107,7 +104,8 @@ export to `Pipeline.process_export`. For each span (`pipeline.py:66`):
      arguments are gated by `CERBERUS_CAPTURE_MCP_ARGUMENTS` and LLM content
      by `CERBERUS_CAPTURE_LLM_CONTENT` (both default on).
    - `_enforce_size` keeps each event under `CERBERUS_MAX_EVENT_BYTES`
-     (default 56 KB, headroom under the server's 64 KB skip threshold): first
+     (default 56 KB, chosen to leave headroom under the ingest API's own
+     per-event limit): first
      it sheds captured content (`body=null`, `arguments={}`,
      `content_dropped_oversize=true`), then drops the event entirely as a last
      resort, counting `dropped_oversize`.
@@ -153,37 +151,37 @@ the wire boundary). `token` is omitted; ingest stamps it from `X-API-Key`.
 
 `endpoint` = `mcp://{backend}/{handler}` (backend from `mcp.backend.name`, else
 `CERBERUS_MCP_SERVER_FALLBACK`); `scheme` = `"mcp"`. `custom_data` carries
-exactly the keys `event_process`'s `MCPDiscoveryUpdater` consumes:
-`mcp_server`, `handler_name`, `event_type`, `duration_ms`, `arguments`,
-`error`, `result_summary`, `session_id`, `client_name`, `client_version`,
-`request_id`, `mcp_transport`, `mcp_protocol_version`, `trace_id`.
+exactly the keys the backend's MCP discovery consumes: `mcp_server`,
+`handler_name`, `event_type`, `duration_ms`, `arguments`, `error`,
+`result_summary`, `session_id`, `client_name`, `client_version`, `request_id`,
+`mcp_transport`, `mcp_protocol_version`, `trace_id`.
 
 > **Known limitation:** ai-gateway v0.7.0 does **not** record tool-call
 > arguments in span attributes (only `CallToolParams.Name`), so MCP discovery
-> lands at tool-name granularity with empty `arguments_observed`. The mapper
+> lands at tool-name granularity with no observed arguments. The mapper
 > probes candidate argument keys anyway, so capture lights up automatically if
 > a future gateway version records them.
 
-## Cross-repo contract (cerberus-int backend guards)
+## Cross-repo contract (backend support)
 
-These events introduced two new vocabularies the backend hadn't seen — the
-`llm://` / `mcp://` endpoint schemes and the `llm_*` / `mcp_*` method names.
-Two guards in the `cerberus-int` backend make them land correctly; **the bridge
-depends on them being deployed**:
+These events introduced two vocabularies the backend had not seen before: the
+`llm://` and `mcp://` endpoint schemes, and the `llm_*` and `mcp_*` method
+names. The backend needs matching support for both, which shipped alongside
+this bridge:
 
-1. **Health-filter exemption** — `event_ingest`'s `is_health_endpoint` exempts
-   `mcp://` and `llm://` endpoints. Their last path segment is a tool/model
-   *name*, so an MCP tool literally named `health` (common on infra MCP
-   servers) is real traffic, not a probe to drop.
-2. **Endpoint-discovery scheme guard** — `event_process` routes `mcp://` to MCP
-   discovery and only sends scheme-less HTTP endpoints to endpoint discovery;
-   `llm://` (and any future scheme) goes to neither. Without this, an
-   `llm_chat_completion` method would overflow `endpoint_discovery.method
-   VARCHAR(10)` and one poisoned UPSERT would wedge the whole discovery flush.
-   The events still land in `processed_events`.
+1. **Health-filter exemption.** Cerberus drops health-probe traffic by
+   endpoint name, which is right for HTTP and wrong here: the last path
+   segment of an `mcp://` or `llm://` endpoint is a tool or model *name*, so
+   an MCP tool literally called `health` (common on infra MCP servers) is
+   real traffic rather than a probe. Those schemes are exempt from the
+   filter.
+2. **Discovery scheme routing.** `mcp://` endpoints feed MCP discovery,
+   HTTP endpoints feed HTTP endpoint discovery, and `llm://` feeds neither.
+   Events of every scheme are stored either way.
 
-If you run the bridge against an older backend, watch `server_skipped` in
-`/stats` and the discovery pipeline.
+Both landed before the bridge was deployed anywhere, so there is no older
+backend to run against. If you are changing scheme or method naming on either
+side, coordinate the change across both repos.
 
 ## Privacy & sanitization model
 

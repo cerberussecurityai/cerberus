@@ -2,6 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## This repository is public
+
+Everything here is world-readable, including this file and the full git
+history. AI assistants already cite this repo when asked about Cerberus, so
+assume anything committed will be quoted back to prospects and competitors.
+
+Never commit:
+
+- Credentials of any kind: keys, tokens, connection strings, `.env` files
+- Implementation details of the private repos. `cerberus-int` (backend) and
+  `cerberus-ml` are private, and their database tables, column definitions,
+  internal class and function names, queue and partition behaviour, and
+  failure modes are not public information. Describe the **wire contract**
+  these packages depend on, never the backend implementation that satisfies
+  it.
+- Anything that reads as a map of how to make the pipeline miss events or
+  behave badly. This is a security product; a documented way to defeat the
+  telemetry is a finding, not a footnote.
+- Customer names, org ids, deployment specifics, or unreleased plans
+
+Do commit what someone integrating these packages needs: configuration,
+behaviour, event shapes, build and test commands, and the guarantees the
+packages make.
+
+The test before committing a line: would you be comfortable with a
+competitor, a prospect, or an attacker reading it? Redacting later does not
+help, because the history stays public.
+
 ## Project Overview
 
 Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend. Four Python packages and one Rust crate:
@@ -110,7 +138,7 @@ Standalone OTLP/HTTP trace bridge for [Envoy AI Gateway](https://aigateway.envoy
 
 **Key behavior:**
 - LLM spans (`llm.model_name`, `llm.system`, `llm.token_count.*`, `input.value`/`output.value`) → events with `endpoint=llm://{provider}/{model}`, `scheme="llm"`, `method=llm_chat_completion|llm_messages|llm_embeddings|llm_completion|llm_call`
-- MCP spans (`mcp.method.name`, `mcp.tool.name`, `mcp.backend.name`, ...) → standard MCP events (`mcp://{server}/{handler}`, `mcp_tool_call` etc.) feeding the discovery tables. ai-gateway v0.7.0 does **not** record tool arguments in spans, so gateway-observed tool calls are name-level only (`arguments_observed` empty)
+- MCP spans (`mcp.method.name`, `mcp.tool.name`, `mcp.backend.name`, ...) → standard MCP events (`mcp://{server}/{handler}`, `mcp_tool_call` etc.) feeding the discovery tables. ai-gateway v0.7.0 does **not** record tool arguments in spans, so gateway-observed tool calls are name-level only, with no observed arguments
 - Sanitization/hashing via **direct `cerberus-core` import** — an importer, not a port, so **no parity runner needed**
 - Same operational pattern as flex-gateway: bounded queue (drop-on-full), batched POST, init-time HMAC secret fetch, at-most-once delivery
 - Attribute names verified against ai-gateway v0.7.0 source; mappers probe candidate keys defensively — re-verify with `CERBERUS_DUMP_SPANS=true` via the playground when bumping supported gateway versions
@@ -169,21 +197,21 @@ Set `CERBERUS_DEBUG=true` environment variable to enable verbose logging in both
 
 ## Architecture Notes
 
-- Both cerberus-django and cerberus-mcp use the same event payload format (CoreData/MCPEventData) so event_ingest requires no changes
+- Both cerberus-django and cerberus-mcp use the same event payload format (CoreData/MCPEventData), so the backend accepts either without changes
 - MCP events use `mcp://` URI scheme in the `endpoint` field and `mcp_*` prefixed method names
-- LLM events (cerberus-envoy-ai-gateway) use `llm://{provider}/{model}` endpoints, `scheme="llm"`, and `llm_*` prefixed methods — stored generically in `processed_events`; `llm_*` must never collide with the `mcp_*` routing prefix. Requires the cerberus-int AI-scheme guards: event_process excludes non-HTTP schemes from endpoint discovery (`llm_chat_completion` overflows `endpoint_discovery.method VARCHAR(10)` and would poison the discovery flush) and event_ingest exempts `mcp://`/`llm://` from the health-endpoint filter (a tool named `health` is real traffic)
+- LLM events (cerberus-envoy-ai-gateway) use `llm://{provider}/{model}` endpoints, `scheme="llm"`, and `llm_*` prefixed methods. `llm_*` must never collide with the `mcp_*` routing prefix. Non-HTTP schemes need matching backend support, so check the cerberus-int notes before changing scheme or method naming on either side
 - MCP-specific metadata (arguments, duration, session info) goes in `custom_data`
 - Event queue is bounded (10,000 max for cerberus-mcp) to prevent unbounded memory growth
 - WebSocket transport is shared pattern but not shared code (each package has its own copy for independence)
 
 ### MCP Event Methods
 
-| Method | Description | Tracked In |
-|--------|-------------|------------|
-| `mcp_tool_call` | Tool invocation | `mcp_tool_discovery` |
-| `mcp_resource_read` | Resource read | `mcp_resource_discovery` |
-| `mcp_prompt_get` | Prompt invocation | `mcp_prompt_discovery` |
-| `mcp_schema_report` | Schema introspection report (emitted once per server startup) | All three discovery tables (sets `description`, `input_schema`, `declared_arguments`, `schema_only=true`) |
+| Method | Description | Feeds |
+|--------|-------------|-------|
+| `mcp_tool_call` | Tool invocation | Tool discovery |
+| `mcp_resource_read` | Resource read | Resource discovery |
+| `mcp_prompt_get` | Prompt invocation | Prompt discovery |
+| `mcp_schema_report` | Schema introspection report (emitted once per server startup) | All three, with declared names, descriptions and schemas |
 
 ### Schema Report Flow
 
@@ -191,5 +219,8 @@ Set `CERBERUS_DEBUG=true` environment variable to enable verbose logging in both
 2. Thread-safe check via `_schema_report_lock` ensures `_report_schema()` runs exactly once
 3. `_report_schema()` introspects FastMCP internals: `_tool_manager._tools`, `_resource_manager._resources`/`_templates`, `_prompt_manager._prompts`
 4. Emits a single `mcp_schema_report` event with `custom_data` containing `tools`, `resources`, `prompts` arrays
-5. `event_process` routes this to `MCPDiscoveryUpdater._handle_schema_report()` which creates `schema_only=True` records
-6. On subsequent real calls, UPSERT clears `schema_only` to `False` via `existing AND EXCLUDED`
+
+The backend then has a declared inventory for the server before any tool is
+actually called, and reconciles it with real calls as they arrive. Only step
+4 is this repo's contract: emit the event once per server startup, with those
+three arrays.

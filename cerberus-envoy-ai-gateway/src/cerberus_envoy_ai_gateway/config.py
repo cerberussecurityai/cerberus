@@ -9,17 +9,17 @@ gateway integrations meet a familiar surface.
 import os
 from dataclasses import dataclass, field
 
-# Server-side caps in event_ingest (see cerberus-int services/event_ingest/main.py):
-# batches over 1000 events get a 413; events over 64KB are skipped. We cap the
-# batch client-side and leave headroom under the event cap because the server
-# enlarges each event by fanning in api_key/client_id/token before the check.
+# The ingest API caps both batch size and per-event size. We stay under both
+# client-side rather than discovering it at POST time, and leave headroom on
+# the per-event cap because the event grows on the way in: identifying fields
+# are added before the limit is applied.
 MAX_SERVER_BATCH_SIZE = 1000
 DEFAULT_MAX_EVENT_BYTES = 57344  # 56KB
-# Ceiling for the CERBERUS_MAX_EVENT_BYTES override: stay under the server's
-# 64KB skip threshold with headroom, because the server enlarges each event by
-# fanning in api_key/client_id/token *before* the cap (see comment above).
-# 62KB leaves ~2KB for that augmentation; 65536 would let capped events be
-# silently skipped server-side.
+# Ceiling for the CERBERUS_MAX_EVENT_BYTES override. It sits below the ingest
+# API's own per-event limit with room to spare, because the event grows on the
+# way in: identifying fields are added before the limit is applied (see the
+# comment above). Raising this to the API's limit exactly would let capped
+# events be rejected on arrival.
 MAX_EVENT_BYTES_CEILING = 63488  # 62KB
 
 MIN_FLUSH_INTERVAL_MS = 100

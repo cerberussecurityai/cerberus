@@ -551,7 +551,7 @@ class Pipeline:
         # Schema reports carry their payload in tools/resources/prompts (body is
         # already None), so shed those too — otherwise an oversized tool
         # catalogue can't shrink and the event is dropped whole instead of
-        # landing as a schema_only skeleton the backend can still record.
+        # landing as a declaration-only skeleton the backend can still record.
         for catalogue_key in ("tools", "resources", "prompts"):
             if custom_data.get(catalogue_key):
                 custom_data[catalogue_key] = []
