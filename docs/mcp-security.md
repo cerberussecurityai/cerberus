@@ -125,15 +125,33 @@ mcp = CerberusMCP("my-server", cerberus_config={
     "token": "...",
     "client_id": "...",
     "ws_url": "wss://...",
+    # Without this, source IPs are transmitted in the clear. The package
+    # logs a warning once and carries on, so it is easy to miss.
+    "secret_key": "...",
 })
 ```
 
 It records the fields in the table above: per-call timing, arguments, errors
-and results, session and client identity, plus a one-time schema report of
-the declared tool, resource and prompt inventory so that declared and
-observed can be compared. Arguments and headers are sanitized by key name
-through [`cerberus-core`](../cerberus-core/README.md) before anything is
-sent, and source IPs are HMAC-SHA256 pseudonymized.
+and results, plus a one-time schema report of the declared tool, resource and
+prompt inventory, so that what a server declares can be compared against what
+it is actually asked to run.
+
+Two behaviours are worth knowing before you rely on them:
+
+- **Redaction is by key name.** Arguments and headers pass through
+  [`cerberus-core`](../cerberus-core/README.md), which redacts values whose
+  *keys* match a known list of sensitive names. It does not inspect values,
+  so a secret sitting under an unremarkable key, say `{"data": "<token>"}`,
+  is transmitted as-is. Treat it as a safety net for the usual suspects, not
+  as a guarantee that nothing sensitive can leave.
+- **Source-IP pseudonymization requires `secret_key`.** With it, IPs are
+  HMAC-SHA256 hashed before transmission. Without it they are sent
+  normalized but in the clear.
+
+Session and client identity are recorded only for handlers that declare a
+FastMCP `Context` parameter, since that is how the identity reaches the
+handler at all. Handlers without one still produce call records, but with no
+session to group them by, which costs you the sequence-level detection above.
 
 Worth being clear about the limits:
 
@@ -151,11 +169,19 @@ Worth being clear about the limits:
 
 **Can I detect tool poisoning without access to the model's reasoning?**
 
-Yes, and it is the more robust place to look. Reasoning is not reliably
-available, is not always faithful to what the model then does, and can be
-influenced by the same injection. The call graph is content-blind: it
-compares declared intent against observed calls, which holds whether the
-divergence came from a poisoned tool, an injection, or a bug.
+Reasoning is a poor place to look: it is not reliably available, not always
+faithful to what the model then does, and can be influenced by the same
+injection. The call graph is the better vantage point, and it is
+content-blind, so it holds whether a divergence came from a poisoned tool, an
+injection, or a bug.
+
+Be precise about what that buys you on its own, though. Server-side telemetry
+gives you the declared tool inventory and the calls actually made, so it will
+show you undeclared tools, definitions that changed after approval, and call
+sequences that do not fit the server's declared surface. It does not contain
+the user's task, so comparing calls against what the user actually asked for
+needs intent telemetry from somewhere else, typically the LLM side of the
+same session.
 
 **Does instrumenting every tool call slow the server down?**
 

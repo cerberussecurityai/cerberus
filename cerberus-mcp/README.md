@@ -59,6 +59,7 @@ Events are sent asynchronously via WebSocket to the Cerberus event_ingest backen
 | `client_id` | Yes | Client identifier for your MCP server |
 | `ws_url` | Yes | WebSocket URL of your Cerberus event_ingest server |
 | `server_name` | No | Override server name in events (defaults to MCP server name) |
+| `secret_key` | No | HMAC key for pseudonymizing source IPs. **Without it, source IPs are transmitted in the clear** and the package logs a single warning. Share the same key across integrations so digests correlate. |
 
 Set `CERBERUS_DEBUG=true` to enable verbose logging.
 
