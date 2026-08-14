@@ -90,6 +90,23 @@ pub struct Config {
     #[serde(default = "default_capture_ai_content")]
     pub capture_ai_content: bool,
 
+    /// Observe response bodies (application/json + text/event-stream).
+    /// Default: false — opt-in first; the response stream is never even
+    /// opened when off. Read-only tap: the response the client receives
+    /// is never modified, buffered, or delayed.
+    #[serde(default)]
+    pub capture_response_body: bool,
+
+    /// First N bytes of a response body retained. Default: 24576.
+    #[serde(default = "default_response_head_bytes")]
+    pub response_head_bytes: u32,
+
+    /// Rolling last N bytes of a response body retained. Default: 16384.
+    /// The tail is where SSE terminal events / usage live, hence
+    /// generous relative to typical response tails.
+    #[serde(default = "default_response_tail_bytes")]
+    pub response_tail_bytes: u32,
+
     /// Max events per outbound batch. Default: 50.
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
@@ -123,6 +140,12 @@ fn default_capture_request_body() -> bool {
 }
 fn default_capture_ai_content() -> bool {
     true
+}
+fn default_response_head_bytes() -> u32 {
+    24_576
+}
+fn default_response_tail_bytes() -> u32 {
+    16_384
 }
 fn default_batch_size() -> u32 {
     50

@@ -88,6 +88,9 @@ mod tests {
             body: None,
             user_agent: None,
             user_id: None,
+            status_code: None,
+            latency_ms: None,
+            response_body: None,
         }
     }
 

@@ -113,15 +113,23 @@ spec:
     captureAiContent:
       type: boolean
       default: true
-      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and sanitized like any other JSON body. Built-in sanitization is key-matching only; configure customPiiPatterns value rules to scrub regex-shaped PII (SSNs, emails, account numbers) inside free-form prompt text — PII with no stable shape still ships raw. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
-
-    # NOTE: captureResponseBody is intentionally absent for now.
-    # Response-body mutation interacts badly with Content-Length /
-    # Content-Encoding / streaming bodies / signed responses.
-    # See README "Planned improvements".
-    # If we add it later: bump endpoint version to /v2/ingest/batch.
-    # When response capture is added, response bodies must respect
-    # captureAiContent — model output carries the same PII risk as prompts.
+      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and sanitized like any other JSON body. Built-in sanitization is key-matching only; configure customPiiPatterns value rules to scrub regex-shaped PII (SSNs, emails, account numbers) inside free-form prompt text — PII with no stable shape still ships raw. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. Detected LLM/AI RESPONSE bodies (model output) are withheld under the same setting when captureResponseBody is enabled — generated output carries the same PII risk as prompts. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
+    captureResponseBody:
+      type: boolean
+      default: false
+      description: "Observe application/json and text/event-stream response bodies. READ-ONLY TAP: the response delivered to the client is never modified, buffered, or delayed — streamed chunks pass through as they arrive, and the policy only retains a capped copy (responseHeadBytes + responseTailBytes) as it streams. Bodies within the head+tail budget ship whole (JSON sanitized exactly like request bodies; SSE streams as one text blob scrubbed by customPiiPatterns value rules); larger bodies ship as head/tail slices with explicit truncation markers (body_truncated, body_bytes_total, body_bytes_dropped) so truncation is never silent; compressed (Content-Encoding other than identity) bodies ship a body_skipped_encoding marker and are never sliced. Detected LLM/AI response bodies respect captureAiContent. Off by default; when off, the response stream is never opened and per-request cost is unchanged. status_code and latency_ms ship on every event regardless of this setting."
+    responseHeadBytes:
+      type: integer
+      default: 24576
+      minimum: 0
+      maximum: 49152
+      description: "First N bytes of a captured response body to retain. With responseTailBytes, bounds the policy's per-response capture memory; the middle of an over-budget body is discarded as it streams. Size so that head + tail + the rest of the event stay under the ingest endpoint's per-event size cap — an oversized event is dropped server-side."
+    responseTailBytes:
+      type: integer
+      default: 16384
+      minimum: 0
+      maximum: 49152
+      description: "Rolling last N bytes of a captured response body to retain. Generous relative to typical response tails because stream terminators (usage totals, finish reasons, terminal SSE events) arrive last. Same sizing constraint as responseHeadBytes: head + tail + the rest of the event must stay under the ingest endpoint's per-event size cap."
 
     # ---------------------------------------------------------------------
     # Buffering / batching

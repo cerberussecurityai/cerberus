@@ -14,7 +14,13 @@ building from source requires the toolchain — see [Setup](#setup)
 below. The shipped policy provides:
 
 - Request metadata capture (header / query / body sanitization, IP
-  normalization + HMAC, source IP resolution, health-endpoint filter).
+  normalization + HMAC, source IP resolution, health-endpoint filter),
+  plus `status_code` and `latency_ms` on every event.
+- Opt-in response-body observation (`captureResponseBody`) — a strictly
+  read-only tap on `application/json` and `text/event-stream` responses
+  with head+tail truncation for oversized bodies. The response the
+  client receives is never modified, buffered, or delayed. See
+  "Response body capture".
 - Customer-configurable PII scrubbing via `customSensitiveKeys` (extra
   field names) and `customPiiPatterns` (regex rules with redact/hash
   actions) — additive to the built-in `SENSITIVE_KEYS` floor. See
@@ -40,13 +46,14 @@ and safe. Each row records today's behavior and the reasoning.
 
 | Improvement | Current behavior / why deferred |
 |---|---|
-| `_cerberus_metrics` extraction (response body inspection) | Mutating response bodies interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
+| `_cerberus_metrics` extraction | Response bodies are now *observed* (`captureResponseBody`), but `_cerberus_metrics` extraction requires *stripping* the injected key before the client sees it — response mutation, which this policy never does (the observe-only guarantee is the point). Mutation interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
 | Retry / backoff on backend failures | Currently at-most-once: failed batches are dropped. |
+| Event-loss on upstream reset before response headers | If the upstream connection resets/times out before response headers exist, the response filter never runs and the request's event is lost (pre-existing behavior, unchanged by response capture). Fixing it means pushing at request time with a mutable-event queue. |
+| Pre-flight event-size guard | A request body (up to the 1 MiB buffer) plus response head+tail can push a serialized event past the ingest endpoint's per-event size cap, dropping the whole event server-side. Sizing guidance is documented under "Response body capture"; a gateway-side guard is future work. |
 | Circuit breaker for sustained backend outages | Without one, every flush during an outage posts into a black hole. Currently logs and moves on. |
 | Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. |
-| `status_code` / `latency_ms` capture | Trivially addable in `response_filter`. |
-| Streaming-body capture for >1MB JSON payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large payloads. |
-| Semantic scrubbing for AI prompts/responses | `customPiiPatterns` value rules scrub anything regex-shaped (SSNs, emails, member IDs) inside prompt text, but free-form PII with no stable shape (names, addresses in prose) still can't be caught. For zero prompt egress, set `captureAiContent: false` to withhold AI request bodies entirely (they are captured by default). |
+| Streaming-body capture for >1MB JSON *request* payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large request payloads. (Response bodies stream and are not subject to this cap.) |
+| Semantic scrubbing for AI prompts/responses | `customPiiPatterns` value rules scrub anything regex-shaped (SSNs, emails, member IDs) inside prompt text, but free-form PII with no stable shape (names, addresses in prose) still can't be caught. For zero prompt/output egress, set `captureAiContent: false` to withhold AI request and response bodies entirely. |
 | Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
 
 ## Configuration (`gcl.yaml`)
@@ -66,7 +73,10 @@ and safe. Each row records today's behavior and the reasoning.
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
 | `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Non-crypto per-worker PRNG; out-of-range clamps with a warning. |
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
-| `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts). On by default: detected AI traffic ships the body, SENSITIVE_KEYS-sanitized (free-form prompt text still ships raw). Set to `false` to withhold prompt content — detected AI traffic then ships events without the body. MCP/JSON-RPC bodies are not treated as AI content. See "LLM/AI content handling". |
+| `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts) — and, when `captureResponseBody` is on, LLM/AI response bodies (model output). On by default: detected AI traffic ships the body, SENSITIVE_KEYS-sanitized (free-form prompt text still ships raw). Set to `false` to withhold prompt and output content — detected AI traffic then ships events without bodies. MCP/JSON-RPC bodies are not treated as AI content. See "LLM/AI content handling". |
+| `captureResponseBody` | | `false` | Observe `application/json` + `text/event-stream` response bodies. **Read-only tap** — the client's response is never modified, buffered, or delayed. In-budget bodies ship whole (JSON sanitized like request bodies; SSE as one scrubbed string); oversized bodies ship head/tail slices with explicit truncation markers; compressed bodies ship a `body_skipped_encoding` marker. See "Response body capture". |
+| `responseHeadBytes` | | `24576` | First N bytes of a captured response body retained (max 49152). See sizing guidance under "Response body capture". |
+| `responseTailBytes` | | `16384` | Rolling last N bytes retained (max 49152) — stream terminators (usage, finish reasons) live in the tail. Same sizing guidance. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
 | `flushIntervalMs` | | `2000` | Flush cadence. Min 100ms (prevents tight-loop misconfig). |
 | `queueCapacity` | | `10000` | Per-worker queue. Total memory ~ `workers × queueCapacity × ~5KB`. |
@@ -280,8 +290,71 @@ otherwise raw free-form text) leaves the gateway; keep it enabled only
 if you accept that. Set it to `false` to withhold AI request bodies
 entirely.
 
-Response bodies are not captured by the policy at all yet; when
-response capture lands, it will respect this same flag.
+The same flag governs the response side: with `captureResponseBody`
+enabled, responses on well-known LLM API paths — and whole-JSON
+response bodies that parse as prompt/completion-shaped on custom paths
+— are withheld when `captureAiContent: false`. Model output carries the
+same PII risk as prompts. For LLM-path requests the response stream is
+not even opened.
+
+### Response body capture
+
+`captureResponseBody` (default `false`) turns on observation of
+response bodies for `application/json` and `text/event-stream`
+responses. The design guarantee, worth stating first:
+
+**The policy is a read-only tap.** The response delivered to the client
+is never modified, buffered, or delayed — streamed chunks pass through
+to the client exactly as they arrive from the upstream, and the policy
+retains only a bounded copy as they stream past. This is why
+`_cerberus_metrics` extraction remains out of scope (it would require
+stripping a key from the body — mutation), and why every pipeline test
+asserts the client-visible response is byte-identical to what the
+upstream sent.
+
+What ships on the event, in `response_body`:
+
+- **Whole body** — when the body fits within `responseHeadBytes` +
+  `responseTailBytes`. JSON bodies are parsed and sanitized exactly
+  like request bodies (`SENSITIVE_KEYS` + `customSensitiveKeys` +
+  `customPiiPatterns`). An SSE stream that fits ships as a single raw
+  string, scrubbed by `customPiiPatterns` value rules.
+- **Truncation marker** — when the body exceeds the budget:
+  `{"body_truncated": true, "body_bytes_total": N,
+  "body_bytes_dropped": M, "head": "...", "tail": "..."}` — the first
+  `responseHeadBytes` of the stream plus the rolling last
+  `responseTailBytes`, middle discarded as it streams. Truncation is
+  never silent. The tail is sized generously because stream
+  terminators (token usage, finish reasons, terminal SSE events)
+  arrive last.
+- **Compression marker** — `{"body_skipped_encoding": "<enc>"}` when
+  `Content-Encoding` is present and not `identity`. A byte slice of a
+  compressed stream is undecodable, so compressed bodies are never
+  sliced and the stream is not read.
+
+`status_code` and `latency_ms` ship on every event regardless of this
+setting. Body-less responses (204/304/HEAD) produce no `response_body`.
+
+**Sizing.** The ingest endpoint enforces a per-event size cap; an event
+whose serialized form exceeds it is dropped server-side. Size
+`responseHeadBytes + responseTailBytes` so that the response slices,
+the request body, and the rest of the event stay under that cap — the
+defaults (24 KiB + 16 KiB) leave headroom for typical events. Setting
+both to `0` is a valid "response size telemetry" mode: every non-empty
+body ships a marker with byte counts and empty slices.
+
+**PII caveat.** Whole JSON bodies get full key-based sanitization, but
+truncated head/tail slices and raw SSE text are unparsed wire bytes —
+key-based redaction cannot apply to them. `customPiiPatterns`
+value-scope rules DO run over slice text, so regex-shaped PII (SSNs,
+emails, account numbers) is still scrubbed there. Response bodies are
+server-generated, so the request side — where credentials live — is
+unaffected by this asymmetry.
+
+**Memory.** Capture memory is capped at head+tail per in-flight
+response regardless of body size (there is no `maxResponseBodyBytes`
+knob because the accumulator is already bounded and the bytes flow to
+the client either way).
 
 ### TLS to the Cerberus backend
 
@@ -454,6 +527,7 @@ cerberus-flex-gateway/
 │   ├── ai_content.rs         # LLM/AI prompt detection (captureAiContent gate)
 │   ├── config.rs             # Config struct (mirrors gcl.yaml)
 │   ├── event.rs              # CerberusEvent (CoreData mirror)
+│   ├── response_capture.rs   # head+tail accumulator, response_body finalization
 │   ├── sanitize.rs           # SENSITIVE_KEYS/HEADERS, sanitize_value(_with)
 │   ├── pii_rules.rs          # customSensitiveKeys / customPiiPatterns compiler
 │   ├── hash.rs               # hash_pii, normalize_ip
