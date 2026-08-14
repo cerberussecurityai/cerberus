@@ -61,6 +61,12 @@ pub struct CerberusEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
 
+    /// Response headers captured via the responseCaptureHeaders
+    /// allowlist, sanitized like request headers. Absent when the
+    /// allowlist is empty or none of the listed headers appeared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_headers: Option<BTreeMap<String, String>>,
+
     /// Captured response body (captureResponseBody): a sanitized JSON
     /// value, a frame-sanitized SSE string, or one of the explicit
     /// marker objects (`body_skipped_encoding` / `body_truncated` —

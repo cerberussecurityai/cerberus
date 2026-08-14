@@ -49,6 +49,8 @@ pub struct Config {
     pub log_level: Option<String>,
     #[serde(alias = "queueCapacity")]
     pub queue_capacity: Option<i64>,
+    #[serde(alias = "responseCaptureHeaders")]
+    pub response_capture_headers: Option<Vec<String>>,
     #[serde(alias = "responseHeadBytes")]
     pub response_head_bytes: Option<i64>,
     #[serde(alias = "responseTailBytes")]
