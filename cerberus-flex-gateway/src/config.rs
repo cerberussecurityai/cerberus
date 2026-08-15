@@ -103,8 +103,8 @@ pub struct Config {
     /// Default: ["mcp-session-id"] — the session correlator stateful
     /// APIs (e.g. MCP) assign in a response and clients echo on
     /// subsequent requests. Sanitization applies as for request headers.
-    #[serde(default = "default_response_capture_headers")]
-    pub response_capture_headers: Vec<String>,
+    #[serde(default = "default_capture_response_headers")]
+    pub capture_response_headers: Vec<String>,
 
     /// First N bytes of a response body retained. Default: 24576.
     #[serde(default = "default_response_head_bytes")]
@@ -150,7 +150,7 @@ fn default_capture_request_body() -> bool {
 fn default_capture_ai_content() -> bool {
     true
 }
-fn default_response_capture_headers() -> Vec<String> {
+fn default_capture_response_headers() -> Vec<String> {
     vec!["mcp-session-id".to_string()]
 }
 fn default_response_head_bytes() -> u32 {

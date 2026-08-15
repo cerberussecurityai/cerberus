@@ -863,7 +863,7 @@ fn response_bodyless_with_content_encoding_ships_nothing() {
 
 #[test]
 fn response_header_allowlist_captures_default_mcp_session_id() {
-    // Default config: responseCaptureHeaders defaults to
+    // Default config: captureResponseHeaders defaults to
     // ["mcp-session-id"], independent of captureResponseBody.
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
@@ -886,7 +886,7 @@ fn response_header_allowlist_captures_default_mcp_session_id() {
 #[test]
 fn response_header_allowlist_empty_captures_none() {
     let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","responseCaptureHeaders":[]}}"#
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":[]}}"#
     );
     let upstream = UnitHttpResponse::new(200)
         .with_header("mcp-session-id", "4bbd920a-sess")
@@ -897,7 +897,7 @@ fn response_header_allowlist_empty_captures_none() {
     let e = &events.expect("expected a flushed batch")[0];
     assert!(
         e.get("response_headers").is_none(),
-        "empty responseCaptureHeaders must capture nothing: {e}"
+        "empty captureResponseHeaders must capture nothing: {e}"
     );
 }
 
@@ -906,7 +906,7 @@ fn response_header_allowlist_sensitive_header_still_redacts() {
     // Listing a sensitive response header controls presence, not value —
     // same contract as the request-side allowlist.
     let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","responseCaptureHeaders":["Set-Cookie","X-Trace-Id"]}}"#
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":["Set-Cookie","X-Trace-Id"]}}"#
     );
     let upstream = UnitHttpResponse::new(200)
         .with_header("set-cookie", "sid=supersecret")
@@ -919,6 +919,57 @@ fn response_header_allowlist_sensitive_header_still_redacts() {
     let rh = e["response_headers"].as_object().expect("response_headers");
     assert_eq!(rh["Set-Cookie"], "[REDACTED]");
     assert_eq!(rh["X-Trace-Id"], "trace-1");
+}
+
+#[test]
+fn response_header_allowlist_multi_value_collapses_after_sanitization() {
+    // Repeated response headers (Set-Cookie is the canonical case) collapse
+    // with ", " AFTER per-value sanitization — same contract as request
+    // headers, exercised here in the direction where Set-Cookie lives.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":["set-cookie","x-shard"]}}"#
+    );
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("set-cookie", "sid=one")
+        .with_header("set-cookie", "csrf=two")
+        .with_header("x-shard", "a")
+        .with_header("x-shard", "b")
+        .with_body("ok");
+    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let rh = e["response_headers"].as_object().expect("response_headers");
+    assert_eq!(rh["Set-Cookie"], "[REDACTED], [REDACTED]");
+    assert_eq!(rh["X-Shard"], "a, b");
+}
+
+#[test]
+fn response_header_allowlist_absent_header_omits_field_or_key() {
+    // Allowlisted-but-absent headers simply don't appear: no key when others
+    // are present, and no response_headers field at all when none matched.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":["mcp-session-id","x-trace-id"]}}"#
+    );
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("x-trace-id", "t-1")
+        .with_body("ok");
+    let (events, client) = run_pipeline(minimal_post(), config.clone(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+    let e = &events.expect("expected a flushed batch")[0];
+    let rh = e["response_headers"].as_object().expect("response_headers");
+    assert_eq!(rh.len(), 1);
+    assert_eq!(rh["X-Trace-Id"], "t-1");
+    assert!(rh.get("Mcp-Session-Id").is_none());
+
+    let upstream = UnitHttpResponse::new(200).with_body("ok");
+    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_headers").is_none(),
+        "no allowlisted header present → field omitted: {e}"
+    );
 }
 
 #[test]

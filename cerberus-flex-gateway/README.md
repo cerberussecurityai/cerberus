@@ -76,7 +76,7 @@ and safe. Each row records today's behavior and the reasoning.
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
 | `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts) — and, when `captureResponseBody` is on, LLM/AI response bodies (model output). On by default: detected AI traffic ships the body, SENSITIVE_KEYS-sanitized (free-form prompt text still ships raw). Set to `false` to withhold prompt and output content — detected AI traffic then ships events without bodies. MCP/JSON-RPC bodies are not treated as AI content. See "LLM/AI content handling". |
 | `captureResponseBody` | | `false` | Observe `application/json` + `text/event-stream` response bodies. **Read-only tap** — the client's response is never modified, buffered, or delayed. In-budget bodies ship whole (JSON sanitized like request bodies; SSE as one string with each JSON data frame key-sanitized); oversized bodies ship head/tail slices with explicit truncation markers; compressed bodies ship a `body_skipped_encoding` marker. See "Response body capture". |
-| `responseCaptureHeaders` | | `["mcp-session-id"]` | Allowlist of **response** header names captured into the event's `response_headers` map — a read-only header tap, independent of `captureResponseBody`. Pure opt-in (empty = capture none, unlike `captureHeaders`). Sanitization applies as for request headers. |
+| `captureResponseHeaders` | | `["mcp-session-id"]` | Allowlist of **response** header names captured into the event's `response_headers` map — a read-only header tap, independent of `captureResponseBody`. Pure opt-in (empty = capture none, unlike `captureHeaders`). Sanitization applies as for request headers. |
 | `responseHeadBytes` | | `24576` | First N bytes of a captured response body retained (max 49152). See sizing guidance under "Response body capture". |
 | `responseTailBytes` | | `16384` | Rolling last N bytes retained (max 49152) — stream terminators (usage, finish reasons) live in the tail. Same sizing guidance. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
@@ -101,6 +101,11 @@ same name. The policy:
 4. Title-cases header names (`x-api-key` → `X-Api-Key`).
 5. Collapses multi-valued headers with `, ` separator before storing
    in the event payload.
+
+The same five steps apply to **response** headers captured via
+`captureResponseHeaders` (see "Response header capture") — the two
+directions share one implementation, so their sanitization cannot
+drift.
 
 The allowlist controls which headers are *present*; sanitization
 controls their *values* — listing `Authorization` or `Cookie` in
@@ -391,7 +396,7 @@ the client either way).
 
 ### Response header capture
 
-Independent of body capture, `responseCaptureHeaders` names the
+Independent of body capture, `captureResponseHeaders` names the
 response headers to copy into the event's `response_headers` map —
 same read-only guarantee, same sanitization rules as request headers
 (sensitive headers redact even when listed), same title-casing and

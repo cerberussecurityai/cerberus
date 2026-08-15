@@ -19,7 +19,7 @@
 //
 //   Response → response_filter:
 //     - record status_code + latency_ms (wall-clock since request)
-//     - capture responseCaptureHeaders-allowlisted response headers
+//     - capture captureResponseHeaders-allowlisted response headers
 //       (sanitized like request headers; opt-in, default mcp-session-id)
 //     - if captureResponseBody && content-type is JSON or SSE: observe
 //       the body stream (pass-through, never buffered or delayed) into
@@ -120,7 +120,7 @@ struct PolicyContext {
     path_filter: PathFilter,
     /// Lowercased captureHeaders allowlist. None = capture all headers.
     header_allowlist: Option<std::collections::HashSet<String>>,
-    /// Lowercased responseCaptureHeaders allowlist. Pure opt-in, unlike
+    /// Lowercased captureResponseHeaders allowlist. Pure opt-in, unlike
     /// the request-side allowlist: empty = capture no response headers.
     response_header_allowlist: std::collections::HashSet<String>,
     /// Compiled customSensitiveKeys + customPiiPatterns. Empty when the
@@ -199,7 +199,7 @@ impl PolicyContext {
         // side, but empty means "capture none" (opt-in semantics), so a
         // blank-entries list needs no fail-open warning.
         let response_header_allowlist = config
-            .response_capture_headers
+            .capture_response_headers
             .iter()
             .map(|n| n.trim().to_lowercase())
             .filter(|n| !n.is_empty())
@@ -603,7 +603,7 @@ fn extract_headers(
     collect_headers(pairs, ctx.header_allowlist.as_ref(), ctx)
 }
 
-/// Extract and sanitize response headers per the responseCaptureHeaders
+/// Extract and sanitize response headers per the captureResponseHeaders
 /// allowlist. Pure opt-in: an empty allowlist captures nothing (the
 /// header iteration is skipped entirely).
 fn extract_response_headers(

@@ -61,7 +61,7 @@ pub struct CerberusEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
 
-    /// Response headers captured via the responseCaptureHeaders
+    /// Response headers captured via the captureResponseHeaders
     /// allowlist, sanitized like request headers. Absent when the
     /// allowlist is empty or none of the listed headers appeared.
     #[serde(skip_serializing_if = "Option::is_none")]
