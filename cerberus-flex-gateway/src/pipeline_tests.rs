@@ -648,6 +648,61 @@ fn response_llm_path_withheld_when_ai_capture_disabled() {
 }
 
 #[test]
+fn response_sse_on_custom_path_withheld_when_request_was_ai_suppressed() {
+    // captureAiContent: false, custom (non-LLM) path, prompt-shaped
+    // request body → the request body is withheld by the parsed-shape
+    // check. The response is SSE, which never reaches a parsed-shape
+    // check, so the request-side decision must carry over: model output
+    // is withheld too.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/ai/ask")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello there\"}}]}\n\ndata: [DONE]\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(e.get("body").is_none(), "prompt body must be withheld: {e}");
+    assert!(
+        e.get("response_body").is_none(),
+        "SSE model output on a custom path must be withheld when the request was AI-suppressed: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
+fn response_sse_on_custom_path_captured_when_ai_capture_on() {
+    // Positive control for the test above: same traffic with the default
+    // captureAiContent (true) captures the SSE output.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/ai/ask")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello there\"}}]}\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(req, response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(e["body"].is_object(), "prompt body captured by default: {e}");
+    assert!(
+        e["response_body"].is_string(),
+        "SSE output captured when captureAiContent is on: {e}"
+    );
+}
+
+#[test]
 fn response_mcp_tools_list_result_captured_whole() {
     // The schema-report enabler: a captured tools/list JSON-RPC result.
     let req = UnitHttpRequest::post()

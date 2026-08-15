@@ -268,9 +268,15 @@ enum RequestSlot {
     /// Event is partially built; response filter will push it onto the
     /// queue. `start_epoch_micros` is the request-arrival instant (same
     /// hostcall read as the event timestamp) for latency_ms.
+    /// `ai_content_withheld` records that the request body was withheld
+    /// as LLM/AI prompt content (captureAiContent off + prompt-shaped
+    /// body on a custom path) so the response side can withhold the
+    /// model output too — the response filter cannot re-derive that
+    /// decision from the path alone.
     Capture {
         event: CerberusEvent,
         start_epoch_micros: u64,
+        ai_content_withheld: bool,
     },
 }
 
@@ -346,6 +352,7 @@ async fn request_filter(
     // and the body-shape carve-out below still protects every normal MCP
     // mount.
     let mut body_value: Option<Value> = None;
+    let mut ai_content_withheld = false;
     let should_capture_body = ctx.config.capture_request_body
         && matches!(method.as_str(), "POST" | "PUT" | "PATCH")
         && content_type_is_json(headers_state.handler().header("content-type").as_deref())
@@ -370,7 +377,9 @@ async fn request_filter(
                             && ai_content::should_suppress_body(&endpoint, &parsed)
                         {
                             // AI prompt content — withheld from the event (the event
-                            // itself still ships for endpoint discovery).
+                            // itself still ships for endpoint discovery). Remembered
+                            // so the response filter withholds the output as well.
+                            ai_content_withheld = true;
                             None
                         } else {
                             Some(sanitize_value_with(
@@ -405,6 +414,7 @@ async fn request_filter(
     Flow::Continue(RequestSlot::Capture {
         event,
         start_epoch_micros,
+        ai_content_withheld,
     })
 }
 
@@ -412,11 +422,12 @@ async fn request_filter(
 /// path ends in `ctx.queue.push(event)` — response-capture failure must
 /// never lose the request event.
 async fn response_filter(state: ResponseState, data: RequestData<RequestSlot>, ctx: &PolicyContext) {
-    let (mut event, start_epoch_micros) = match data {
+    let (mut event, start_epoch_micros, ai_content_withheld) = match data {
         RequestData::Continue(RequestSlot::Capture {
             event,
             start_epoch_micros,
-        }) => (event, start_epoch_micros),
+            ai_content_withheld,
+        }) => (event, start_epoch_micros, ai_content_withheld),
         // Skip / Break / Cancel — nothing to ship.
         _ => return,
     };
@@ -427,7 +438,8 @@ async fn response_filter(state: ResponseState, data: RequestData<RequestSlot>, c
     // status_code() returns 0 for an absent/unparseable :status — omit
     // the field rather than shipping a bogus 0.
     event.status_code = (status != 0).then_some(status);
-    event.response_body = capture_response_body(headers, &event.endpoint, ctx).await;
+    event.response_body =
+        capture_response_body(headers, &event.endpoint, ai_content_withheld, ctx).await;
     // Measured after body capture completes so it covers the full
     // response, not just headers. Wall-clock (proxy-wasm exposes no
     // monotonic clock); skew saturates to 0.
@@ -445,6 +457,7 @@ async fn response_filter(state: ResponseState, data: RequestData<RequestSlot>, c
 async fn capture_response_body(
     headers: ResponseHeadersState,
     endpoint: &str,
+    ai_content_withheld: bool,
     ctx: &PolicyContext,
 ) -> Option<Value> {
     // 1. Knob off → current (0.3.0) behavior exactly.
@@ -454,11 +467,16 @@ async fn capture_response_body(
     // 2. Only JSON and SSE content-types are observed.
     let kind =
         response_capture::classify_content_type(headers.handler().header("content-type").as_deref())?;
-    // 3. captureAiContent off + well-known LLM path: skip all body work
-    //    before touching the stream (mirrors the request-side
-    //    short-circuit; the parsed-shape check in finalize covers
-    //    prompt-echoing responses on custom paths).
-    if !ctx.config.capture_ai_content && ai_content::is_llm_path(endpoint) {
+    // 3. captureAiContent off: skip all body work before touching the
+    //    stream when the request was AI traffic — a well-known LLM path
+    //    (mirrors the request-side short-circuit) OR a request whose body
+    //    was already withheld as prompt-shaped on a custom path. The
+    //    latter is what makes SSE model output on custom paths respect
+    //    the flag: an SSE body never reaches the parsed-shape check in
+    //    finalize, so the request-side decision has to carry over.
+    if !ctx.config.capture_ai_content
+        && (ai_content_withheld || ai_content::is_llm_path(endpoint))
+    {
         return None;
     }
     // 4. Compressed bodies are never sliced — a byte slice of a
