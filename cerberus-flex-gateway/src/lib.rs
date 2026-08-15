@@ -22,7 +22,7 @@
 //     - if captureResponseBody && content-type is JSON or SSE: observe
 //       the body stream (pass-through, never buffered or delayed) into
 //       a head+tail accumulator; in-budget bodies ship whole (JSON
-//       sanitized / SSE pattern-scrubbed), oversized bodies ship
+//       sanitized / SSE sanitized per data frame), oversized bodies ship
 //       head/tail slices with explicit truncation markers, compressed
 //       bodies ship a body_skipped_encoding marker (see
 //       response_capture.rs). LLM/AI response bodies respect

@@ -1,15 +1,28 @@
 // Response-body capture: head+tail byte accumulation and event-shape
 // finalization.
 //
-// The gateway never parses SSE framing or provider JSON on the response
-// path — it counts bytes. A response body streams through the policy
+// The gateway does no semantic work on the response path — no usage
+// mining, no provider schemas, no SSE resync; it counts bytes and the
+// backend does the rest. A response body streams through the policy
 // chunk by chunk (pass-through, never buffered or delayed); this module
 // retains the first `responseHeadBytes` of the stream plus a rolling
 // ring of the last `responseTailBytes`. At end-of-stream, a body that
 // fit entirely within head + tail is reconstructed exactly and shipped
-// whole (JSON parsed + sanitized like a request body; SSE as a
-// pattern-scrubbed string). A larger body ships as head/tail slices
-// with explicit truncation markers so truncation is never silent.
+// whole (JSON parsed + sanitized like a request body; SSE as text). A
+// larger body ships as head/tail slices with explicit truncation
+// markers so truncation is never silent.
+//
+// The one syntactic concession, for PII's sake: SSE text is sanitized
+// per `data:` line. A data line whose payload is a complete JSON
+// object/array is parsed, key-sanitized exactly like a JSON body, and
+// re-serialized in place; every other line (event/id/comment lines,
+// non-JSON data such as `[DONE]`, and the partial frames at a
+// truncation cut) falls back to `customPiiPatterns` value rules. This
+// is what keeps structured PII in SSE-transported JSON — MCP tool
+// results over streamable-http, for one — from bypassing key-based
+// redaction just because it rode a stream. Line splitting + a JSON
+// parse is not provider knowledge, so schema drift still never
+// requires a gateway change.
 //
 // Everything here is pure and unit-tested in-module; the stream plumbing
 // lives in lib.rs (`capture_response_body`).
@@ -217,6 +230,54 @@ fn scrub_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&str>) -> 
     scrub_text(String::from_utf8_lossy(bytes).into_owned(), rules, secret)
 }
 
+/// Sanitize SSE text line by line, preserving framing byte-for-byte
+/// where it matters (line terminators, field prefixes, blank-line event
+/// boundaries) so downstream SSE parsing is unaffected.
+///
+/// - `data:` line whose payload parses as a JSON object/array → the
+///   payload is key-sanitized like a JSON body (`SENSITIVE_KEYS`,
+///   `customSensitiveKeys`, `customPiiPatterns` key + value scope) and
+///   re-serialized (compact form; whitespace inside JSON is not
+///   significant to any consumer).
+/// - Any other line — `event:` / `id:` / `retry:` / comments, non-JSON
+///   data (`[DONE]`), a bare primitive, or a data line cut mid-payload
+///   at a truncation boundary — → `customPiiPatterns` value rules only.
+///   A parse failure can never make a line *less* scrubbed than before.
+pub fn sanitize_sse_text(text: &str, rules: &CompiledPiiRules, secret: Option<&str>) -> String {
+    let mut out = String::with_capacity(text.len());
+    for piece in text.split_inclusive('\n') {
+        let (content, terminator) = match piece.strip_suffix("\r\n") {
+            Some(c) => (c, "\r\n"),
+            None => match piece.strip_suffix('\n') {
+                Some(c) => (c, "\n"),
+                None => (piece, ""),
+            },
+        };
+        out.push_str(&sanitize_sse_line(content, rules, secret));
+        out.push_str(terminator);
+    }
+    out
+}
+
+fn sanitize_sse_line(line: &str, rules: &CompiledPiiRules, secret: Option<&str>) -> String {
+    if let Some(payload) = line.strip_prefix("data:") {
+        // SSE strips exactly one leading space after the colon; we
+        // strip any run, since the parser side does the same.
+        let payload = payload.trim_start_matches(' ');
+        if let Ok(parsed @ (Value::Object(_) | Value::Array(_))) =
+            serde_json::from_str::<Value>(payload)
+        {
+            let sanitized = sanitize_value_with(parsed, rules, secret);
+            return format!("data: {}", sanitized);
+        }
+    }
+    scrub_text(line.to_string(), rules, secret)
+}
+
+fn sanitize_sse_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&str>) -> String {
+    sanitize_sse_text(&String::from_utf8_lossy(bytes), rules, secret)
+}
+
 /// Turn an accumulated body into the event's `response_body` value.
 ///
 /// - `Empty` → `None`.
@@ -224,10 +285,11 @@ fn scrub_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&str>) -> 
 ///   check first (prompt-echoing responses on custom paths), else full
 ///   sanitize — identical treatment to the request side.
 /// - `Complete` + parse failure or bare primitive → SSE ships as one
-///   pattern-scrubbed string; JSON kinds are discarded (mirrors the
-///   Django agent).
-/// - `Truncated` → explicit marker with lossy-decoded, pattern-scrubbed
-///   head/tail slices.
+///   string, sanitized per data frame (`sanitize_sse_text`); JSON kinds
+///   are discarded (mirrors the Django agent).
+/// - `Truncated` → explicit marker with lossy-decoded head/tail slices:
+///   SSE slices sanitized per data frame (partial frames at the cuts
+///   fall back to value rules), JSON-document slices value-scrubbed.
 pub fn finalize_response_body(
     outcome: AccumulatedBody,
     kind: ResponseContentKind,
@@ -250,25 +312,25 @@ pub fn finalize_response_body(
             }
             _ => match kind {
                 ResponseContentKind::Sse => {
-                    Some(Value::String(scrub_lossy(&bytes, rules, secret)))
+                    Some(Value::String(sanitize_sse_lossy(&bytes, rules, secret)))
                 }
                 ResponseContentKind::Json => None,
             },
         },
         AccumulatedBody::Truncated { total, head, tail } => {
+            // Byte counts are raw wire counts, taken before sanitization
+            // (diagnostics only — the consumer never gates on them).
             let dropped = total - (head.len() + tail.len()) as u64;
+            let slice = |bytes: &[u8]| match kind {
+                ResponseContentKind::Sse => sanitize_sse_lossy(bytes, rules, secret),
+                ResponseContentKind::Json => scrub_lossy(bytes, rules, secret),
+            };
             let mut m = serde_json::Map::with_capacity(5);
             m.insert(KEY_TRUNCATED.to_string(), Value::Bool(true));
             m.insert(KEY_BYTES_TOTAL.to_string(), Value::from(total));
             m.insert(KEY_BYTES_DROPPED.to_string(), Value::from(dropped));
-            m.insert(
-                KEY_HEAD.to_string(),
-                Value::String(scrub_lossy(&head, rules, secret)),
-            );
-            m.insert(
-                KEY_TAIL.to_string(),
-                Value::String(scrub_lossy(&tail, rules, secret)),
-            );
+            m.insert(KEY_HEAD.to_string(), Value::String(slice(&head)));
+            m.insert(KEY_TAIL.to_string(), Value::String(slice(&tail)));
             Some(Value::Object(m))
         }
     }
@@ -531,6 +593,109 @@ mod tests {
             None,
         )
         .is_none());
+    }
+
+    // ---------------- SSE frame-level sanitization ----------------
+
+    #[test]
+    fn sse_data_frame_key_sanitized_framing_preserved() {
+        // JSON data payloads are key-sanitized like a body; event lines,
+        // CRLF terminators and the blank-line boundary survive intact.
+        let sse = "event: message\r\ndata: {\"result\":{\"api_key\":\"sk-1\",\"name\":\"x\"}}\r\n\r\n";
+        let out = sanitize_sse_text(sse, &no_rules(), None);
+        assert_eq!(
+            out,
+            "event: message\r\ndata: {\"result\":{\"api_key\":\"[REDACTED]\",\"name\":\"x\"}}\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn sse_partial_frame_at_cut_falls_back_to_value_rules() {
+        // A data line cut mid-payload (truncation boundary) is not JSON:
+        // it cannot be key-redacted, but value rules still run — never
+        // less scrubbed than the plain-text path.
+        let cut = "data: {\"note\":\"ssn 123-45-6789\",\"pass";
+        let out = sanitize_sse_text(cut, &ssn_rule(), None);
+        assert_eq!(out, "data: {\"note\":\"ssn [REDACTED]\",\"pass");
+    }
+
+    #[test]
+    fn sse_non_json_lines_untouched() {
+        let sse = ": keep-alive\nid: 7\nretry: 3000\ndata: [DONE]\ndata: 42\n\n";
+        assert_eq!(sanitize_sse_text(sse, &no_rules(), None), sse);
+    }
+
+    #[test]
+    fn sse_multi_frame_nested_secret_redacted() {
+        // MCP tool result over streamable-http: structured PII inside a
+        // frame is caught by key redaction, not left to regex luck.
+        let sse = concat!(
+            "event: message\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"user\":\"alice\",\"password\":\"hunter2\"}}}\n",
+            "\n",
+            "event: message\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}\n",
+            "\n",
+        );
+        let out = sanitize_sse_text(sse, &no_rules(), None);
+        assert!(!out.contains("hunter2"), "secret must not survive: {out}");
+        assert!(out.contains("\"password\":\"[REDACTED]\""), "{out}");
+        assert!(out.contains("\"user\":\"alice\""), "{out}");
+        assert!(out.contains("\"ok\":true"), "{out}");
+        assert_eq!(out.matches("event: message\n").count(), 2, "framing intact: {out}");
+    }
+
+    #[test]
+    fn sse_value_rules_still_apply_inside_frames_and_comments() {
+        let sse = ": trace 078-05-1120\ndata: {\"text\":\"call 123-45-6789\"}\n\n";
+        let out = sanitize_sse_text(sse, &ssn_rule(), None);
+        assert_eq!(
+            out,
+            ": trace [REDACTED]\ndata: {\"text\":\"call [REDACTED]\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn truncated_sse_slices_sanitized_per_frame_json_slices_not() {
+        let head = b"data: {\"token\":\"t-1\",\"a\":1}\n\ndata: {\"secret\":\"cut-he".to_vec();
+        let tail = b"re\"}\n\ndata: {\"api_key\":\"k-9\"}\n\n".to_vec();
+        let out = finalize_response_body(
+            AccumulatedBody::Truncated { total: 500, head: head.clone(), tail: tail.clone() },
+            ResponseContentKind::Sse,
+            "/mcp",
+            true,
+            &no_rules(),
+            None,
+        )
+        .expect("marker");
+        let h = out["head"].as_str().unwrap();
+        let t = out["tail"].as_str().unwrap();
+        // Complete frames key-redacted; the frame split by the cut is not
+        // JSON on either side and passes through (value rules only).
+        assert!(h.starts_with("data: {\"a\":1,\"token\":\"[REDACTED]\"}\n\n"), "{h}");
+        assert!(h.ends_with("data: {\"secret\":\"cut-he"), "{h}");
+        assert!(t.starts_with("re\"}\n\n"), "{t}");
+        assert!(t.ends_with("data: {\"api_key\":\"[REDACTED]\"}\n\n"), "{t}");
+        // Byte counts stay raw-wire counts regardless of sanitization.
+        assert_eq!(out["body_bytes_total"], 500);
+        assert_eq!(out["body_bytes_dropped"], 500 - (head.len() + tail.len()) as u64);
+
+        // JSON-document kind: slices are not line-framed → value rules only,
+        // even when a slice happens to start with "data:".
+        let out = finalize_response_body(
+            AccumulatedBody::Truncated {
+                total: 100,
+                head: b"data: {\"token\":\"t-1\"}".to_vec(),
+                tail: b"}".to_vec(),
+            },
+            ResponseContentKind::Json,
+            "/api",
+            true,
+            &no_rules(),
+            None,
+        )
+        .expect("marker");
+        assert_eq!(out["head"], "data: {\"token\":\"t-1\"}");
     }
 
     // ---------------- UTF-8 handling at slice cuts ----------------

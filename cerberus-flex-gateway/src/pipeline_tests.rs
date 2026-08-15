@@ -727,6 +727,35 @@ fn response_mcp_tools_list_result_captured_whole() {
 }
 
 #[test]
+fn response_mcp_sse_result_key_sanitized_client_untouched() {
+    // Structured PII inside an SSE-transported MCP tool result is key-
+    // redacted on the retained copy — while the client still receives the
+    // original bytes (the tap never mutates the wire).
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/mcp")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lookup","arguments":{"q":"x"}}}"#);
+    let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"structuredContent\":{\"api_key\":\"sk-live-1\",\"user\":\"alice\"}}}\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(req, response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+    assert!(
+        std::str::from_utf8(client.body()).unwrap().contains("sk-live-1"),
+        "client must receive the original bytes"
+    );
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let captured = e["response_body"].as_str().expect("SSE ships as a string");
+    assert!(!captured.contains("sk-live-1"), "secret must not ship: {captured}");
+    assert!(captured.contains("\"api_key\":\"[REDACTED]\""), "{captured}");
+    assert!(captured.contains("\"user\":\"alice\""), "{captured}");
+    assert!(captured.starts_with("event: message\ndata: "), "framing preserved: {captured}");
+}
+
+#[test]
 fn response_bodyless_204_no_response_body() {
     let upstream = UnitHttpResponse::new(204).with_header("content-type", "application/json");
     let (events, client) =

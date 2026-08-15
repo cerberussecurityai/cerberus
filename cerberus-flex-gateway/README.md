@@ -74,7 +74,7 @@ and safe. Each row records today's behavior and the reasoning.
 | `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Non-crypto per-worker PRNG; out-of-range clamps with a warning. |
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
 | `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts) — and, when `captureResponseBody` is on, LLM/AI response bodies (model output). On by default: detected AI traffic ships the body, SENSITIVE_KEYS-sanitized (free-form prompt text still ships raw). Set to `false` to withhold prompt and output content — detected AI traffic then ships events without bodies. MCP/JSON-RPC bodies are not treated as AI content. See "LLM/AI content handling". |
-| `captureResponseBody` | | `false` | Observe `application/json` + `text/event-stream` response bodies. **Read-only tap** — the client's response is never modified, buffered, or delayed. In-budget bodies ship whole (JSON sanitized like request bodies; SSE as one scrubbed string); oversized bodies ship head/tail slices with explicit truncation markers; compressed bodies ship a `body_skipped_encoding` marker. See "Response body capture". |
+| `captureResponseBody` | | `false` | Observe `application/json` + `text/event-stream` response bodies. **Read-only tap** — the client's response is never modified, buffered, or delayed. In-budget bodies ship whole (JSON sanitized like request bodies; SSE as one string with each JSON data frame key-sanitized); oversized bodies ship head/tail slices with explicit truncation markers; compressed bodies ship a `body_skipped_encoding` marker. See "Response body capture". |
 | `responseHeadBytes` | | `24576` | First N bytes of a captured response body retained (max 49152). See sizing guidance under "Response body capture". |
 | `responseTailBytes` | | `16384` | Rolling last N bytes retained (max 49152) — stream terminators (usage, finish reasons) live in the tail. Same sizing guidance. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
@@ -317,8 +317,13 @@ What ships on the event, in `response_body`:
 - **Whole body** — when the body fits within `responseHeadBytes` +
   `responseTailBytes`. JSON bodies are parsed and sanitized exactly
   like request bodies (`SENSITIVE_KEYS` + `customSensitiveKeys` +
-  `customPiiPatterns`). An SSE stream that fits ships as a single raw
-  string, scrubbed by `customPiiPatterns` value rules.
+  `customPiiPatterns`). An SSE stream that fits ships as a single
+  string, sanitized **per `data:` frame**: each data line whose payload
+  is a complete JSON object/array is key-sanitized exactly like a JSON
+  body and re-serialized in place; every other line (`event:`/`id:`/
+  comment lines, non-JSON data such as `[DONE]`) gets
+  `customPiiPatterns` value rules. Framing — line terminators, field
+  prefixes, blank-line event boundaries — is preserved.
 - **Truncation marker** — when the body exceeds the budget:
   `{"body_truncated": true, "body_bytes_total": N,
   "body_bytes_dropped": M, "head": "...", "tail": "..."}` — the first
@@ -343,13 +348,18 @@ defaults (24 KiB + 16 KiB) leave headroom for typical events. Setting
 both to `0` is a valid "response size telemetry" mode: every non-empty
 body ships a marker with byte counts and empty slices.
 
-**PII caveat.** Whole JSON bodies get full key-based sanitization, but
-truncated head/tail slices and raw SSE text are unparsed wire bytes —
-key-based redaction cannot apply to them. `customPiiPatterns`
-value-scope rules DO run over slice text, so regex-shaped PII (SSNs,
-emails, account numbers) is still scrubbed there. Response bodies are
-server-generated, so the request side — where credentials live — is
-unaffected by this asymmetry.
+**PII caveat.** Whole JSON bodies and complete SSE data frames get
+full key-based sanitization. What does *not*: a truncated JSON
+document's head/tail slices, and the one SSE frame split by each
+truncation cut — those are unparseable text, so only `customPiiPatterns`
+value-scope rules run over them (regex-shaped PII such as SSNs, emails
+and account numbers is still scrubbed). And in every case, prose with
+no stable shape (a name in generated text) is beyond what key matching
+or regex can catch — the same limit that applies to captured prompts.
+For zero model-output egress, `captureAiContent: false` withholds
+detected LLM/AI response bodies entirely: well-known LLM paths never
+open the stream, and a request whose body was withheld as prompt-shaped
+on a custom path withholds its response too.
 
 **Memory.** Capture memory is capped at head+tail per in-flight
 response regardless of body size (there is no `maxResponseBodyBytes`

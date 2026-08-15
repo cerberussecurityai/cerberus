@@ -62,7 +62,7 @@ pub struct CerberusEvent {
     pub latency_ms: Option<u64>,
 
     /// Captured response body (captureResponseBody): a sanitized JSON
-    /// value, a pattern-scrubbed SSE string, or one of the explicit
+    /// value, a frame-sanitized SSE string, or one of the explicit
     /// marker objects (`body_skipped_encoding` / `body_truncated` —
     /// see response_capture.rs). Absent ⇒ omitted ⇒ the pre-0.4.0
     /// event shape is unchanged on the wire.
