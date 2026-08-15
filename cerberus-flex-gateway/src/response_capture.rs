@@ -282,8 +282,9 @@ fn sanitize_sse_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&st
 ///
 /// - `Empty` → `None`.
 /// - `Complete` + parses as a JSON object/array → AI-shape suppression
-///   check first (prompt-echoing responses on custom paths), else full
-///   sanitize — identical treatment to the request side.
+///   check first (completion-shaped model output, or a prompt-echoing
+///   wrapper, on custom paths), else full sanitize — identical treatment
+///   to the request side.
 /// - `Complete` + parse failure or bare primitive → SSE ships as one
 ///   string, sanitized per data frame (`sanitize_sse_text`); JSON kinds
 ///   are discarded (mirrors the Django agent).
@@ -303,7 +304,7 @@ pub fn finalize_response_body(
         AccumulatedBody::Complete(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(parsed @ (Value::Object(_) | Value::Array(_))) => {
                 if !capture_ai_content
-                    && crate::ai_content::should_suppress_body(endpoint, &parsed)
+                    && crate::ai_content::should_suppress_response(endpoint, &parsed)
                 {
                     None
                 } else {
@@ -543,16 +544,35 @@ mod tests {
 
     #[test]
     fn ai_shaped_response_suppressed_when_ai_capture_off() {
-        // A prompt-echoing response body on a custom path: the parsed-
-        // shape check withholds it when captureAiContent is off.
-        let body = br#"{"model":"gpt-4o","messages":[{"role":"assistant","content":"hi"}]}"#;
-        assert!(finalize_complete(body, ResponseContentKind::Json, false).is_none());
-        // Same body ships (sanitized) when AI capture is on.
-        assert!(finalize_complete(body, ResponseContentKind::Json, true).is_some());
+        // Real completion bodies on a custom path — the shapes providers
+        // actually return, not request-shaped stand-ins — are withheld when
+        // captureAiContent is off, and ship (sanitized) when it is on.
+        let bodies: [&[u8]; 4] = [
+            br#"{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#,
+            br#"{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}"#,
+            br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}"#,
+            // A prompt-echoing wrapper.
+            br#"{"model":"gpt-4o","messages":[{"role":"assistant","content":"hi"}]}"#,
+        ];
+        for body in bodies {
+            assert!(
+                finalize_complete(body, ResponseContentKind::Json, false).is_none(),
+                "must be withheld: {}",
+                String::from_utf8_lossy(body)
+            );
+            assert!(finalize_complete(body, ResponseContentKind::Json, true).is_some());
+        }
         // Non-AI-shaped bodies are unaffected by the flag.
         assert!(
             finalize_complete(br#"{"ok":true}"#, ResponseContentKind::Json, false).is_some()
         );
+        // MCP results are never AI content, whatever the flag.
+        assert!(finalize_complete(
+            br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}"#,
+            ResponseContentKind::Json,
+            false
+        )
+        .is_some());
     }
 
     #[test]

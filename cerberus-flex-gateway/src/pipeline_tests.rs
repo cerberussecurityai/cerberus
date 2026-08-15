@@ -679,6 +679,38 @@ fn response_sse_on_custom_path_withheld_when_request_was_ai_suppressed() {
 }
 
 #[test]
+fn response_completion_json_on_custom_path_withheld_without_prompt_shaped_request() {
+    // The case neither the path list nor the request-side carry-over can
+    // catch: custom path, a request body that is NOT prompt-shaped (an
+    // internal wrapper API), and a whole-JSON response that is a real
+    // OpenAI-shaped completion. captureAiContent: false must still withhold
+    // it — the response-shape check is what does that.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/assistant/answer")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"question":"what is our refund policy?","ticket":"T-1"}"#);
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Refunds within 30 days."},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":6}}"#);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    // The request was not AI-shaped, so its body ships as usual...
+    assert_eq!(e["body"]["ticket"], "T-1");
+    // ...but the completion-shaped response is model output → withheld.
+    assert!(
+        e.get("response_body").is_none(),
+        "completion-shaped JSON on a custom path must be withheld: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
 fn response_sse_on_custom_path_captured_when_ai_capture_on() {
     // Positive control for the test above: same traffic with the default
     // captureAiContent (true) captures the SSE output.
@@ -753,6 +785,30 @@ fn response_mcp_sse_result_key_sanitized_client_untouched() {
     assert!(captured.contains("\"api_key\":\"[REDACTED]\""), "{captured}");
     assert!(captured.contains("\"user\":\"alice\""), "{captured}");
     assert!(captured.starts_with("event: message\ndata: "), "framing preserved: {captured}");
+}
+
+#[test]
+fn response_budgets_clamp_to_schema_maximum() {
+    // gcl.yaml declares maximum 49152 for both budgets, but that is only
+    // enforced by API Manager's form — Local-mode YAML can carry anything.
+    // Out-of-range values clamp (with a startup warning) instead of driving
+    // an unbounded accumulator: a 60 KB body under a "1 MB" head budget
+    // must still truncate at 49152.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":1048576,"responseTailBytes":0}}"#
+    );
+    let big = "x".repeat(60_000);
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(big.clone());
+    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let marker = e["response_body"].as_object().expect("truncation marker");
+    assert_eq!(marker["body_truncated"], true);
+    assert_eq!(marker["head"].as_str().unwrap().len(), 49_152);
+    assert_eq!(marker["body_bytes_dropped"], 60_000 - 49_152);
 }
 
 #[test]

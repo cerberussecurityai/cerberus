@@ -102,6 +102,11 @@ use crate::sanitize::{is_sensitive_header_lower, sanitize_value_with, REDACTED};
 
 const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
 
+/// Upper bound for responseHeadBytes / responseTailBytes — mirrors the
+/// `maximum` declared in definition/gcl.yaml; enforced at runtime because
+/// only Connected mode validates the schema.
+const MAX_RESPONSE_SLICE_BYTES: u32 = 49_152;
+
 /// Per-policy state shared across request, response, and flush handlers.
 /// All members are immutable except the queue and the sampler's PRNG
 /// state (interior mutability via RefCell, safe because proxy-wasm
@@ -147,6 +152,24 @@ impl PolicyContext {
         // sees what the sampler actually uses.
         let mut config = config;
         config.sample_rate = clamped_rate;
+        // Same defense for the response-capture budgets: gcl.yaml declares
+        // maximum 49152 for each, but only API Manager enforces the schema
+        // — Local-mode YAML can carry any u32, and the README's memory and
+        // event-size guarantees lean on the bound. Clamp + warn, as above.
+        for (name, value) in [
+            ("responseHeadBytes", &mut config.response_head_bytes),
+            ("responseTailBytes", &mut config.response_tail_bytes),
+        ] {
+            if *value > MAX_RESPONSE_SLICE_BYTES {
+                logger::warn!(
+                    "cerberus-flex-gateway: {} {} exceeds the maximum; clamped to {}",
+                    name,
+                    *value,
+                    MAX_RESPONSE_SLICE_BYTES
+                );
+                *value = MAX_RESPONSE_SLICE_BYTES;
+            }
+        }
 
         let path_filter = PathFilter::compile(
             config.capture_paths.as_deref().unwrap_or(&[]),

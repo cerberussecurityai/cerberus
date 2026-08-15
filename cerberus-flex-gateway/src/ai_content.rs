@@ -120,10 +120,86 @@ pub fn is_prompt_shaped(body: &Value) -> bool {
     }
 }
 
+/// True if a parsed JSON body looks like an LLM *response* payload — a
+/// completion, chat message, embedding, or generation result. Response
+/// shapes differ from request shapes (no top-level `messages`/`prompt`),
+/// so `is_prompt_shaped` cannot recognise them; this is the response-side
+/// twin, biased toward recall the same way.
+pub fn is_completion_shaped(body: &Value) -> bool {
+    let Value::Object(o) = body else {
+        return false;
+    };
+    // OpenAI chat/completions: choices[] whose elements carry a message /
+    // delta / text / finish_reason.
+    if o.get("choices").and_then(Value::as_array).is_some_and(|cs| {
+        cs.iter().any(|c| {
+            c.as_object().is_some_and(|c| {
+                ["message", "delta", "text", "finish_reason"]
+                    .iter()
+                    .any(|k| c.contains_key(*k))
+            })
+        })
+    }) {
+        return true;
+    }
+    // OpenAI Responses API: {"object":"response","output":[...]} — or the
+    // output array alongside a model.
+    if o.get("output").and_then(Value::as_array).is_some()
+        && (o.get("object").and_then(Value::as_str) == Some("response") || o.contains_key("model"))
+    {
+        return true;
+    }
+    // Anthropic Messages: {"type":"message","role":"assistant","content":[...]}
+    // — or a stop_reason beside content (Bedrock-Anthropic invoke too).
+    if o.contains_key("content")
+        && (o.get("type").and_then(Value::as_str) == Some("message")
+            || o.contains_key("stop_reason"))
+    {
+        return true;
+    }
+    // Gemini: candidates[] whose elements carry content.
+    if o.get("candidates").and_then(Value::as_array).is_some_and(|cs| {
+        cs.iter()
+            .any(|c| c.as_object().is_some_and(|c| c.contains_key("content")))
+    }) {
+        return true;
+    }
+    // Embeddings: data[] whose elements carry an embedding vector.
+    if o.get("data").and_then(Value::as_array).is_some_and(|ds| {
+        ds.iter()
+            .any(|d| d.as_object().is_some_and(|d| d.contains_key("embedding")))
+    }) {
+        return true;
+    }
+    // Bedrock Converse: {"output":{"message":...},"stopReason":...}.
+    if o.contains_key("stopReason") && o.contains_key("output") {
+        return true;
+    }
+    // Bedrock Titan: results[] whose elements carry outputText.
+    if o.get("results").and_then(Value::as_array).is_some_and(|rs| {
+        rs.iter()
+            .any(|r| r.as_object().is_some_and(|r| r.contains_key("outputText")))
+    }) {
+        return true;
+    }
+    // Cohere chat/generate: a finish_reason beside a message or text.
+    o.contains_key("finish_reason") && (o.contains_key("message") || o.contains_key("text"))
+}
+
 /// Decision used by the request filter: suppress the body iff the request
 /// looks like LLM traffic and is not MCP/JSON-RPC.
 pub fn should_suppress_body(path: &str, body: &Value) -> bool {
     !is_jsonrpc_shaped(body) && (is_llm_path(path) || is_prompt_shaped(body))
+}
+
+/// Decision used by the response filter for a whole JSON response body:
+/// suppress iff the response looks like model output — a completion-shaped
+/// body, or a prompt-shaped one (an echoing wrapper) — on any path, and is
+/// not MCP/JSON-RPC. (Well-known LLM paths never reach this check: the
+/// response filter skips the stream for them before any body work.)
+pub fn should_suppress_response(path: &str, body: &Value) -> bool {
+    !is_jsonrpc_shaped(body)
+        && (is_llm_path(path) || is_completion_shaped(body) || is_prompt_shaped(body))
 }
 
 #[cfg(test)]
@@ -233,6 +309,79 @@ mod tests {
         for body in bodies {
             assert!(!is_prompt_shaped(&body), "expected non-prompt body: {body}");
         }
+    }
+
+    #[test]
+    fn completion_bodies_positive() {
+        let bodies = [
+            // OpenAI chat completion.
+            json!({"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o",
+                   "choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+                   "usage":{"prompt_tokens":1,"completion_tokens":1}}),
+            // OpenAI streaming-style chunk (delta) delivered as JSON.
+            json!({"choices":[{"delta":{"content":"hi"}}]}),
+            // Legacy completion.
+            json!({"choices":[{"text":"hi","index":0}]}),
+            // OpenAI Responses API.
+            json!({"object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}),
+            // Anthropic Messages.
+            json!({"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}),
+            // Bedrock-Anthropic (stop_reason beside content, no type).
+            json!({"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}),
+            // Gemini.
+            json!({"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}),
+            // Embeddings.
+            json!({"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}]}),
+            // Bedrock Converse.
+            json!({"output":{"message":{"role":"assistant","content":[{"text":"hi"}]}},"stopReason":"end_turn"}),
+            // Bedrock Titan.
+            json!({"results":[{"outputText":"hi","completionReason":"FINISH"}]}),
+            // Cohere.
+            json!({"text":"hi","finish_reason":"COMPLETE","generation_id":"g"}),
+        ];
+        for body in bodies {
+            assert!(is_completion_shaped(&body), "expected completion-shaped: {body}");
+        }
+    }
+
+    #[test]
+    fn completion_bodies_negative() {
+        let bodies = [
+            // Ordinary business payloads that share a key name.
+            json!({"choices":["red","green"]}),
+            json!({"data":[{"id":1,"name":"widget"}]}),
+            json!({"content":"plain string, no message type or stop reason"}),
+            json!({"output":"done"}),
+            json!({"results":[{"id":1}]}),
+            json!({"candidates":[{"name":"alice"}]}),
+            json!({"message":"created","id":7}),
+            // MCP result envelope: never AI content.
+            json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}),
+        ];
+        for body in bodies {
+            assert!(!is_completion_shaped(&body), "expected non-completion body: {body}");
+        }
+    }
+
+    #[test]
+    fn should_suppress_response_decision() {
+        // Real completion on a custom path → suppressed.
+        assert!(should_suppress_response(
+            "/internal/ai/ask",
+            &json!({"choices":[{"message":{"role":"assistant","content":"hi"}}]})
+        ));
+        // Prompt-echoing wrapper on a custom path → suppressed.
+        assert!(should_suppress_response(
+            "/internal/ai/ask",
+            &json!({"model":"gpt-4o","messages":[{"role":"assistant","content":"hi"}]})
+        ));
+        // MCP JSON-RPC result → never suppressed, even on an LLM-looking path.
+        assert!(!should_suppress_response(
+            "/v1/chat/completions",
+            &json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}})
+        ));
+        // Ordinary business response on a custom path → captured.
+        assert!(!should_suppress_response("/api/orders", &json!({"item":"widget","qty":2})));
     }
 
     #[test]

@@ -48,6 +48,7 @@ and safe. Each row records today's behavior and the reasoning.
 |---|---|
 | `_cerberus_metrics` extraction | Response bodies are now *observed* (`captureResponseBody`), but `_cerberus_metrics` extraction requires *stripping* the injected key before the client sees it — response mutation, which this policy never does (the observe-only guarantee is the point). Mutation interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
 | Retry / backoff on backend failures | Currently at-most-once: failed batches are dropped. |
+| Long-lived streams delay their event | With `captureResponseBody` on, an event ships when its response body *ends* — for a normal completion that's seconds, but a keep-alive / notification `text/event-stream` (an MCP client's standalone GET stream, say) holds its event, `status_code` and `latency_ms` included, until the connection closes; `latency_ms` then reads as the stream's lifetime. Memory stays capped at head+tail per stream and the tap keeps passing chunks through, so nothing is lost or delayed for the client — the event is just late. A bounded cutoff (ship a truncation marker after N bytes / N seconds) is future work; with the knob off, events ship at response headers as before. |
 | Event-loss on upstream reset before response headers | If the upstream connection resets/times out before response headers exist, the response filter never runs and the request's event is lost (pre-existing behavior, unchanged by response capture). Fixing it means pushing at request time with a mutable-event queue. |
 | Pre-flight event-size guard | A request body (up to the 1 MiB buffer) plus response head+tail can push a serialized event past the ingest endpoint's per-event size cap, dropping the whole event server-side. Sizing guidance is documented under "Response body capture"; a gateway-side guard is future work. |
 | Circuit breaker for sustained backend outages | Without one, every flush during an outage posts into a black hole. Currently logs and moves on. |
@@ -291,11 +292,21 @@ if you accept that. Set it to `false` to withhold AI request bodies
 entirely.
 
 The same flag governs the response side: with `captureResponseBody`
-enabled, responses on well-known LLM API paths — and whole-JSON
-response bodies that parse as prompt/completion-shaped on custom paths
-— are withheld when `captureAiContent: false`. Model output carries the
-same PII risk as prompts. For LLM-path requests the response stream is
-not even opened.
+enabled and `captureAiContent: false`, model output is withheld when
+any of three signals fires — the request hit a well-known LLM API path
+(the response stream is never opened); the request body was itself
+withheld as prompt-shaped on a custom path (that decision carries over
+to the response, SSE or JSON); or a whole-JSON response body parses as
+**completion-shaped** — the response shapes providers actually return:
+OpenAI `choices[]` / Responses-API `output[]`, Anthropic
+`type: message` + `content[]` / `stop_reason`, Gemini `candidates[]`,
+embeddings `data[].embedding`, Bedrock Converse `stopReason` / Titan
+`results[].outputText`, Cohere `finish_reason` + `text`/`message` — or
+as prompt-shaped (an echoing wrapper). Model output carries the same PII
+risk as prompts. Like the request-side heuristic this is recall-biased
+and shape-based: an SSE completion on a custom path whose request was
+not prompt-shaped (or was not captured) is the one combination no
+signal covers, since a raw stream is never shape-checked.
 
 ### Response body capture
 
@@ -350,10 +361,13 @@ body ships a marker with byte counts and empty slices.
 
 **PII caveat.** Whole JSON bodies and complete SSE data frames get
 full key-based sanitization. What does *not*: a truncated JSON
-document's head/tail slices, and the one SSE frame split by each
-truncation cut — those are unparseable text, so only `customPiiPatterns`
-value-scope rules run over them (regex-shaped PII such as SSNs, emails
-and account numbers is still scrubbed). And in every case, prose with
+document's head/tail slices, the one SSE frame split by each truncation
+cut, and an SSE event whose JSON payload is spread across several
+`data:` lines (legal per the SSE spec, though no major LLM/MCP provider
+does it — each line is sanitized alone, so a split payload never parses)
+— those are unparseable text, so only `customPiiPatterns` value-scope
+rules run over them (regex-shaped PII such as SSNs, emails and account
+numbers is still scrubbed). And in every case, prose with
 no stable shape (a name in generated text) is beyond what key matching
 or regex can catch — the same limit that applies to captured prompts.
 For zero model-output egress, `captureAiContent: false` withholds
