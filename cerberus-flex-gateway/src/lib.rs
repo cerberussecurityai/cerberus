@@ -502,7 +502,15 @@ async fn capture_response_body(
     {
         return None;
     }
-    // 4. Compressed bodies are never sliced — a byte slice of a
+    // 4. No body (204 / 304 / HEAD — headers arrived with end_of_stream):
+    //    nothing to capture, whatever other headers say. Checked BEFORE
+    //    the encoding gate: a 304 may legitimately carry Content-Encoding
+    //    (RFC 7232 lets it refresh representation metadata) and HEAD
+    //    mirrors GET's headers, and neither must ship a marker.
+    if !headers.contains_body() {
+        return None;
+    }
+    // 5. Compressed bodies are never sliced — a byte slice of a
     //    gzip/br stream is undecodable. Ship the marker; don't open
     //    the stream.
     if let Some(enc) = headers.handler().header("content-encoding") {
@@ -510,10 +518,6 @@ async fn capture_response_body(
         if !enc.is_empty() && enc != "identity" {
             return Some(response_capture::skipped_encoding_marker(&enc));
         }
-    }
-    // 5. No body (204 / 304 / HEAD — headers arrived with end_of_stream).
-    if !headers.contains_body() {
-        return None;
     }
     // 6. Stream pass-through: every chunk flows to the client as it
     //    arrives; we only accumulate the capped head + tail. A stream

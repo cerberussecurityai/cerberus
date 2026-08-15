@@ -17,6 +17,9 @@
 // SENSITIVE_KEYS sanitization handles them — and MCP discovery depends
 // on the captured arguments.
 
+use std::sync::OnceLock;
+
+use regex_lite::Regex;
 use serde_json::Value;
 
 /// True if the request path looks like a well-known LLM API route.
@@ -192,6 +195,65 @@ pub fn should_suppress_body(path: &str, body: &Value) -> bool {
     !is_jsonrpc_shaped(body) && (is_llm_path(path) || is_prompt_shaped(body))
 }
 
+/// How much of a raw response text the signature sniff inspects. Every
+/// provider's discriminating keys (`choices`, `candidates`, `type`,
+/// `object`, `stop_reason`, ...) sit at the top of the document or in
+/// the first SSE frame, so a short window is enough and keeps the sniff
+/// O(1) on large slices.
+const AI_SNIFF_WINDOW: usize = 2048;
+
+/// Signature keys/values that mark raw response text as model output —
+/// the textual twin of `is_completion_shaped` (+ the prompt-echo shapes),
+/// for text that cannot be parsed: a truncated JSON document's head, or an
+/// SSE stream (whole or sliced). Whitespace-tolerant around the colon.
+/// Recall-biased on purpose: a false positive costs one event's response
+/// body, a false negative ships model output.
+static AI_RESPONSE_SIGNATURE: OnceLock<Regex> = OnceLock::new();
+/// A JSON-RPC envelope opener at the start of the text (optionally behind
+/// an SSE `data:` prefix): MCP, never AI content — mirrors the parsed
+/// carve-out in `is_jsonrpc_shaped`.
+static JSONRPC_OPENER: OnceLock<Regex> = OnceLock::new();
+
+fn ai_response_signature() -> &'static Regex {
+    AI_RESPONSE_SIGNATURE.get_or_init(|| {
+        Regex::new(concat!(
+            r#""(?:choices|candidates|stop_reason|stopReason|finish_reason|outputText|"#,
+            r#"embedding|delta|generation_id|messages)"\s*:"#,
+            r#"|"object"\s*:\s*"(?:chat\.completion|text_completion|response|list)"#,
+            r#"|"type"\s*:\s*"(?:message|content_block|response\.)"#,
+        ))
+        .expect("static regex")
+    })
+}
+
+fn jsonrpc_opener() -> &'static Regex {
+    JSONRPC_OPENER
+        .get_or_init(|| Regex::new(r#"^\s*(?:data:\s*)?\{\s*"jsonrpc""#).expect("static regex"))
+}
+
+/// True if raw response text looks like model output. Inspects the first
+/// `AI_SNIFF_WINDOW` bytes; a JSON-RPC opener wins over any signature (MCP
+/// results may legitimately carry a completion inside a tool result).
+pub fn looks_like_ai_response_text(text: &str) -> bool {
+    let end = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .find(|&i| i >= AI_SNIFF_WINDOW)
+        .unwrap_or(text.len());
+    let window = &text[..end];
+    if jsonrpc_opener().is_match(window) {
+        return false;
+    }
+    ai_response_signature().is_match(window)
+}
+
+/// Decision used by the response filter for response text it cannot parse
+/// (SSE, truncated slices): suppress iff the request hit an LLM path or the
+/// text carries a model-output signature.
+pub fn should_suppress_response_text(path: &str, text: &str) -> bool {
+    is_llm_path(path) || looks_like_ai_response_text(text)
+}
+
 /// Decision used by the response filter for a whole JSON response body:
 /// suppress iff the response looks like model output — a completion-shaped
 /// body, or a prompt-shaped one (an echoing wrapper) — on any path, and is
@@ -361,6 +423,67 @@ mod tests {
         for body in bodies {
             assert!(!is_completion_shaped(&body), "expected non-completion body: {body}");
         }
+    }
+
+    #[test]
+    fn ai_response_text_sniff_positive() {
+        let texts = [
+            // Truncated OpenAI completion document (a JSON prefix).
+            r#"{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Once upon"#,
+            // Truncated Anthropic message.
+            r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"Once"#,
+            // Truncated Gemini.
+            r#"{"candidates":[{"content":{"parts":[{"text":"Once"#,
+            // Truncated embeddings response.
+            r#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.0123,-0.0456,"#,
+            // OpenAI SSE stream.
+            "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            // Anthropic SSE stream.
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+            // Responses API SSE stream.
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            // Gemini SSE.
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n",
+            // Pretty-printed wrapper echoing messages.
+            "{\n  \"model\": \"gpt-4o\",\n  \"messages\" : [\n    {\"role\": \"assistant\"",
+        ];
+        for t in texts {
+            assert!(looks_like_ai_response_text(t), "expected AI signature: {t}");
+        }
+    }
+
+    #[test]
+    fn ai_response_text_sniff_negative() {
+        let texts = [
+            // Business JSON prefix.
+            r#"{"orders":[{"id":1,"item":"widget","qty":2},{"id":2,"item":"gadget","#,
+            // Plain SSE with non-AI JSON.
+            "data: {\"tick\":1,\"price\":42.5}\n\ndata: {\"tick\":2,\"price\":42.6}\n\n",
+            // MCP JSON-RPC result — even one that carries a completion
+            // inside a tool result: MCP is never AI content.
+            r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"choices\":[]}"}]}}"#,
+            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"choices\":[\"a\"]}}}\n\n",
+            // Keep-alive comments only.
+            ": keep-alive\n\n",
+        ];
+        for t in texts {
+            assert!(!looks_like_ai_response_text(t), "expected no AI signature: {t}");
+        }
+    }
+
+    #[test]
+    fn ai_response_text_sniff_only_inspects_the_head_window() {
+        // A signature buried past the window is not seen — the sniff is a
+        // bounded prefix check, not a whole-body scan.
+        let mut t = String::from(r#"{"data":""#);
+        t.push_str(&"x".repeat(AI_SNIFF_WINDOW + 10));
+        t.push_str(r#"","choices":[]}"#);
+        assert!(!looks_like_ai_response_text(&t));
+        // Multi-byte chars right at the window edge must not panic.
+        let mut t = "é".repeat(AI_SNIFF_WINDOW);
+        t.push_str(r#""choices":"#);
+        let _ = looks_like_ai_response_text(&t);
     }
 
     #[test]

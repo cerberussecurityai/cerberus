@@ -296,17 +296,25 @@ enabled and `captureAiContent: false`, model output is withheld when
 any of three signals fires — the request hit a well-known LLM API path
 (the response stream is never opened); the request body was itself
 withheld as prompt-shaped on a custom path (that decision carries over
-to the response, SSE or JSON); or a whole-JSON response body parses as
-**completion-shaped** — the response shapes providers actually return:
+to the response, SSE or JSON); or the response body itself looks like
+model output. For a whole JSON body that is a structural check —
+**completion-shaped**, the response shapes providers actually return:
 OpenAI `choices[]` / Responses-API `output[]`, Anthropic
 `type: message` + `content[]` / `stop_reason`, Gemini `candidates[]`,
 embeddings `data[].embedding`, Bedrock Converse `stopReason` / Titan
 `results[].outputText`, Cohere `finish_reason` + `text`/`message` — or
-as prompt-shaped (an echoing wrapper). Model output carries the same PII
-risk as prompts. Like the request-side heuristic this is recall-biased
-and shape-based: an SSE completion on a custom path whose request was
-not prompt-shaped (or was not captured) is the one combination no
-signal covers, since a raw stream is never shape-checked.
+prompt-shaped (an echoing wrapper). For text that cannot be parsed — an
+SSE stream, or the head of an over-budget body — it is a signature
+sniff over the first 2 KiB (`"choices":`, `"candidates":`,
+`"type":"message…"`, `"delta":`, `"object":"chat.completion"`, and so
+on), so a streamed or truncated completion is withheld like a whole one.
+JSON-RPC always wins: an MCP result is never treated as AI content, even
+one carrying model text inside a tool result. Model output carries the
+same PII risk as prompts. Like the request-side heuristic this is
+recall-biased — a false positive costs one event's response body, a
+false negative ships model output — and shape/signature-based, so a
+provider whose output shape matches none of the above on a custom path
+whose request was not shape-detected would not be caught.
 
 ### Response body capture
 

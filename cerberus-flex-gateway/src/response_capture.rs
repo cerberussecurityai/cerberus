@@ -286,11 +286,14 @@ fn sanitize_sse_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&st
 ///   wrapper, on custom paths), else full sanitize — identical treatment
 ///   to the request side.
 /// - `Complete` + parse failure or bare primitive → SSE ships as one
-///   string, sanitized per data frame (`sanitize_sse_text`); JSON kinds
-///   are discarded (mirrors the Django agent).
-/// - `Truncated` → explicit marker with lossy-decoded head/tail slices:
-///   SSE slices sanitized per data frame (partial frames at the cuts
-///   fall back to value rules), JSON-document slices value-scrubbed.
+///   string, sanitized per data frame (`sanitize_sse_text`) — unless
+///   `captureAiContent` is off and the text carries a model-output
+///   signature; JSON kinds are discarded (mirrors the Django agent).
+/// - `Truncated` → the same textual AI-shape check on the head first
+///   (an over-budget completion is still a completion), then an explicit
+///   marker with lossy-decoded head/tail slices: SSE slices sanitized per
+///   data frame (partial frames at the cuts fall back to value rules),
+///   JSON-document slices value-scrubbed.
 pub fn finalize_response_body(
     outcome: AccumulatedBody,
     kind: ResponseContentKind,
@@ -313,12 +316,33 @@ pub fn finalize_response_body(
             }
             _ => match kind {
                 ResponseContentKind::Sse => {
-                    Some(Value::String(sanitize_sse_lossy(&bytes, rules, secret)))
+                    let text = String::from_utf8_lossy(&bytes);
+                    // Unparseable text gets the textual AI-shape check —
+                    // the same suppression the parsed branch applies.
+                    if !capture_ai_content
+                        && crate::ai_content::should_suppress_response_text(endpoint, &text)
+                    {
+                        return None;
+                    }
+                    Some(Value::String(sanitize_sse_text(&text, rules, secret)))
                 }
                 ResponseContentKind::Json => None,
             },
         },
         AccumulatedBody::Truncated { total, head, tail } => {
+            // The pre-stream gate cannot know a body's shape; an over-budget
+            // completion must not slip out just because it was big. Sniff
+            // the head — provider signatures sit at the top of a document
+            // or in the first SSE frame — and withhold like the Complete
+            // arm would. (JSON-RPC openers win: MCP is never AI content.)
+            if !capture_ai_content
+                && crate::ai_content::should_suppress_response_text(
+                    endpoint,
+                    &String::from_utf8_lossy(&head),
+                )
+            {
+                return None;
+            }
             // Byte counts are raw wire counts, taken before sanitization
             // (diagnostics only — the consumer never gates on them).
             let dropped = total - (head.len() + tail.len()) as u64;
@@ -600,6 +624,77 @@ mod tests {
                 "tail": "TAIL!",
             })
         );
+    }
+
+    #[test]
+    fn truncated_completion_withheld_when_ai_capture_off() {
+        // Over-budget model output on a custom path: the head sniff
+        // withholds it exactly like a whole body would be.
+        let head = br#"{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"Once upon a time"#.to_vec();
+        let tail = br#" the end."},"finish_reason":"stop"}],"usage":{"total_tokens":9000}}"#.to_vec();
+        let truncated = |capture_ai| {
+            finalize_response_body(
+                AccumulatedBody::Truncated { total: 60_000, head: head.clone(), tail: tail.clone() },
+                ResponseContentKind::Json,
+                "/internal/assistant/answer",
+                capture_ai,
+                &no_rules(),
+                None,
+            )
+        };
+        assert!(truncated(false).is_none(), "truncated completion must be withheld");
+        assert!(truncated(true).is_some(), "ships when AI capture is on");
+
+        // Over-budget SSE completion: same rule.
+        let sse_head = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_vec();
+        let out = finalize_response_body(
+            AccumulatedBody::Truncated { total: 60_000, head: sse_head, tail: b"data: [DONE]\n\n".to_vec() },
+            ResponseContentKind::Sse,
+            "/internal/assistant/stream",
+            false,
+            &no_rules(),
+            None,
+        );
+        assert!(out.is_none());
+
+        // Over-budget MCP result over SSE: never AI content, ships.
+        let mcp_head = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"".to_vec();
+        let out = finalize_response_body(
+            AccumulatedBody::Truncated { total: 60_000, head: mcp_head, tail: b"\"}]}}\n\n".to_vec() },
+            ResponseContentKind::Sse,
+            "/mcp",
+            false,
+            &no_rules(),
+            None,
+        );
+        assert!(out.is_some());
+        // Over-budget business JSON: no signature, ships as a marker.
+        let out = finalize_response_body(
+            AccumulatedBody::Truncated {
+                total: 60_000,
+                head: br#"{"orders":[{"id":1,"item":"widget"},"#.to_vec(),
+                tail: br#"{"id":999,"item":"gadget"}]}"#.to_vec(),
+            },
+            ResponseContentKind::Json,
+            "/api/orders",
+            false,
+            &no_rules(),
+            None,
+        );
+        assert!(out.is_some());
+    }
+
+    #[test]
+    fn whole_sse_completion_withheld_when_ai_capture_off() {
+        // In-budget SSE model output on a custom path (request not
+        // shape-detected) — the text sniff closes what used to be the one
+        // uncovered combination.
+        let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+        assert!(finalize_complete(sse, ResponseContentKind::Sse, false).is_none());
+        assert!(finalize_complete(sse, ResponseContentKind::Sse, true).is_some());
+        // Non-AI SSE is unaffected by the flag.
+        let ticks = b"data: {\"tick\":1}\n\ndata: {\"tick\":2}\n\n";
+        assert!(finalize_complete(ticks, ResponseContentKind::Sse, false).is_some());
     }
 
     #[test]

@@ -812,6 +812,56 @@ fn response_budgets_clamp_to_schema_maximum() {
 }
 
 #[test]
+fn response_truncated_completion_on_custom_path_withheld_when_ai_capture_off() {
+    // Over budget + captureAiContent: false + custom path + non-prompt-
+    // shaped request: the pre-stream gate can't see the shape, so the
+    // finalizer's head sniff must withhold the truncated model output.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false,"responseHeadBytes":256,"responseTailBytes":128}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/assistant/answer")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"question":"tell me a long story","ticket":"T-2"}"#);
+    let long = "Once upon a time ".repeat(200);
+    let body = format!(
+        r#"{{"id":"chatcmpl-2","object":"chat.completion","model":"gpt-4o","choices":[{{"index":0,"message":{{"role":"assistant","content":"{long}"}},"finish_reason":"stop"}}]}}"#
+    );
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(body);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "truncated completion must be withheld: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
+fn response_bodyless_with_content_encoding_ships_nothing() {
+    // A 304 (or HEAD) may carry Content-Encoding with no body; the
+    // body-presence gate must win over the compression marker.
+    let upstream = UnitHttpResponse::new(304)
+        .with_header("content-type", "application/json")
+        .with_header("content-encoding", "gzip");
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "body-less response must not ship an encoding marker: {e}"
+    );
+    assert_eq!(e["status_code"], 304);
+}
+
+#[test]
 fn response_bodyless_204_no_response_body() {
     let upstream = UnitHttpResponse::new(204).with_header("content-type", "application/json");
     let (events, client) =
