@@ -800,16 +800,6 @@ async fn configure(
         );
     }
 
-    // Confirmable from pod logs, mirroring the captureAiContent log —
-    // response capture changing event content/size should be visible at
-    // startup.
-    if config.capture_response_body {
-        logger::info!(
-            "cerberus-flex-gateway: captureResponseBody enabled (head {} bytes, tail {} bytes)",
-            config.response_head_bytes,
-            config.response_tail_bytes
-        );
-    }
 
     let mut config = config;
     config.token = trimmed_token;
@@ -823,6 +813,17 @@ async fn configure(
     }
 
     let ctx = PolicyContext::new(config, secret_key, sampler_seed_from_clock())?;
+    // Confirmable from pod logs, mirroring the captureAiContent log —
+    // response capture changing event content/size should be visible at
+    // startup. Logged AFTER PolicyContext::new so the budgets shown are
+    // the clamped values actually enforced, not the raw config.
+    if ctx.config.capture_response_body {
+        logger::info!(
+            "cerberus-flex-gateway: captureResponseBody enabled (head {} bytes, tail {} bytes)",
+            ctx.config.response_head_bytes,
+            ctx.config.response_tail_bytes
+        );
+    }
     if ctx.config.sample_rate < 1.0 {
         // Confirmable from pod logs — sampling silently suppressing
         // events is otherwise indistinguishable from a broken pipeline.

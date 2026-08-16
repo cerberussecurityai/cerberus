@@ -129,20 +129,21 @@ pub fn is_prompt_shaped(body: &Value) -> bool {
 /// so `is_prompt_shaped` cannot recognise them; this is the response-side
 /// twin, biased toward recall the same way.
 pub fn is_completion_shaped(body: &Value) -> bool {
-    let Value::Object(o) = body else {
-        return false;
+    let o = match body {
+        Value::Object(o) => o,
+        // A bare array of completions (HF Inference API returns
+        // [{"generated_text": ...}]; some wrappers batch results): judge by
+        // the first element.
+        Value::Array(arr) => {
+            return arr
+                .first()
+                .is_some_and(|first| first.is_object() && is_completion_shaped(first));
+        }
+        _ => return false,
     };
     // OpenAI chat/completions: choices[] whose elements carry a message /
     // delta / text / finish_reason.
-    if o.get("choices").and_then(Value::as_array).is_some_and(|cs| {
-        cs.iter().any(|c| {
-            c.as_object().is_some_and(|c| {
-                ["message", "delta", "text", "finish_reason"]
-                    .iter()
-                    .any(|k| c.contains_key(*k))
-            })
-        })
-    }) {
+    if array_elem_has_key(o, "choices", &["message", "delta", "text", "finish_reason"]) {
         return true;
     }
     // OpenAI Responses API: {"object":"response","output":[...]} — or the
@@ -161,17 +162,11 @@ pub fn is_completion_shaped(body: &Value) -> bool {
         return true;
     }
     // Gemini: candidates[] whose elements carry content.
-    if o.get("candidates").and_then(Value::as_array).is_some_and(|cs| {
-        cs.iter()
-            .any(|c| c.as_object().is_some_and(|c| c.contains_key("content")))
-    }) {
+    if array_elem_has_key(o, "candidates", &["content"]) {
         return true;
     }
     // Embeddings: data[] whose elements carry an embedding vector.
-    if o.get("data").and_then(Value::as_array).is_some_and(|ds| {
-        ds.iter()
-            .any(|d| d.as_object().is_some_and(|d| d.contains_key("embedding")))
-    }) {
+    if array_elem_has_key(o, "data", &["embedding"]) {
         return true;
     }
     // Bedrock Converse: {"output":{"message":...},"stopReason":...}.
@@ -179,14 +174,27 @@ pub fn is_completion_shaped(body: &Value) -> bool {
         return true;
     }
     // Bedrock Titan: results[] whose elements carry outputText.
-    if o.get("results").and_then(Value::as_array).is_some_and(|rs| {
-        rs.iter()
-            .any(|r| r.as_object().is_some_and(|r| r.contains_key("outputText")))
-    }) {
+    if array_elem_has_key(o, "results", &["outputText"]) {
+        return true;
+    }
+    // Hugging Face text-generation: {"generated_text": ...}.
+    if o.contains_key("generated_text") {
         return true;
     }
     // Cohere chat/generate: a finish_reason beside a message or text.
     o.contains_key("finish_reason") && (o.contains_key("message") || o.contains_key("text"))
+}
+
+/// True if `o[field]` is an array with at least one object element carrying
+/// any of `keys` — the "list of items with a discriminating key" test every
+/// provider response shape reduces to.
+fn array_elem_has_key(o: &serde_json::Map<String, Value>, field: &str, keys: &[&str]) -> bool {
+    o.get(field).and_then(Value::as_array).is_some_and(|items| {
+        items.iter().any(|item| {
+            item.as_object()
+                .is_some_and(|item| keys.iter().any(|k| item.contains_key(*k)))
+        })
+    })
 }
 
 /// Decision used by the request filter: suppress the body iff the request
@@ -217,8 +225,13 @@ static JSONRPC_OPENER: OnceLock<Regex> = OnceLock::new();
 fn ai_response_signature() -> &'static Regex {
     AI_RESPONSE_SIGNATURE.get_or_init(|| {
         Regex::new(concat!(
-            r#""(?:choices|candidates|stop_reason|stopReason|finish_reason|outputText|"#,
-            r#"embedding|delta|generation_id|messages)"\s*:"#,
+            // Head-side discriminators (top of a document / first frame)...
+            r#""(?:choices|candidates|stop_reason|stopReason|finish_reason|finishReason|"#,
+            r#"outputText|embedding|delta|generation_id|generated_text|messages|"#,
+            // ...and tail-side ones (terminal frames / usage blocks), so a
+            // slice from either end of an over-budget body is recognisable.
+            r#"completionReason|usageMetadata|prompt_tokens|completion_tokens|"#,
+            r#"input_tokens|output_tokens)"\s*:"#,
             r#"|"object"\s*:\s*"(?:chat\.completion|text_completion|response|list)"#,
             r#"|"type"\s*:\s*"(?:message|content_block|response\.)"#,
         ))
@@ -227,31 +240,70 @@ fn ai_response_signature() -> &'static Regex {
 }
 
 fn jsonrpc_opener() -> &'static Regex {
-    JSONRPC_OPENER
-        .get_or_init(|| Regex::new(r#"^\s*(?:data:\s*)?\{\s*"jsonrpc""#).expect("static regex"))
+    // Multiline: the envelope may sit on any line — after `event:`/`id:`
+    // field lines in SSE framing, or on a later frame in a tail slice.
+    JSONRPC_OPENER.get_or_init(|| {
+        Regex::new(r#"(?m)^\s*(?:data:\s*)?\{\s*"jsonrpc""#).expect("static regex")
+    })
 }
 
-/// True if raw response text looks like model output. Inspects the first
-/// `AI_SNIFF_WINDOW` bytes; a JSON-RPC opener wins over any signature (MCP
-/// results may legitimately carry a completion inside a tool result).
-pub fn looks_like_ai_response_text(text: &str) -> bool {
+/// First `AI_SNIFF_WINDOW` bytes of `text`, cut on a char boundary.
+fn head_window(text: &str) -> &str {
     let end = text
         .char_indices()
         .map(|(i, _)| i)
         .find(|&i| i >= AI_SNIFF_WINDOW)
         .unwrap_or(text.len());
-    let window = &text[..end];
-    if jsonrpc_opener().is_match(window) {
-        return false;
+    &text[..end]
+}
+
+/// Last `AI_SNIFF_WINDOW` bytes of `text`, cut on a char boundary.
+fn tail_window(text: &str) -> &str {
+    if text.len() <= AI_SNIFF_WINDOW {
+        return text;
     }
-    ai_response_signature().is_match(window)
+    let mut start = text.len() - AI_SNIFF_WINDOW;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+fn is_jsonrpc_text(window: &str) -> bool {
+    jsonrpc_opener().is_match(window)
+}
+
+/// True if raw response text looks like model output. Inspects the head
+/// window; a JSON-RPC opener anywhere in it wins over any signature (MCP
+/// results may legitimately carry a completion inside a tool result).
+pub fn looks_like_ai_response_text(text: &str) -> bool {
+    let window = head_window(text);
+    !is_jsonrpc_text(window) && ai_response_signature().is_match(window)
 }
 
 /// Decision used by the response filter for response text it cannot parse
-/// (SSE, truncated slices): suppress iff the request hit an LLM path or the
+/// (a whole SSE stream): suppress iff the request hit an LLM path or the
 /// text carries a model-output signature.
 pub fn should_suppress_response_text(path: &str, text: &str) -> bool {
     is_llm_path(path) || looks_like_ai_response_text(text)
+}
+
+/// Same decision for an over-budget body, judged from BOTH slices: the head
+/// (first window — document top / first frame) and the tail (last window —
+/// terminal frames, finish reasons, usage blocks). Either slice may be
+/// empty or too small to be conclusive on its own (`responseHeadBytes: 0`
+/// is a documented telemetry mode), so a signature in either withholds; a
+/// JSON-RPC opener in either marks the whole stream MCP and wins.
+pub fn should_suppress_truncated_response(path: &str, head: &str, tail: &str) -> bool {
+    if is_llm_path(path) {
+        return true;
+    }
+    let (head_w, tail_w) = (head_window(head), tail_window(tail));
+    if is_jsonrpc_text(head_w) || is_jsonrpc_text(tail_w) {
+        return false;
+    }
+    let sig = ai_response_signature();
+    sig.is_match(head_w) || sig.is_match(tail_w)
 }
 
 /// Decision used by the response filter for a whole JSON response body:
@@ -400,6 +452,11 @@ mod tests {
             json!({"results":[{"outputText":"hi","completionReason":"FINISH"}]}),
             // Cohere.
             json!({"text":"hi","finish_reason":"COMPLETE","generation_id":"g"}),
+            // HF text-generation, and its bare-array Inference API form.
+            json!({"generated_text":"hi"}),
+            json!([{"generated_text":"hi"}]),
+            // A bare array of completions (batching wrapper).
+            json!([{"choices":[{"message":{"role":"assistant","content":"hi"}}]}]),
         ];
         for body in bodies {
             assert!(is_completion_shaped(&body), "expected completion-shaped: {body}");
@@ -419,6 +476,10 @@ mod tests {
             json!({"message":"created","id":7}),
             // MCP result envelope: never AI content.
             json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}),
+            // Arrays of business objects / scalars.
+            json!([{"id":1,"name":"widget"},{"id":2,"name":"gadget"}]),
+            json!(["a","b"]),
+            json!([]),
         ];
         for body in bodies {
             assert!(!is_completion_shaped(&body), "expected non-completion body: {body}");
@@ -447,6 +508,8 @@ mod tests {
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}\n\n",
             // Pretty-printed wrapper echoing messages.
             "{\n  \"model\": \"gpt-4o\",\n  \"messages\" : [\n    {\"role\": \"assistant\"",
+            // HF text-generation.
+            r#"[{"generated_text":"Once upon"#,
         ];
         for t in texts {
             assert!(looks_like_ai_response_text(t), "expected AI signature: {t}");
@@ -484,6 +547,60 @@ mod tests {
         let mut t = "é".repeat(AI_SNIFF_WINDOW);
         t.push_str(r#""choices":"#);
         let _ = looks_like_ai_response_text(&t);
+    }
+
+    #[test]
+    fn jsonrpc_wins_behind_sse_field_lines_and_on_later_frames() {
+        // MCP over streamable-http frames as `event: message` + `data:` —
+        // the opener must be recognised behind field lines, and an MCP
+        // result carrying a completion inside a tool result must still be
+        // MCP, never AI.
+        let framed = "event: message\nid: 7\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"structuredContent\":{\"messages\":[{\"role\":\"assistant\"}]}}}\n\n";
+        assert!(!looks_like_ai_response_text(framed));
+        // A tail slice that starts mid-frame but contains a later JSON-RPC
+        // frame is MCP too.
+        let tail = "ent\":\"...\"}]}}\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"finish_reason\":\"stop\"}}\n\n";
+        assert!(!should_suppress_truncated_response("/mcp", "", tail));
+    }
+
+    #[test]
+    fn truncated_decision_uses_either_slice() {
+        // responseHeadBytes: 0 (telemetry mode) — head empty, the tail is
+        // the terminal of an OpenAI completion.
+        let tail = r#"…and they lived happily."},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":900,"total_tokens":912}}"#;
+        assert!(should_suppress_truncated_response("/internal/assistant/answer", "", tail));
+        // Gemini terminal.
+        let tail = r#"…"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":9}}"#;
+        assert!(should_suppress_truncated_response("/internal/assistant/answer", "", tail));
+        // Head-only signal still works when the tail is empty
+        // (responseTailBytes: 0).
+        assert!(should_suppress_truncated_response(
+            "/internal/assistant/answer",
+            r#"{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"#,
+            ""
+        ));
+        // Business JSON on both ends: captured.
+        assert!(!should_suppress_truncated_response(
+            "/api/orders",
+            r#"{"orders":[{"id":1,"item":"widget"},"#,
+            r#"{"id":999,"item":"gadget"}],"total":999}"#
+        ));
+        // A JSON-RPC head wins even when the tail carries a completion
+        // signature (a tool that returns model text).
+        assert!(!should_suppress_truncated_response(
+            "/mcp",
+            r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"choices\":[{\"message\":{"#,
+            r#""},"finish_reason":"stop"}]}"}]}}"#
+        ));
+        // The tail window is the LAST 2 KiB: a signature at the very end of
+        // a long tail is seen.
+        let mut long_tail = "x".repeat(AI_SNIFF_WINDOW * 3);
+        long_tail.push_str(r#""},"finish_reason":"stop"}]}"#);
+        assert!(should_suppress_truncated_response("/internal/assistant/answer", "", &long_tail));
+        // Multi-byte chars at the tail-window boundary must not panic.
+        let mut long_tail = "é".repeat(AI_SNIFF_WINDOW * 2);
+        long_tail.push_str(r#""stop_reason":"end_turn"}"#);
+        assert!(should_suppress_truncated_response("/x", "", &long_tail));
     }
 
     #[test]

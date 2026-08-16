@@ -80,7 +80,7 @@ and safe. Each row records today's behavior and the reasoning.
 | `responseTailBytes` | | `16384` | Rolling last N bytes retained (max 49152) — stream terminators (usage, finish reasons) live in the tail. Same sizing guidance. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
 | `flushIntervalMs` | | `2000` | Flush cadence. Min 100ms (prevents tight-loop misconfig). |
-| `queueCapacity` | | `10000` | Per-worker queue. Total memory ~ `workers × queueCapacity × ~5KB`. |
+| `queueCapacity` | | `10000` | Per-worker queue. Total memory ~ `workers × queueCapacity × ~5KB` with `captureResponseBody` off; with it on, add up to `responseHeadBytes + responseTailBytes` (~40 KB at defaults) per event that carried a response body — size for the worst case, since the queue only fills during a backend outage. |
 | `logLevel` | | `info` | One of: `debug`, `info`, `warn`, `error`. |
 
 ### Header semantics

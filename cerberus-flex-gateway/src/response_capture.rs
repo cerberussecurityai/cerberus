@@ -226,10 +226,6 @@ fn scrub_text(text: String, rules: &CompiledPiiRules, secret: Option<&str>) -> S
     }
 }
 
-fn scrub_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&str>) -> String {
-    scrub_text(String::from_utf8_lossy(bytes).into_owned(), rules, secret)
-}
-
 /// Sanitize SSE text line by line, preserving framing byte-for-byte
 /// where it matters (line terminators, field prefixes, blank-line event
 /// boundaries) so downstream SSE parsing is unaffected.
@@ -274,9 +270,6 @@ fn sanitize_sse_line(line: &str, rules: &CompiledPiiRules, secret: Option<&str>)
     scrub_text(line.to_string(), rules, secret)
 }
 
-fn sanitize_sse_lossy(bytes: &[u8], rules: &CompiledPiiRules, secret: Option<&str>) -> String {
-    sanitize_sse_text(&String::from_utf8_lossy(bytes), rules, secret)
-}
 
 /// Turn an accumulated body into the event's `response_body` value.
 ///
@@ -330,32 +323,37 @@ pub fn finalize_response_body(
             },
         },
         AccumulatedBody::Truncated { total, head, tail } => {
+            // Byte counts are raw wire counts, taken before any decoding or
+            // sanitization (diagnostics only — the consumer never gates on
+            // them).
+            let dropped = total - (head.len() + tail.len()) as u64;
+            // Decode each slice once; the AI check and the sanitizer share it.
+            let head_text = String::from_utf8_lossy(&head);
+            let tail_text = String::from_utf8_lossy(&tail);
             // The pre-stream gate cannot know a body's shape; an over-budget
-            // completion must not slip out just because it was big. Sniff
-            // the head — provider signatures sit at the top of a document
-            // or in the first SSE frame — and withhold like the Complete
-            // arm would. (JSON-RPC openers win: MCP is never AI content.)
+            // completion must not slip out just because it was big. Judge
+            // from both slices — provider signatures sit at the top of a
+            // document / first frame AND in the terminal frames / usage
+            // block, and either slice may be empty by configuration — and
+            // withhold like the Complete arm would. (JSON-RPC openers win:
+            // MCP is never AI content.)
             if !capture_ai_content
-                && crate::ai_content::should_suppress_response_text(
-                    endpoint,
-                    &String::from_utf8_lossy(&head),
+                && crate::ai_content::should_suppress_truncated_response(
+                    endpoint, &head_text, &tail_text,
                 )
             {
                 return None;
             }
-            // Byte counts are raw wire counts, taken before sanitization
-            // (diagnostics only — the consumer never gates on them).
-            let dropped = total - (head.len() + tail.len()) as u64;
-            let slice = |bytes: &[u8]| match kind {
-                ResponseContentKind::Sse => sanitize_sse_lossy(bytes, rules, secret),
-                ResponseContentKind::Json => scrub_lossy(bytes, rules, secret),
+            let slice = |text: &str| match kind {
+                ResponseContentKind::Sse => sanitize_sse_text(text, rules, secret),
+                ResponseContentKind::Json => scrub_text(text.to_string(), rules, secret),
             };
             let mut m = serde_json::Map::with_capacity(5);
             m.insert(KEY_TRUNCATED.to_string(), Value::Bool(true));
             m.insert(KEY_BYTES_TOTAL.to_string(), Value::from(total));
             m.insert(KEY_BYTES_DROPPED.to_string(), Value::from(dropped));
-            m.insert(KEY_HEAD.to_string(), Value::String(slice(&head)));
-            m.insert(KEY_TAIL.to_string(), Value::String(slice(&tail)));
+            m.insert(KEY_HEAD.to_string(), Value::String(slice(&head_text)));
+            m.insert(KEY_TAIL.to_string(), Value::String(slice(&tail_text)));
             Some(Value::Object(m))
         }
     }
@@ -695,6 +693,63 @@ mod tests {
         // Non-AI SSE is unaffected by the flag.
         let ticks = b"data: {\"tick\":1}\n\ndata: {\"tick\":2}\n\n";
         assert!(finalize_complete(ticks, ResponseContentKind::Sse, false).is_some());
+    }
+
+    /// Cross-arm parity: the same payload must get the same
+    /// captureAiContent decision whether it arrives whole, over budget, or
+    /// as SSE — the structural check (parsed JSON) and the textual sniff
+    /// (unparseable slices/streams) are different mechanisms and this pins
+    /// them to one answer.
+    #[test]
+    fn ai_suppression_is_consistent_across_arms() {
+        let completions: [&str; 5] = [
+            r#"{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Once upon a time there was a very long story indeed."},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":12}}"#,
+            r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4","content":[{"type":"text","text":"Once upon a time there was a very long story indeed."}],"stop_reason":"end_turn","usage":{"input_tokens":9,"output_tokens":12}}"#,
+            r#"{"candidates":[{"content":{"parts":[{"text":"Once upon a time there was a very long story indeed."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":9}}"#,
+            r#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":3}}"#,
+            r#"[{"generated_text":"Once upon a time there was a very long story indeed."}]"#,
+        ];
+        let non_ai: [&str; 3] = [
+            r#"{"orders":[{"id":1,"item":"widget","qty":2},{"id":2,"item":"gadget","qty":1}],"total":2}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"choices\":[{\"message\":{\"content\":\"model text inside a tool result\"}}]}"}]}}"#,
+            r#"[{"id":1,"name":"widget"},{"id":2,"name":"gadget"}]"#,
+        ];
+        let arms = |body: &str| -> [bool; 4] {
+            let bytes = body.as_bytes().to_vec();
+            let mid = bytes.len() / 2;
+            let sse = format!("event: message\ndata: {body}\n\n").into_bytes();
+            let sse_mid = sse.len() / 2;
+            let run = |outcome, kind| {
+                finalize_response_body(outcome, kind, "/internal/api", false, &no_rules(), None)
+                    .is_none()
+            };
+            [
+                run(AccumulatedBody::Complete(bytes.clone()), ResponseContentKind::Json),
+                run(
+                    AccumulatedBody::Truncated {
+                        total: bytes.len() as u64 + 1,
+                        head: bytes[..mid].to_vec(),
+                        tail: bytes[mid..].to_vec(),
+                    },
+                    ResponseContentKind::Json,
+                ),
+                run(AccumulatedBody::Complete(sse.clone()), ResponseContentKind::Sse),
+                run(
+                    AccumulatedBody::Truncated {
+                        total: sse.len() as u64 + 1,
+                        head: sse[..sse_mid].to_vec(),
+                        tail: sse[sse_mid..].to_vec(),
+                    },
+                    ResponseContentKind::Sse,
+                ),
+            ]
+        };
+        for body in completions {
+            assert_eq!(arms(body), [true; 4], "all arms must withhold: {body}");
+        }
+        for body in non_ai {
+            assert_eq!(arms(body), [false; 4], "no arm may withhold: {body}");
+        }
     }
 
     #[test]
