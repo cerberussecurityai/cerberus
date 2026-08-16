@@ -411,6 +411,13 @@ side lets the backend correlate a session's events (the echoed request
 header is already captured by normal request-header handling). Set the
 list to `[]` to disable.
 
+Two scoping notes: the allowlist is matched on every response, not only
+on traffic detected as MCP — a non-MCP route that happens to set an
+allowlisted header ships it too. And it reads the response *headers*
+phase only; a value sent as an HTTP trailer on a streamed response is
+not observed (MCP assigns `mcp-session-id` in the initial headers, so
+this does not affect it).
+
 ### TLS to the Cerberus backend
 
 Outbound POSTs to `ingestService` use the gateway's default outbound-policy

@@ -620,7 +620,12 @@ fn extract_response_headers(
     )
 }
 
-/// Shared header collection + sanitization.
+/// Shared header collection + sanitization — one implementation for both
+/// directions (request headers via `captureHeaders`, response headers via
+/// `captureResponseHeaders`); only the allowlist differs. Nothing below is
+/// direction-specific: the Authorization branch fires for a response
+/// `Authorization` header too, should one ever be allowlisted, and gets
+/// the same HMAC/redact treatment.
 ///
 /// Rules:
 ///   * Allowlist (if given): non-listed headers are omitted entirely —
