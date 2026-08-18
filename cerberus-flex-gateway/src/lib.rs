@@ -19,6 +19,8 @@
 //
 //   Response → response_filter:
 //     - record status_code + latency_ms (wall-clock since request)
+//     - capture captureResponseHeaders-allowlisted response headers
+//       (sanitized like request headers; opt-in, default mcp-session-id)
 //     - if captureResponseBody && content-type is JSON or SSE: observe
 //       the body stream (pass-through, never buffered or delayed) into
 //       a head+tail accumulator; in-budget bodies ship whole (JSON
@@ -118,6 +120,9 @@ struct PolicyContext {
     path_filter: PathFilter,
     /// Lowercased captureHeaders allowlist. None = capture all headers.
     header_allowlist: Option<std::collections::HashSet<String>>,
+    /// Lowercased captureResponseHeaders allowlist. Pure opt-in, unlike
+    /// the request-side allowlist: empty = capture no response headers.
+    response_header_allowlist: std::collections::HashSet<String>,
     /// Compiled customSensitiveKeys + customPiiPatterns. Empty when the
     /// operator configured neither — sanitization then follows the
     /// fixed built-in contract exactly.
@@ -190,6 +195,15 @@ impl PolicyContext {
                     .collect::<std::collections::HashSet<_>>()
             })
             .filter(|set| !set.is_empty());
+        // Response-header allowlist: trim + lowercase like the request
+        // side, but empty means "capture none" (opt-in semantics), so a
+        // blank-entries list needs no fail-open warning.
+        let response_header_allowlist = config
+            .capture_response_headers
+            .iter()
+            .map(|n| n.trim().to_lowercase())
+            .filter(|n| !n.is_empty())
+            .collect::<std::collections::HashSet<_>>();
         // A configured-but-all-blank allowlist fails open to capture-all
         // (more data leaves the gateway than the operator intended) —
         // surface that in policy logs rather than collapsing silently.
@@ -235,6 +249,7 @@ impl PolicyContext {
             secret_key,
             path_filter,
             header_allowlist,
+            response_header_allowlist,
             pii_rules,
             queue,
             sampler,
@@ -431,6 +446,7 @@ async fn request_filter(
         user_id,
         status_code: None,
         latency_ms: None,
+        response_headers: None,
         response_body: None,
     };
 
@@ -461,6 +477,7 @@ async fn response_filter(state: ResponseState, data: RequestData<RequestSlot>, c
     // status_code() returns 0 for an absent/unparseable :status — omit
     // the field rather than shipping a bogus 0.
     event.status_code = (status != 0).then_some(status);
+    event.response_headers = extract_response_headers(&headers, ctx);
     event.response_body =
         capture_response_body(headers, &event.endpoint, ai_content_withheld, ctx).await;
     // Measured after body capture completes so it covers the full
@@ -577,13 +594,44 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
     }
 }
 
-/// Extract and sanitize request headers.
+/// Extract and sanitize request headers (captureHeaders allowlist;
+/// None = capture all).
+fn extract_headers(
+    pairs: Vec<(String, String)>,
+    ctx: &PolicyContext,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    collect_headers(pairs, ctx.header_allowlist.as_ref(), ctx)
+}
+
+/// Extract and sanitize response headers per the captureResponseHeaders
+/// allowlist. Pure opt-in: an empty allowlist captures nothing (the
+/// header iteration is skipped entirely).
+fn extract_response_headers(
+    headers: &ResponseHeadersState,
+    ctx: &PolicyContext,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    if ctx.response_header_allowlist.is_empty() {
+        return None;
+    }
+    collect_headers(
+        headers.handler().headers(),
+        Some(&ctx.response_header_allowlist),
+        ctx,
+    )
+}
+
+/// Shared header collection + sanitization — one implementation for both
+/// directions (request headers via `captureHeaders`, response headers via
+/// `captureResponseHeaders`); only the allowlist differs. Nothing below is
+/// direction-specific: the Authorization branch fires for a response
+/// `Authorization` header too, should one ever be allowlisted, and gets
+/// the same HMAC/redact treatment.
 ///
 /// Rules:
-///   * captureHeaders allowlist (if configured): non-listed headers are
-///     omitted entirely — absent, not redacted. Matched on the
-///     lowercased name. The gate runs before sensitivity handling, so
-///     the allowlist controls presence and sanitization controls value.
+///   * Allowlist (if given): non-listed headers are omitted entirely —
+///     absent, not redacted. Matched on the lowercased name. The gate
+///     runs before sensitivity handling, so the allowlist controls
+///     presence and sanitization controls value.
 ///   * Iterate (name, value) pairs as Envoy presents them.
 ///   * Lowercase the name once for allowlist + sensitivity matching.
 ///   * Authorization → HMAC-SHA256(secret, value) if secret is configured;
@@ -595,8 +643,9 @@ async fn flush_loop(timer: &Timer, client: &HttpClient, ctx: &PolicyContext) {
 /// Set-Cookie): Envoy may surface these as multiple (name, value) tuples
 /// with the same name. We collapse with `, ` separator after sanitization.
 /// Documented in README "Header semantics".
-fn extract_headers(
+fn collect_headers(
     pairs: Vec<(String, String)>,
+    allowlist: Option<&std::collections::HashSet<String>>,
     ctx: &PolicyContext,
 ) -> Option<std::collections::BTreeMap<String, String>> {
     if pairs.is_empty() {
@@ -618,7 +667,7 @@ fn extract_headers(
 
         // Allowlist gate — before the sensitivity branch, so non-listed
         // sensitive headers are absent rather than redacted-but-present.
-        if let Some(allow) = &ctx.header_allowlist {
+        if let Some(allow) = allowlist {
             if !allow.contains(&name_lower) {
                 continue;
             }

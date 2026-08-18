@@ -97,6 +97,15 @@ pub struct Config {
     #[serde(default)]
     pub capture_response_body: bool,
 
+    /// Allowlist of RESPONSE header names to capture (case-insensitive)
+    /// into the event's `response_headers` map. Unlike captureHeaders,
+    /// this is a pure opt-in: empty = capture no response headers.
+    /// Default: ["mcp-session-id"] — the session correlator stateful
+    /// APIs (e.g. MCP) assign in a response and clients echo on
+    /// subsequent requests. Sanitization applies as for request headers.
+    #[serde(default = "default_capture_response_headers")]
+    pub capture_response_headers: Vec<String>,
+
     /// First N bytes of a response body retained. Default: 24576.
     #[serde(default = "default_response_head_bytes")]
     pub response_head_bytes: u32,
@@ -140,6 +149,9 @@ fn default_capture_request_body() -> bool {
 }
 fn default_capture_ai_content() -> bool {
     true
+}
+fn default_capture_response_headers() -> Vec<String> {
+    vec!["mcp-session-id".to_string()]
 }
 fn default_response_head_bytes() -> u32 {
     24_576

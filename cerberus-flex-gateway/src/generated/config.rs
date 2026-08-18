@@ -30,6 +30,8 @@ pub struct Config {
     pub capture_request_body: Option<bool>,
     #[serde(alias = "captureResponseBody")]
     pub capture_response_body: Option<bool>,
+    #[serde(alias = "captureResponseHeaders")]
+    pub capture_response_headers: Option<Vec<String>>,
     #[serde(alias = "clientIpHeader")]
     pub client_ip_header: Option<String>,
     #[serde(alias = "customPiiPatterns")]

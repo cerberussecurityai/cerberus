@@ -118,6 +118,13 @@ spec:
       type: boolean
       default: false
       description: "Observe application/json and text/event-stream response bodies. READ-ONLY TAP: the response delivered to the client is never modified, buffered, or delayed — streamed chunks pass through as they arrive, and the policy only retains a capped copy (responseHeadBytes + responseTailBytes) as it streams. Bodies within the head+tail budget ship whole (JSON sanitized exactly like request bodies; SSE streams as one text blob in which every complete JSON data frame is key-sanitized like a JSON body and the remaining lines are scrubbed by customPiiPatterns value rules); larger bodies ship as head/tail slices with explicit truncation markers (body_truncated, body_bytes_total, body_bytes_dropped) so truncation is never silent; compressed (Content-Encoding other than identity) bodies ship a body_skipped_encoding marker and are never sliced. Detected LLM/AI response bodies respect captureAiContent. Off by default; when off, the response stream is never opened and per-request cost is unchanged. status_code and latency_ms ship on every event regardless of this setting."
+    captureResponseHeaders:
+      type: array
+      items:
+        type: string
+      default:
+        - mcp-session-id
+      description: "Allowlist of RESPONSE header names to capture (case-insensitive) into the event's response_headers map — a read-only header tap, independent of captureResponseBody. Unlike captureHeaders this is a pure opt-in: empty = no response headers captured. Default [mcp-session-id]: the opaque session correlator that stateful APIs such as MCP assign in a response header and clients echo on subsequent requests — capturing it lets the backend correlate a session's events. Sanitization applies exactly as for request headers (sensitive headers redact even when listed). Set to [] to disable."
     responseHeadBytes:
       type: integer
       default: 24576
