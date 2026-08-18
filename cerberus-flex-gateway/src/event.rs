@@ -50,4 +50,22 @@ pub struct CerberusEvent {
     /// Application-supplied user identity (read from userIdHeader).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+
+    /// Upstream HTTP status code. None when the response's `:status`
+    /// pseudo-header was absent or unparseable (never 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u32>,
+
+    /// Wall-clock milliseconds between request arrival and response
+    /// headers + captured body completion. Saturates to 0 on clock skew.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+
+    /// Captured response body (captureResponseBody): a sanitized JSON
+    /// value, a frame-sanitized SSE string, or one of the explicit
+    /// marker objects (`body_skipped_encoding` / `body_truncated` —
+    /// see response_capture.rs). Absent ⇒ omitted ⇒ the pre-0.4.0
+    /// event shape is unchanged on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<serde_json::Value>,
 }

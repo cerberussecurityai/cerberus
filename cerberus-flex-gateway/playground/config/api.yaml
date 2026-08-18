@@ -17,7 +17,7 @@ spec:
         # `docker compose up` loads without the cargo toolchain.
         # (`make run` re-patches this from $(POLICY_REF_NAME) on rebuild —
         # commit the new name here when the policy version bumps.)
-        name: cerberus-flex-gateway-flex-v0-3
+        name: cerberus-flex-gateway-flex-v0-4
         namespace: default
       config:
         ingestService: http://echo:8080

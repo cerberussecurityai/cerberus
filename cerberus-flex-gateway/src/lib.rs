@@ -18,7 +18,15 @@
 //     - stash partial Event in RequestData; pass through
 //
 //   Response → response_filter:
-//     - finalize Event (timestamp set in request_filter)
+//     - record status_code + latency_ms (wall-clock since request)
+//     - if captureResponseBody && content-type is JSON or SSE: observe
+//       the body stream (pass-through, never buffered or delayed) into
+//       a head+tail accumulator; in-budget bodies ship whole (JSON
+//       sanitized / SSE sanitized per data frame), oversized bodies ship
+//       head/tail slices with explicit truncation markers, compressed
+//       bodies ship a body_skipped_encoding marker (see
+//       response_capture.rs). LLM/AI response bodies respect
+//       captureAiContent exactly like request prompts.
 //     - push onto bounded queue (drop-on-full counter)
 //
 //   on_tick (every flushIntervalMs):
@@ -43,6 +51,7 @@ mod hash;
 mod path_filter;
 mod pii_rules;
 mod queue;
+mod response_capture;
 mod sampler;
 mod sanitize;
 mod secret;
@@ -93,6 +102,11 @@ use crate::sanitize::{is_sensitive_header_lower, sanitize_value_with, REDACTED};
 
 const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
 
+/// Upper bound for responseHeadBytes / responseTailBytes — mirrors the
+/// `maximum` declared in definition/gcl.yaml; enforced at runtime because
+/// only Connected mode validates the schema.
+const MAX_RESPONSE_SLICE_BYTES: u32 = 49_152;
+
 /// Per-policy state shared across request, response, and flush handlers.
 /// All members are immutable except the queue and the sampler's PRNG
 /// state (interior mutability via RefCell, safe because proxy-wasm
@@ -138,6 +152,24 @@ impl PolicyContext {
         // sees what the sampler actually uses.
         let mut config = config;
         config.sample_rate = clamped_rate;
+        // Same defense for the response-capture budgets: gcl.yaml declares
+        // maximum 49152 for each, but only API Manager enforces the schema
+        // — Local-mode YAML can carry any u32, and the README's memory and
+        // event-size guarantees lean on the bound. Clamp + warn, as above.
+        for (name, value) in [
+            ("responseHeadBytes", &mut config.response_head_bytes),
+            ("responseTailBytes", &mut config.response_tail_bytes),
+        ] {
+            if *value > MAX_RESPONSE_SLICE_BYTES {
+                logger::warn!(
+                    "cerberus-flex-gateway: {} {} exceeds the maximum; clamped to {}",
+                    name,
+                    *value,
+                    MAX_RESPONSE_SLICE_BYTES
+                );
+                *value = MAX_RESPONSE_SLICE_BYTES;
+            }
+        }
 
         let path_filter = PathFilter::compile(
             config.capture_paths.as_deref().unwrap_or(&[]),
@@ -256,8 +288,19 @@ enum RequestSlot {
     /// content-type does NOT suppress the event — it only skips body
     /// capture; the bodyless event still ships.
     Skip,
-    /// Event is partially built; response filter will push it onto the queue.
-    Capture(CerberusEvent),
+    /// Event is partially built; response filter will push it onto the
+    /// queue. `start_epoch_micros` is the request-arrival instant (same
+    /// hostcall read as the event timestamp) for latency_ms.
+    /// `ai_content_withheld` records that the request body was withheld
+    /// as LLM/AI prompt content (captureAiContent off + prompt-shaped
+    /// body on a custom path) so the response side can withhold the
+    /// model output too — the response filter cannot re-derive that
+    /// decision from the path alone.
+    Capture {
+        event: CerberusEvent,
+        start_epoch_micros: u64,
+        ai_content_withheld: bool,
+    },
 }
 
 async fn request_filter(
@@ -332,12 +375,16 @@ async fn request_filter(
     // and the body-shape carve-out below still protects every normal MCP
     // mount.
     let mut body_value: Option<Value> = None;
+    let mut ai_content_withheld = false;
     let should_capture_body = ctx.config.capture_request_body
         && matches!(method.as_str(), "POST" | "PUT" | "PATCH")
         && content_type_is_json(headers_state.handler().header("content-type").as_deref())
         && (ctx.config.capture_ai_content || !ai_content::is_llm_path(&endpoint));
 
-    let timestamp = current_timestamp_iso8601();
+    // One hostcall read serves both the event timestamp and the
+    // latency_ms baseline carried to the response filter.
+    let start_epoch_micros = now_epoch_micros();
+    let timestamp = format_epoch_micros(start_epoch_micros);
     let endpoint_for_event = endpoint.clone();
 
     if should_capture_body {
@@ -353,7 +400,9 @@ async fn request_filter(
                             && ai_content::should_suppress_body(&endpoint, &parsed)
                         {
                             // AI prompt content — withheld from the event (the event
-                            // itself still ships for endpoint discovery).
+                            // itself still ships for endpoint discovery). Remembered
+                            // so the response filter withholds the output as well.
+                            ai_content_withheld = true;
                             None
                         } else {
                             Some(sanitize_value_with(
@@ -380,25 +429,117 @@ async fn request_filter(
         body: body_value,
         user_agent,
         user_id,
+        status_code: None,
+        latency_ms: None,
+        response_body: None,
     };
 
-    Flow::Continue(RequestSlot::Capture(event))
+    Flow::Continue(RequestSlot::Capture {
+        event,
+        start_epoch_micros,
+        ai_content_withheld,
+    })
 }
 
-async fn response_filter(_state: ResponseState, data: RequestData<RequestSlot>, ctx: &PolicyContext) {
-    let event = match data {
-        RequestData::Continue(RequestSlot::Capture(ev)) => ev,
+/// Containment invariant: once this filter holds a Capture event, every
+/// path ends in `ctx.queue.push(event)` — response-capture failure must
+/// never lose the request event.
+async fn response_filter(state: ResponseState, data: RequestData<RequestSlot>, ctx: &PolicyContext) {
+    let (mut event, start_epoch_micros, ai_content_withheld) = match data {
+        RequestData::Continue(RequestSlot::Capture {
+            event,
+            start_epoch_micros,
+            ai_content_withheld,
+        }) => (event, start_epoch_micros, ai_content_withheld),
+        // Skip / Break / Cancel — nothing to ship.
         _ => return,
     };
-    // TODO(v1.1): capture status_code and latency_ms here.
-    // TODO(ai-content): when response-body capture lands, LLM/AI response
-    // bodies must be gated behind captureAiContent exactly like request
-    // prompts — generated responses carry the same PII risk and there is
-    // no scrubbing mechanism for free-form model output yet.
+    // Response headers already arrived when the filter runs — this is a
+    // Ready future, not a suspension point.
+    let headers = state.into_headers_state().await;
+    let status = headers.status_code();
+    // status_code() returns 0 for an absent/unparseable :status — omit
+    // the field rather than shipping a bogus 0.
+    event.status_code = (status != 0).then_some(status);
+    event.response_body =
+        capture_response_body(headers, &event.endpoint, ai_content_withheld, ctx).await;
+    // Measured after body capture completes so it covers the full
+    // response, not just headers. Wall-clock (proxy-wasm exposes no
+    // monotonic clock); skew saturates to 0.
+    event.latency_ms = Some(elapsed_ms(start_epoch_micros));
     if let Err(()) = ctx.queue.push(event) {
         // Queue full — already counted by EventQueue::push.
         // TODO(v1.1): emit a Prometheus / Envoy stat here.
     }
+}
+
+/// Observe (never mutate) the response body per the gate order below.
+/// Returns the event's `response_body` value, or None when nothing is
+/// captured. With the knob off the body stream is never opened — zero
+/// new per-request cost.
+async fn capture_response_body(
+    headers: ResponseHeadersState,
+    endpoint: &str,
+    ai_content_withheld: bool,
+    ctx: &PolicyContext,
+) -> Option<Value> {
+    // 1. Knob off → current (0.3.0) behavior exactly.
+    if !ctx.config.capture_response_body {
+        return None;
+    }
+    // 2. Only JSON and SSE content-types are observed.
+    let kind =
+        response_capture::classify_content_type(headers.handler().header("content-type").as_deref())?;
+    // 3. captureAiContent off: skip all body work before touching the
+    //    stream when the request was AI traffic — a well-known LLM path
+    //    (mirrors the request-side short-circuit) OR a request whose body
+    //    was already withheld as prompt-shaped on a custom path. The
+    //    latter is what makes SSE model output on custom paths respect
+    //    the flag: an SSE body never reaches the parsed-shape check in
+    //    finalize, so the request-side decision has to carry over.
+    if !ctx.config.capture_ai_content
+        && (ai_content_withheld || ai_content::is_llm_path(endpoint))
+    {
+        return None;
+    }
+    // 4. No body (204 / 304 / HEAD — headers arrived with end_of_stream):
+    //    nothing to capture, whatever other headers say. Checked BEFORE
+    //    the encoding gate: a 304 may legitimately carry Content-Encoding
+    //    (RFC 7232 lets it refresh representation metadata) and HEAD
+    //    mirrors GET's headers, and neither must ship a marker.
+    if !headers.contains_body() {
+        return None;
+    }
+    // 5. Compressed bodies are never sliced — a byte slice of a
+    //    gzip/br stream is undecodable. Ship the marker; don't open
+    //    the stream.
+    if let Some(enc) = headers.handler().header("content-encoding") {
+        let enc = enc.trim().to_ascii_lowercase();
+        if !enc.is_empty() && enc != "identity" {
+            return Some(response_capture::skipped_encoding_marker(&enc));
+        }
+    }
+    // 6. Stream pass-through: every chunk flows to the client as it
+    //    arrives; we only accumulate the capped head + tail. A stream
+    //    that ends early (upstream reset) just ends — finalize works
+    //    over whatever arrived.
+    let body_state = headers.into_body_stream_state().await;
+    let mut accumulator = response_capture::HeadTailAccumulator::new(
+        ctx.config.response_head_bytes as usize,
+        ctx.config.response_tail_bytes as usize,
+    );
+    let mut stream = body_state.stream();
+    while let Some(chunk) = stream.next().await {
+        accumulator.push(chunk.bytes());
+    }
+    response_capture::finalize_response_body(
+        accumulator.finalize(),
+        kind,
+        endpoint,
+        ctx.config.capture_ai_content,
+        &ctx.pii_rules,
+        ctx.secret_key.as_deref(),
+    )
 }
 
 /// Periodic flush. Drains up to batchSize events and POSTs to
@@ -562,7 +703,7 @@ pub fn content_type_is_json(content_type: Option<&str>) -> bool {
     ct.to_ascii_lowercase().contains("application/json")
 }
 
-/// Build an ISO 8601 UTC timestamp for the current moment.
+/// Microseconds since UNIX_EPOCH from the host clock.
 ///
 /// We previously tried Envoy's `request.time` stream property, but it
 /// isn't reliably exposed via PDK 1.8's `read_property` bridge — the
@@ -573,32 +714,36 @@ pub fn content_type_is_json(content_type: Option<&str>) -> bool {
 /// hostcall the PDK's own `Clock::now()` uses; we call it directly
 /// because `request_filter` has no `Clock` handle (the single `Clock`
 /// is consumed building the flush timer).
-///
-/// The returned string follows RFC 3339 / ISO 8601 with microsecond
-/// precision and a literal `+00:00` suffix
-/// (e.g. `2026-05-02T23:14:05.123456+00:00`).
-fn current_timestamp_iso8601() -> String {
+fn now_epoch_micros() -> u64 {
     use pdk::classy::proxy_wasm::hostcalls;
     use std::time::UNIX_EPOCH;
 
     let t = hostcalls::get_current_time().unwrap_or(UNIX_EPOCH);
-    let dur = t.duration_since(UNIX_EPOCH).unwrap_or_default();
-    format_epoch(dur.as_secs() as i64, dur.subsec_micros())
+    t.duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64
+}
+
+/// Wall-clock milliseconds elapsed since `start_epoch_micros`,
+/// saturating to 0 (the host clock is not monotonic).
+fn elapsed_ms(start_epoch_micros: u64) -> u64 {
+    now_epoch_micros().saturating_sub(start_epoch_micros) / 1_000
+}
+
+/// Format an epoch-microseconds instant as ISO 8601 UTC with a literal
+/// `+00:00` suffix (e.g. `2026-05-02T23:14:05.123456+00:00`).
+fn format_epoch_micros(epoch_micros: u64) -> String {
+    format_epoch(
+        (epoch_micros / 1_000_000) as i64,
+        (epoch_micros % 1_000_000) as u32,
+    )
 }
 
 /// Seed for the per-worker sampling PRNG: microseconds since UNIX_EPOCH
-/// from the host clock (same `get_current_time` hostcall pattern as
-/// `current_timestamp_iso8601`), XOR'd with the SplitMix64 gamma so a
-/// degenerate zero clock still yields a non-trivial seed. Workers
-/// configure at slightly different instants, so they walk different
-/// decision sequences.
+/// from the host clock, XOR'd with the SplitMix64 gamma so a degenerate
+/// zero clock still yields a non-trivial seed. Workers configure at
+/// slightly different instants, so they walk different decision
+/// sequences.
 fn sampler_seed_from_clock() -> u64 {
-    use pdk::classy::proxy_wasm::hostcalls;
-    use std::time::UNIX_EPOCH;
-
-    let t = hostcalls::get_current_time().unwrap_or(UNIX_EPOCH);
-    let micros = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64;
-    micros ^ 0x9E37_79B9_7F4A_7C15
+    now_epoch_micros() ^ 0x9E37_79B9_7F4A_7C15
 }
 
 /// Format `(seconds-since-epoch, microseconds)` as ISO 8601 UTC with a
@@ -651,9 +796,10 @@ async fn configure(
     // request bodies (endpoint/method and sanitized metadata still ship).
     if !config.capture_ai_content {
         logger::info!(
-            "cerberus-flex-gateway: captureAiContent disabled; LLM/AI request bodies will be withheld from events"
+            "cerberus-flex-gateway: captureAiContent disabled; LLM/AI request and response bodies will be withheld from events"
         );
     }
+
 
     let mut config = config;
     config.token = trimmed_token;
@@ -667,6 +813,17 @@ async fn configure(
     }
 
     let ctx = PolicyContext::new(config, secret_key, sampler_seed_from_clock())?;
+    // Confirmable from pod logs, mirroring the captureAiContent log —
+    // response capture changing event content/size should be visible at
+    // startup. Logged AFTER PolicyContext::new so the budgets shown are
+    // the clamped values actually enforced, not the raw config.
+    if ctx.config.capture_response_body {
+        logger::info!(
+            "cerberus-flex-gateway: captureResponseBody enabled (head {} bytes, tail {} bytes)",
+            ctx.config.response_head_bytes,
+            ctx.config.response_tail_bytes
+        );
+    }
     if ctx.config.sample_rate < 1.0 {
         // Confirmable from pod logs — sampling silently suppressing
         // events is otherwise indistinguishable from a broken pipeline.

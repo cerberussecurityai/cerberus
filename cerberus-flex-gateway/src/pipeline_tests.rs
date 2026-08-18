@@ -50,30 +50,45 @@ fn capture_events(req: UnitHttpRequest) -> Option<Vec<Value>> {
 // Same as `capture_events` but with an explicit policy config, for tests that
 // exercise config-gated behavior.
 fn capture_events_with_config(req: UnitHttpRequest, config: String) -> Option<Vec<Value>> {
+    run_pipeline(req, config, UnitHttpResponse::new(200)).0
+}
+
+// Full driver: sends `req` through the policy with `upstream` as the
+// backend response, then flushes. Returns the flushed events AND the
+// client-visible response, so response-capture tests can assert the
+// observe-only invariant: what the client receives is byte-identical to
+// what the backend sent (pdk-unit reassembles the Continue'd chunks
+// into the client-visible response).
+fn run_pipeline(
+    req: UnitHttpRequest,
+    config: String,
+    upstream: UnitHttpResponse,
+) -> (Option<Vec<Value>>, UnitHttpResponse) {
     let _guard = HARNESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let trace = Rc::new(TraceBackend::new(UnitHttpResponse::new(200)));
     let mut tester = UnitTestBuilder::default()
         .with_config(config)
+        .with_backend(upstream)
         .with_http_upstream_from_authority(INGEST_AUTHORITY, Rc::clone(&trace))
         .with_entrypoint(crate::configure);
 
-    let _ = tester.request(req);
+    let response = tester.request(req);
     tester.sleep(Duration::from_millis(2500));
 
-    let batch = trace.next()?;
-    assert_eq!(
-        batch.header("x-api-key"),
-        Some("test-api-key"),
-        "batch must carry the API key header"
-    );
-    let body: Value = serde_json::from_slice(batch.body()).expect("batch body is JSON");
-    Some(
+    let events = trace.next().map(|batch| {
+        assert_eq!(
+            batch.header("x-api-key"),
+            Some("test-api-key"),
+            "batch must carry the API key header"
+        );
+        let body: Value = serde_json::from_slice(batch.body()).expect("batch body is JSON");
         body["events"]
             .as_array()
             .expect("batch envelope has an events array")
-            .clone(),
-    )
+            .clone()
+    });
+    (events, response)
 }
 
 #[test]
@@ -432,6 +447,434 @@ fn ai_prompt_shaped_body_on_custom_path_withheld_when_disabled() {
         e.get("body").is_none(),
         "prompt-shaped body must be withheld even off well-known LLM paths: {e}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Response-body capture (captureResponseBody).
+//
+// Every test here asserts the observe-only invariant via `assert_pass_through`:
+// the client-visible response is byte-identical to what the backend sent.
+// The harness delivers response bodies to the policy in 3-byte chunks, so
+// multi-chunk accumulation is exercised for free.
+// ---------------------------------------------------------------------
+
+fn response_capture_config() -> String {
+    format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true}}"#
+    )
+}
+
+fn assert_pass_through(client: &UnitHttpResponse, expected: &UnitHttpResponse) {
+    assert_eq!(
+        client.status_code(),
+        expected.status_code(),
+        "client-visible status must be unmodified"
+    );
+    assert_eq!(
+        client.body(),
+        expected.body(),
+        "client-visible body must be byte-identical — the tap must never mutate"
+    );
+}
+
+#[test]
+fn response_whole_json_captured_and_sanitized() {
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"password":"hunter2","item":"widget"}"#);
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let events = events.expect("expected a flushed batch");
+    let e = &events[0];
+    // Sensitive keys in the response body sanitize like request bodies.
+    assert_eq!(e["response_body"]["password"], "[REDACTED]");
+    assert_eq!(e["response_body"]["item"], "widget");
+    assert_eq!(e["status_code"], 200);
+    assert!(
+        e["latency_ms"].is_u64(),
+        "latency_ms must be present: {e}"
+    );
+}
+
+#[test]
+fn response_capture_off_by_default_status_latency_still_ship() {
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"item":"widget"}"#);
+    let (events, client) = run_pipeline(minimal_post(), config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let events = events.expect("expected a flushed batch");
+    let e = &events[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "default config must not capture response bodies: {e}"
+    );
+    // status_code / latency_ms ship unconditionally.
+    assert_eq!(e["status_code"], 200);
+    assert!(e["latency_ms"].is_u64());
+}
+
+#[test]
+fn response_non_json_non_sse_content_type_skipped() {
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/html")
+        .with_body("<html><body>hi</body></html>");
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "text/html must not be captured: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
+fn response_compressed_body_ships_encoding_marker() {
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_header("content-encoding", "gzip")
+        // Not real gzip — the policy must not read the stream at all.
+        .with_body(b"\x1f\x8b compressed bytes".to_vec());
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert_eq!(
+        e["response_body"],
+        serde_json::json!({"body_skipped_encoding": "gzip"}),
+        "compressed bodies ship exactly the encoding marker: {e}"
+    );
+}
+
+#[test]
+fn response_sse_within_budget_ships_raw_string() {
+    let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert_eq!(
+        e["response_body"], sse,
+        "in-budget SSE ships whole as a raw string: {e}"
+    );
+}
+
+#[test]
+fn response_sse_truncated_with_tiny_budgets() {
+    let sse = "data: 0123456789abcdefghijklmnopqrstuvwxyz\n\n"; // 44 bytes
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":10,"responseTailBytes":8}}"#
+    );
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
+    // The client stream must be intact even though the capture truncated.
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let marker = e["response_body"]
+        .as_object()
+        .expect("truncation marker object");
+    assert_eq!(marker["body_truncated"], true);
+    assert_eq!(marker["body_bytes_total"], 44);
+    assert_eq!(marker["body_bytes_dropped"], 44 - 10 - 8);
+    assert_eq!(marker["head"], &sse[..10], "head is the exact prefix");
+    assert_eq!(marker["tail"], &sse[44 - 8..], "tail is the exact suffix");
+}
+
+#[test]
+fn response_oversized_json_document_truncates_too() {
+    // JSON documents go through the same head+tail path as SSE — an
+    // over-budget JSON body yields the marker, not a parse attempt.
+    let big = format!(r#"{{"data":"{}"}}"#, "x".repeat(100));
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":16,"responseTailBytes":8}}"#
+    );
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(big.clone());
+    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let marker = e["response_body"]
+        .as_object()
+        .expect("truncation marker object");
+    assert_eq!(marker["body_truncated"], true);
+    assert_eq!(marker["body_bytes_total"], big.len() as u64);
+    assert_eq!(
+        marker["head"],
+        &big[..16],
+        "head is a parseable prefix for content sniffing"
+    );
+}
+
+#[test]
+fn response_llm_path_withheld_when_ai_capture_disabled() {
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/v1/chat/completions")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"choices":[{"message":{"role":"assistant","content":"hello"}}]}"#);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "LLM response body must be withheld when captureAiContent is off: {e}"
+    );
+    // Metadata still ships.
+    assert_eq!(e["status_code"], 200);
+    assert!(e["latency_ms"].is_u64());
+}
+
+#[test]
+fn response_sse_on_custom_path_withheld_when_request_was_ai_suppressed() {
+    // captureAiContent: false, custom (non-LLM) path, prompt-shaped
+    // request body → the request body is withheld by the parsed-shape
+    // check. The response is SSE, which never reaches a parsed-shape
+    // check, so the request-side decision must carry over: model output
+    // is withheld too.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/ai/ask")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello there\"}}]}\n\ndata: [DONE]\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(e.get("body").is_none(), "prompt body must be withheld: {e}");
+    assert!(
+        e.get("response_body").is_none(),
+        "SSE model output on a custom path must be withheld when the request was AI-suppressed: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
+fn response_completion_json_on_custom_path_withheld_without_prompt_shaped_request() {
+    // The case neither the path list nor the request-side carry-over can
+    // catch: custom path, a request body that is NOT prompt-shaped (an
+    // internal wrapper API), and a whole-JSON response that is a real
+    // OpenAI-shaped completion. captureAiContent: false must still withhold
+    // it — the response-shape check is what does that.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/assistant/answer")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"question":"what is our refund policy?","ticket":"T-1"}"#);
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Refunds within 30 days."},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":6}}"#);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    // The request was not AI-shaped, so its body ships as usual...
+    assert_eq!(e["body"]["ticket"], "T-1");
+    // ...but the completion-shaped response is model output → withheld.
+    assert!(
+        e.get("response_body").is_none(),
+        "completion-shaped JSON on a custom path must be withheld: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
+fn response_sse_on_custom_path_captured_when_ai_capture_on() {
+    // Positive control for the test above: same traffic with the default
+    // captureAiContent (true) captures the SSE output.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/ai/ask")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello there\"}}]}\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(req, response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(e["body"].is_object(), "prompt body captured by default: {e}");
+    assert!(
+        e["response_body"].is_string(),
+        "SSE output captured when captureAiContent is on: {e}"
+    );
+}
+
+#[test]
+fn response_mcp_tools_list_result_captured_whole() {
+    // The schema-report enabler: a captured tools/list JSON-RPC result.
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/mcp")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+    let result = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search","description":"find things","inputSchema":{"type":"object"}}]}}"#;
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(result);
+    let (events, client) =
+        run_pipeline(req, response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert_eq!(e["response_body"]["result"]["tools"][0]["name"], "search");
+    assert_eq!(
+        e["response_body"]["result"]["tools"][0]["inputSchema"]["type"],
+        "object"
+    );
+}
+
+#[test]
+fn response_mcp_sse_result_key_sanitized_client_untouched() {
+    // Structured PII inside an SSE-transported MCP tool result is key-
+    // redacted on the retained copy — while the client still receives the
+    // original bytes (the tap never mutates the wire).
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/mcp")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lookup","arguments":{"q":"x"}}}"#);
+    let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"structuredContent\":{\"api_key\":\"sk-live-1\",\"user\":\"alice\"}}}\n\n";
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(sse);
+    let (events, client) = run_pipeline(req, response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+    assert!(
+        std::str::from_utf8(client.body()).unwrap().contains("sk-live-1"),
+        "client must receive the original bytes"
+    );
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let captured = e["response_body"].as_str().expect("SSE ships as a string");
+    assert!(!captured.contains("sk-live-1"), "secret must not ship: {captured}");
+    assert!(captured.contains("\"api_key\":\"[REDACTED]\""), "{captured}");
+    assert!(captured.contains("\"user\":\"alice\""), "{captured}");
+    assert!(captured.starts_with("event: message\ndata: "), "framing preserved: {captured}");
+}
+
+#[test]
+fn response_budgets_clamp_to_schema_maximum() {
+    // gcl.yaml declares maximum 49152 for both budgets, but that is only
+    // enforced by API Manager's form — Local-mode YAML can carry anything.
+    // Out-of-range values clamp (with a startup warning) instead of driving
+    // an unbounded accumulator: a 60 KB body under a "1 MB" head budget
+    // must still truncate at 49152.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":1048576,"responseTailBytes":0}}"#
+    );
+    let big = "x".repeat(60_000);
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "text/event-stream")
+        .with_body(big.clone());
+    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    let marker = e["response_body"].as_object().expect("truncation marker");
+    assert_eq!(marker["body_truncated"], true);
+    assert_eq!(marker["head"].as_str().unwrap().len(), 49_152);
+    assert_eq!(marker["body_bytes_dropped"], 60_000 - 49_152);
+}
+
+#[test]
+fn response_truncated_completion_on_custom_path_withheld_when_ai_capture_off() {
+    // Over budget + captureAiContent: false + custom path + non-prompt-
+    // shaped request: the pre-stream gate can't see the shape, so the
+    // finalizer's head sniff must withhold the truncated model output.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false,"responseHeadBytes":256,"responseTailBytes":128}}"#
+    );
+    let req = UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path("/internal/assistant/answer")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"question":"tell me a long story","ticket":"T-2"}"#);
+    let long = "Once upon a time ".repeat(200);
+    let body = format!(
+        r#"{{"id":"chatcmpl-2","object":"chat.completion","model":"gpt-4o","choices":[{{"index":0,"message":{{"role":"assistant","content":"{long}"}},"finish_reason":"stop"}}]}}"#
+    );
+    let upstream = UnitHttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(body);
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "truncated completion must be withheld: {e}"
+    );
+    assert_eq!(e["status_code"], 200);
+}
+
+#[test]
+fn response_bodyless_with_content_encoding_ships_nothing() {
+    // A 304 (or HEAD) may carry Content-Encoding with no body; the
+    // body-presence gate must win over the compression marker.
+    let upstream = UnitHttpResponse::new(304)
+        .with_header("content-type", "application/json")
+        .with_header("content-encoding", "gzip");
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "body-less response must not ship an encoding marker: {e}"
+    );
+    assert_eq!(e["status_code"], 304);
+}
+
+#[test]
+fn response_bodyless_204_no_response_body() {
+    let upstream = UnitHttpResponse::new(204).with_header("content-type", "application/json");
+    let (events, client) =
+        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
+    assert_pass_through(&client, &upstream);
+
+    let e = &events.expect("expected a flushed batch")[0];
+    assert!(
+        e.get("response_body").is_none(),
+        "body-less response must not produce a response_body: {e}"
+    );
+    assert_eq!(e["status_code"], 204);
+    assert!(e["latency_ms"].is_u64());
 }
 
 #[test]

@@ -103,7 +103,16 @@ anypoint-cli-v4 api-mgr policy apply \
 ```
 
 See the policy README's **Configuration** table for every option
-(`capturePaths`, `secretKey`, `batchSize`, `flushIntervalMs`, …).
+(`capturePaths`, `secretKey`, `captureResponseBody`, `batchSize`,
+`flushIntervalMs`, …).
+
+Note for Local mode upgrades: the policy's config schema rejects
+unknown fields, so copy the new `.wasm` onto the pod before (or
+together with) a config that sets newer options such as
+`captureResponseBody` — an old `.wasm` given a new config fails policy
+load. The reverse order is safe: a new `.wasm` with an old config runs
+with defaults. (Connected mode applies definition and implementation
+atomically, so this ordering concern is Local-mode only.)
 
 ## Enforcing TLS 1.3 to Cerberus (optional hardening)
 
