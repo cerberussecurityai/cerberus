@@ -2,8 +2,8 @@
 // api_key is NOT serialized here — it rides as the X-API-Key header
 // on the batch POST (see sink.rs).
 //
-// `custom_data` is intentionally absent for now. See README "Planned
-// improvements" — the response-body mutation needed to extract
+// `custom_data` is intentionally absent for now. See DEVELOPMENT.md
+// "Planned improvements" — the response-body mutation needed to extract
 // `_cerberus_metrics` is out of scope.
 
 use serde::Serialize;
