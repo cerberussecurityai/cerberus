@@ -1,0 +1,211 @@
+# Parity fixtures for the keyed-threshold sampling decision
+# (cerberus-flex-gateway `sampleBy: session`, shipped in 0.5.0).
+#
+# Contract (see cerberus-flex-gateway/src/sampler.rs):
+#   K    = HMAC-SHA256(key = utf8("cerberus-sampling-v1"), msg = utf8(key_material))
+#   msg  = utf8(domain) || 0x00 || utf8(key)
+#          || (epoch present: 0x00 || utf8(decimal(epoch)))
+#   hash = big-endian u64 from the first 8 bytes of HMAC-SHA256(K, msg)
+#   keep ⇔ rate >= 1.0, or rate > 0 and hash < floor(rate · 2⁶⁴)
+#     (floor computed in IEEE-754 double: trunc(rate × 2.0⁶⁴), saturating
+#      at 2⁶⁴ − 1 — in Python: min(int(rate * 2.0**64), 2**64 - 1))
+#
+# `domain` namespaces the key space (a session id and a user id sharing
+# bytes must not share a decision); `epoch` is the weekly rotation window
+# (unix_seconds / 604800) mixed into the principal/user identity tiers.
+# `hash` is serialized as a decimal string: it exercises the full u64
+# range and some YAML parsers mangle integers above 2⁶³.
+#
+# Rust-only *for now*: flex-gateway ships session sampling first. This
+# fixture is the contract cerberus-django and the Envoy AI Gateway
+# bridge must match if they adopt the same sampling rule.
+#
+# **Test key material is intentionally public** (same convention as
+# hash_pii.yaml). Values generated with:
+#   import hmac, hashlib
+#   K = hmac.new(b"cerberus-sampling-v1", key_material.encode(), hashlib.sha256).digest()
+#   msg = domain.encode() + b"\x00" + key.encode() \
+#         + (b"\x00" + str(epoch).encode() if epoch is not None else b"")
+#   h = int.from_bytes(hmac.new(K, msg, hashlib.sha256).digest()[:8], "big")
+cases:
+  # --- session-id domain (MCP request/response header, legacy query param) ---
+
+  - name: mcp_session_id_dropped_at_rate_quarter
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sess-0001"
+      epoch: null
+      rate: 0.25
+    expected:
+      hash: "11534488033750292510"
+      keep: false
+
+  - name: mcp_session_id_kept_at_rate_quarter
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sess-0002"
+      epoch: null
+      rate: 0.25
+    expected:
+      hash: "3275736914867738442"
+      keep: true
+
+  # Threshold sampling nests: a key kept at a low rate stays kept at
+  # every higher rate (same hash, larger threshold).
+  - name: nesting_same_key_kept_at_rate_tenth
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sess-0004"
+      epoch: null
+      rate: 0.1
+    expected:
+      hash: "1167288916362487940"
+      keep: true
+
+  - name: nesting_same_key_still_kept_at_rate_half
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sess-0004"
+      epoch: null
+      rate: 0.5
+    expected:
+      hash: "1167288916362487940"
+      keep: true
+
+  # --- domain separation: identical key bytes, different domains ---
+
+  - name: domain_separation_session_shared_bytes
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "shared-bytes"
+      epoch: null
+      rate: 0.5
+    expected:
+      hash: "15214505035693367560"
+      keep: false
+
+  - name: domain_separation_authorization_shared_bytes
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "authorization"
+      key: "shared-bytes"
+      epoch: null
+      rate: 0.5
+    expected:
+      hash: "13226984289317778652"
+      keep: false
+
+  # --- epoch rotation (weekly window on the identity tiers) ---
+
+  - name: principal_epoch_2950
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "principal"
+      key: "alice"
+      epoch: 2950
+      rate: 0.5
+    expected:
+      hash: "10518411703458946036"
+      keep: false
+
+  - name: principal_adjacent_epoch_rotates_hash
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "principal"
+      key: "alice"
+      epoch: 2951
+      rate: 0.5
+    expected:
+      hash: "12576594068622769716"
+      keep: false
+
+  - name: user_id_epoch_2950
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "user"
+      key: "u-42"
+      epoch: 2950
+      rate: 0.5
+    expected:
+      hash: "4349615917702645140"
+      keep: true
+
+  # --- remaining ladder domains ---
+
+  - name: authorization_bearer_value
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "authorization"
+      key: "Bearer abc123"
+      epoch: null
+      rate: 0.5
+    expected:
+      hash: "2656609870474822683"
+      keep: true
+
+  # sessionKeyHeader domains bind the (lowercased) header NAME so two
+  # headers with colliding values can't share a decision.
+  - name: session_key_header_domain_binds_header_name
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "header:x-conversation-id"
+      key: "conv-7"
+      epoch: null
+      rate: 0.5
+    expected:
+      hash: "14020890336039435729"
+      keep: false
+
+  # --- rate bounds ---
+
+  - name: rate_one_always_keeps
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sess-0003"
+      epoch: null
+      rate: 1.0
+    expected:
+      hash: "3166808127828610956"
+      keep: true
+
+  - name: rate_zero_never_keeps
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sess-0003"
+      epoch: null
+      rate: 0.0
+    expected:
+      hash: "3166808127828610956"
+      keep: false
+
+  # --- encoding pins ---
+
+  - name: unicode_key_hashes_utf8_bytes
+    input:
+      key_material: "cerberus-parity-test-key-v1"
+      domain: "session"
+      key: "sesión-ñ"
+      epoch: null
+      rate: 0.5
+    expected:
+      hash: "12697347006768182187"
+      keep: false
+
+  # Rotating the key material re-keys K and reshuffles every decision.
+  - name: different_key_material_shuffles_the_sample
+    input:
+      key_material: "another-token"
+      domain: "session"
+      key: "sess-0001"
+      epoch: null
+      rate: 0.25
+    expected:
+      hash: "4606756155534717700"
+      keep: true

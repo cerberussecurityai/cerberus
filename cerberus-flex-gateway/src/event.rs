@@ -74,4 +74,29 @@ pub struct CerberusEvent {
     /// event shape is unchanged on the wire.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<serde_json::Value>,
+
+    /// Session correlator behind the sampling decision: the MCP session
+    /// id from the request (header or legacy query param) or — for a
+    /// decide-late handshake — the id the server minted in its
+    /// response. Present only when session sampling keyed on a session
+    /// id (the backend indexes this field); operator `sessionKeyHeader`
+    /// values and fallback-tier keys (principal, user id,
+    /// Authorization) never ship, in this field or any other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+
+    /// Effective sampleRate at decision time, so the backend can
+    /// re-inflate counts by 1/sample_rate. Present only when sampling
+    /// is active (rate < 1.0); omitted at rate 1.0 so the pre-0.5.0
+    /// wire shape is untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<f64>,
+
+    /// Which key decided this event's sampling — the estimator stratum
+    /// and a misconfiguration signal (e.g. everything `request` means
+    /// no usable keys reach the policy). One of: session_request |
+    /// session_response | session_header | principal | user_id |
+    /// authorization | request. Present only when sampling is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_key: Option<&'static str>,
 }

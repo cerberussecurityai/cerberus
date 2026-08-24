@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use cerberus_flex_gateway::__test_exports::{
-    content_type_is_json, hash_pii, is_sensitive_header_lower, normalize_ip, sanitize_value,
-    sanitize_value_with, CompiledPiiRules, PathFilter, PiiPatternConfig,
+    content_type_is_json, hash_pii, is_sensitive_header_lower, keyed_decision, normalize_ip,
+    sanitize_value, sanitize_value_with, CompiledPiiRules, PathFilter, PiiPatternConfig,
 };
 
 fn fixtures_dir() -> PathBuf {
@@ -285,6 +285,61 @@ fn parity_path_filter() {
             actual, case.expected,
             "case {:?}: got {}, expected {}",
             case.name, actual, case.expected
+        );
+    }
+}
+
+// ============================================================================
+// sample_decision (Rust-only for now — flex-gateway ships session
+// sampling first; the fixture is the contract other integrations must
+// match if they adopt the same rule)
+// ============================================================================
+
+#[derive(Deserialize)]
+struct SampleDecisionInput {
+    key_material: String,
+    domain: String,
+    key: String,
+    epoch: Option<u64>,
+    rate: f64,
+}
+
+#[derive(Deserialize)]
+struct SampleDecisionExpected {
+    /// Decimal string: the hash exercises the full u64 range and some
+    /// YAML parsers mangle integers above 2⁶³.
+    hash: String,
+    keep: bool,
+}
+
+#[derive(Deserialize)]
+struct SampleDecisionCase {
+    name: String,
+    input: SampleDecisionInput,
+    expected: SampleDecisionExpected,
+}
+
+#[test]
+fn parity_sample_decision() {
+    let cases: Vec<SampleDecisionCase> = load("sample_decision.yaml");
+    for case in cases {
+        let (hash, keep) = keyed_decision(
+            &case.input.key_material,
+            &case.input.domain,
+            &case.input.key,
+            case.input.epoch,
+            case.input.rate,
+        );
+        assert_eq!(
+            hash.to_string(),
+            case.expected.hash,
+            "case {:?}: decision hash mismatch",
+            case.name
+        );
+        assert_eq!(
+            keep, case.expected.keep,
+            "case {:?}: keep={}, expected={}",
+            case.name, keep, case.expected.keep
         );
     }
 }

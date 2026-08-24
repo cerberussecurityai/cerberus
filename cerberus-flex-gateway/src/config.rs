@@ -77,6 +77,21 @@ pub struct Config {
     #[serde(default = "default_sample_rate")]
     pub sample_rate: f64,
 
+    /// Sampling unit when sampleRate < 1: "session" (default —
+    /// deterministic keyed decision per session/identity, identical on
+    /// every replica; see sampler.rs) or "request" (independent
+    /// per-request coin, the pre-0.5.0 behavior). Unknown values warn
+    /// and fall back to "session" in PolicyContext::new — a typo in
+    /// this knob must not take capture down.
+    #[serde(default = "default_sample_by")]
+    pub sample_by: String,
+
+    /// Optional. Extra request headers to use as the session sampling
+    /// key when no MCP session id is present (e.g. traceparent,
+    /// X-Conversation-Id). Checked in order; first present header
+    /// wins. The value is used in memory only — never shipped.
+    pub session_key_header: Option<Vec<String>>,
+
     /// Buffer + sanitize JSON request bodies. Default: true.
     #[serde(default = "default_capture_request_body")]
     pub capture_request_body: bool,
@@ -143,6 +158,9 @@ fn default_client_ip_header() -> String {
 }
 fn default_sample_rate() -> f64 {
     1.0
+}
+fn default_sample_by() -> String {
+    "session".to_string()
 }
 fn default_capture_request_body() -> bool {
     true

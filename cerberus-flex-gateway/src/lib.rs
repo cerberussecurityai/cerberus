@@ -4,8 +4,11 @@
 //
 //   Request → request_filter:
 //     - early-exit on health endpoints and capturePaths/excludePaths misses
-//     - early-exit on the sampleRate coin flip (unsampled requests do
-//       no capture work at all)
+//     - sampling decision (sampleRate + sampleBy): deterministic keyed
+//       session-consistent verdicts by default, independent per-request
+//       coin in request mode; unsampled requests do no capture work.
+//       MCP-handshake-shaped requests are captured speculatively and
+//       resolved in response_filter on the minted session id
 //     - extract method, scheme, endpoint, query params (sanitized)
 //     - extract headers (captureHeaders allowlist if configured, then
 //       sanitized; Authorization HMAC'd if secret available)
@@ -81,6 +84,7 @@ pub mod __test_exports {
     pub use crate::hash::{hash_pii, normalize_ip};
     pub use crate::path_filter::PathFilter;
     pub use crate::pii_rules::{CompiledPiiRules, PiiPatternConfig};
+    pub use crate::sampler::keyed_decision;
     pub use crate::sanitize::{is_sensitive_header_lower, sanitize_value, sanitize_value_with};
     pub use super::content_type_is_json;
 }
@@ -89,6 +93,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use futures::join;
+use pdk::authentication::{Authentication, AuthenticationHandler};
 use pdk::hl::timer::{Clock, Timer};
 use pdk::hl::*;
 use pdk::logger;
@@ -99,7 +104,10 @@ use crate::event::CerberusEvent;
 use crate::path_filter::PathFilter;
 use crate::pii_rules::CompiledPiiRules;
 use crate::queue::EventQueue;
-use crate::sampler::Sampler;
+use crate::sampler::{
+    Coin, KeyedSampler, DOMAIN_AUTHORIZATION, DOMAIN_PRINCIPAL, DOMAIN_SESSION, DOMAIN_USER,
+    EPOCH_SECONDS,
+};
 use crate::sanitize::{is_sensitive_header_lower, sanitize_value_with, REDACTED};
 
 const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
@@ -108,6 +116,26 @@ const HEALTH_ENDPOINTS: [&str; 3] = ["/health", "/health_check", "/ready"];
 /// `maximum` declared in definition/gcl.yaml; enforced at runtime because
 /// only Connected mode validates the schema.
 const MAX_RESPONSE_SLICE_BYTES: u32 = 49_152;
+
+/// `sample_key` provenance values (wire contract — see event.rs).
+const KIND_SESSION_REQUEST: &str = "session_request";
+const KIND_SESSION_RESPONSE: &str = "session_response";
+const KIND_SESSION_HEADER: &str = "session_header";
+const KIND_PRINCIPAL: &str = "principal";
+const KIND_USER_ID: &str = "user_id";
+const KIND_AUTHORIZATION: &str = "authorization";
+const KIND_REQUEST: &str = "request";
+
+/// MCP Streamable HTTP session header (2025-03-26 → 2025-11-25 spec
+/// revisions): a response header on the initialize reply, a request
+/// header on every later call. The 2026-07-28 revision removes sessions
+/// entirely — servers on it never mint one, and their traffic simply
+/// falls down the key ladder.
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+/// Sent on every non-initialize MCP request (and never on a legacy-era
+/// initialize), which makes its absence a handshake discriminator in
+/// `sampling_decision`.
+const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 
 /// Per-policy state shared across request, response, and flush handlers.
 /// All members are immutable except the queue and the sampler's PRNG
@@ -128,7 +156,29 @@ struct PolicyContext {
     /// fixed built-in contract exactly.
     pii_rules: CompiledPiiRules,
     queue: EventQueue,
-    sampler: Sampler,
+    /// Independent per-request draw: sampleBy: request, and the
+    /// terminal rung of the session-mode key ladder.
+    coin: Coin,
+    /// Deterministic keyed-threshold sampler for sampleBy: session.
+    keyed: KeyedSampler,
+    sample_mode: SampleMode,
+    /// Lowercased sessionKeyHeader entries, in configured order.
+    session_key_headers: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SampleMode {
+    Session,
+    Request,
+}
+
+impl SampleMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            SampleMode::Session => "session",
+            SampleMode::Request => "request",
+        }
+    }
 }
 
 impl PolicyContext {
@@ -242,8 +292,55 @@ impl PolicyContext {
                 "cerberus-flex-gateway: customPiiPatterns uses action: hash but no HMAC secret is available; matches will be redacted instead"
             );
         }
+        // sampleBy — warn-and-default on unknown values, same philosophy
+        // as the sampleRate clamp: a typo'd sampling knob must not take
+        // capture down.
+        let sample_mode = match config.sample_by.trim().to_ascii_lowercase().as_str() {
+            "session" => SampleMode::Session,
+            "request" => SampleMode::Request,
+            other => {
+                logger::warn!(
+                    "cerberus-flex-gateway: unknown sampleBy {:?}; defaulting to \"session\"",
+                    other
+                );
+                SampleMode::Session
+            }
+        };
+        // sessionKeyHeader — trim + lowercase (header matching is
+        // case-insensitive); blank entries are dropped with a warning.
+        let configured_session_headers = config.session_key_header.as_deref().unwrap_or(&[]);
+        let session_key_headers: Vec<String> = configured_session_headers
+            .iter()
+            .map(|n| n.trim().to_lowercase())
+            .filter(|n| !n.is_empty())
+            .collect();
+        if session_key_headers.len() != configured_session_headers.len() {
+            logger::warn!(
+                "cerberus-flex-gateway: sessionKeyHeader contains blank entries; ignored"
+            );
+        }
+        if clamped_rate < 1.0
+            && sample_mode == SampleMode::Session
+            && !response_header_allowlist.contains(MCP_SESSION_ID_HEADER)
+        {
+            // The decision itself still works — the sampler reads the
+            // raw response header regardless of capture settings — but
+            // without the captured header the backend loses one of its
+            // session correlators. (Sampled events still carry the
+            // top-level session_id field.)
+            logger::warn!(
+                "cerberus-flex-gateway: sampleBy: session with captureResponseHeaders not listing mcp-session-id — session sampling still applies, but events won't carry the response header copy of the session id"
+            );
+        }
         let queue = EventQueue::new(config.queue_capacity as usize);
-        let sampler = Sampler::new(clamped_rate, sampler_seed);
+        let coin = Coin::new(clamped_rate, sampler_seed);
+        // Sampling key material: the resolved HMAC secret when one is
+        // available, else the token — deployment-level values either
+        // way, so replicas agree on every keyed decision.
+        let keyed = KeyedSampler::new(
+            clamped_rate,
+            secret_key.as_deref().unwrap_or(&config.token),
+        );
         Ok(Self {
             config,
             secret_key,
@@ -252,7 +349,10 @@ impl PolicyContext {
             response_header_allowlist,
             pii_rules,
             queue,
-            sampler,
+            coin,
+            keyed,
+            sample_mode,
+            session_key_headers,
         })
     }
 
@@ -316,11 +416,249 @@ enum RequestSlot {
         start_epoch_micros: u64,
         ai_content_withheld: bool,
     },
+    /// MCP-handshake-shaped request captured speculatively under
+    /// sampleBy: session — no session key existed at header time, so
+    /// the keep/drop verdict is deferred to response_filter, keyed on
+    /// the session id the server mints in its response (or resolved by
+    /// the stashed fallback verdict when none appears: stateless
+    /// server, 401 discovery round trip, Envoy local reply). The
+    /// capture work spent before the verdict is bounded to roughly one
+    /// small request per session.
+    PendingHandshake {
+        event: CerberusEvent,
+        start_epoch_micros: u64,
+        ai_content_withheld: bool,
+        fallback_keep: bool,
+        fallback_kind: &'static str,
+    },
+}
+
+/// Outcome of the header-time sampling decision for one request.
+enum SampleDecision {
+    /// sampleRate 1.0 (the default): capture and stamp no sampling
+    /// fields, so the pre-0.5.0 wire shape is untouched.
+    CaptureAll,
+    /// Sampled in: capture; stamp sample_key (plus session_id when the
+    /// key was an MCP session id).
+    Keep {
+        kind: &'static str,
+        session_id: Option<String>,
+    },
+    /// Sampled out: skip all capture work.
+    Drop,
+    /// MCP-handshake-shaped (session mode only): capture speculatively,
+    /// resolve in response_filter.
+    PendingHandshake {
+        fallback_keep: bool,
+        fallback_kind: &'static str,
+    },
+}
+
+fn keep_or_drop(keep: bool, kind: &'static str, session_id: Option<String>) -> SampleDecision {
+    if keep {
+        SampleDecision::Keep { kind, session_id }
+    } else {
+        SampleDecision::Drop
+    }
+}
+
+/// Trim a header/key value; empty → None, so a present-but-blank header
+/// can never become a degenerate sampling key.
+fn nonempty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Legacy HTTP+SSE MCP transport (2024-11-05): the session id rides the
+/// query string of every POST. Param name is SDK convention, not spec —
+/// `sessionId` (TypeScript), `session_id` (Python).
+fn legacy_mcp_session_query(query_string: Option<&str>) -> Option<String> {
+    let qs = query_string?;
+    url::form_urlencoded::parse(qs.as_bytes())
+        .find(|(k, v)| (k.as_ref() == "sessionId" || k.as_ref() == "session_id") && !v.trim().is_empty())
+        .map(|(_, v)| v.trim().to_string())
+}
+
+/// Both session-era MCP spec revisions REQUIRE POSTs to advertise
+/// Accept listing application/json AND text/event-stream — a sharp
+/// handshake discriminator: LLM SDKs send only the former, plain SSE
+/// streamers only the latter.
+fn accept_lists_json_and_sse(accept: Option<&str>) -> bool {
+    let Some(accept) = accept else {
+        return false;
+    };
+    let accept = accept.to_ascii_lowercase();
+    accept.contains("application/json") && accept.contains("text/event-stream")
+}
+
+/// Header-time sampling decision. Reads raw headers via `read_header` —
+/// never the sanitized/allowlisted event maps, so captureHeaders /
+/// captureResponseHeaders settings can never change a decision. Every
+/// key is used in memory only; nothing read here ships except the MCP
+/// session id (which the backend indexes).
+///
+/// Body-derived session keys (A2A contextId, OpenAI Responses
+/// conversation ids, /threads/{id} path handles) are deliberately not
+/// consulted: they would require buffering the body before the
+/// decision. That traffic falls to the identity ladder — whole-per-user,
+/// the coarser but safe outcome — until an opt-in body/path tier
+/// exists (see DEVELOPMENT.md "Planned improvements").
+fn sampling_decision(
+    ctx: &PolicyContext,
+    read_header: impl Fn(&str) -> Option<String>,
+    auth: &Authentication,
+    endpoint: &str,
+    method: &str,
+    query_string: Option<&str>,
+) -> SampleDecision {
+    let rate = ctx.config.sample_rate;
+    if rate >= 1.0 {
+        return SampleDecision::CaptureAll;
+    }
+    if rate <= 0.0 {
+        return SampleDecision::Drop;
+    }
+    if ctx.sample_mode == SampleMode::Request {
+        return keep_or_drop(ctx.coin.flip(), KIND_REQUEST, None);
+    }
+
+    // sampleBy: session — walk the key ladder. Tiers are never mixed
+    // within one session: the ladder is ordered so that a session
+    // either always or never has each key (a session observed across
+    // two tiers would survive whole only with probability p²).
+
+    // 1. MCP session id echoed on the request (every call after
+    //    initialize). Same hash domain as the response-minted id in
+    //    response_filter — one session, one verdict.
+    if let Some(session_id) = nonempty(read_header(MCP_SESSION_ID_HEADER)) {
+        let keep = ctx.keyed.keep(DOMAIN_SESSION, &session_id, None);
+        return keep_or_drop(keep, KIND_SESSION_REQUEST, Some(session_id));
+    }
+    if let Some(session_id) = legacy_mcp_session_query(query_string) {
+        let keep = ctx.keyed.keep(DOMAIN_SESSION, &session_id, None);
+        return keep_or_drop(keep, KIND_SESSION_REQUEST, Some(session_id));
+    }
+
+    // 2. Operator-named session key headers (traceparent, a
+    //    conversation-id header, a framework session header). First
+    //    configured header present on the request wins. The raw value
+    //    may be sensitive (a cookie, a bearer-adjacent id), so it is
+    //    hashed in memory and never stamped on the event — only the
+    //    kind ships. The header NAME is bound into the hash domain so
+    //    two headers with colliding values can't share a decision.
+    for name in &ctx.session_key_headers {
+        if let Some(value) = nonempty(read_header(name)) {
+            let domain = format!("header:{name}");
+            let keep = ctx.keyed.keep(&domain, &value, None);
+            return keep_or_drop(keep, KIND_SESSION_HEADER, None);
+        }
+    }
+
+    // 3. Chat-shaped LLM traffic is sampled per-request even in session
+    //    mode — deliberately, not as a fallback. Chat completion APIs
+    //    (OpenAI Chat Completions, Anthropic Messages, Gemini
+    //    generateContent, Bedrock Converse, ...) are stateless on the
+    //    server: every turn re-sends the full conversation so far
+    //    (earlier prompts, model outputs, tool results), so any single
+    //    sampled request already contains the whole session up to that
+    //    point. Whole-session capture here would multiply bytes — an
+    //    n-turn chat ships ~n²/2 messages for n distinct ones — while
+    //    adding only cross-turn ordering, and the request-body cap
+    //    truncates late turns anyway. Detection is header-time by path
+    //    only; a prompt-shaped body on a custom path can't be known
+    //    before the decision and falls down the identity ladder below
+    //    (whole-per-user — coarser but safe). A per-user knob for chat
+    //    is deliberately deferred; see DEVELOPMENT.md.
+    //
+    //    Ordered BELOW the explicit session keys (tiers 1–2) on
+    //    purpose: a configured sessionKeyHeader such as traceparent is
+    //    an explicit operator opt-in to whole-run capture, and an
+    //    agent run's LLM calls belong to the run it keys — putting
+    //    them on a coin would shred exactly the cross-protocol
+    //    LLM-then-tool-call story that knob exists to keep whole. The
+    //    carve-out governs chat traffic with NO explicit session key,
+    //    which would otherwise land on the identity tiers.
+    if ai_content::is_llm_path(endpoint) {
+        return keep_or_drop(ctx.coin.flip(), KIND_REQUEST, None);
+    }
+
+    // 4. Fallback identity ladder — computed for all remaining traffic:
+    //    it is either the verdict itself, or the stashed verdict for a
+    //    handshake whose response mints no session id.
+    //
+    //    Principal sits above Authorization because OAuth refresh
+    //    rotates the bearer token mid-session while the principal —
+    //    recomputed per request by the upstream MuleSoft auth policy —
+    //    survives rotation. The principal tier only exists when that
+    //    policy is ordered before this one (API Manager policy order);
+    //    the per-event sample_key makes its absence visible after the
+    //    fact.
+    //
+    //    The principal and user tiers mix in a weekly epoch: a fixed
+    //    identity key would otherwise be permanently in or out of the
+    //    sample. Session-id tiers never rotate (each session is a fresh
+    //    draw). Authorization doesn't either: OAuth bearer values churn
+    //    on their own, and a static API key that only ever appears here
+    //    stays a permanent stratum — accepted for v1.
+    let epoch = Some(now_epoch_micros() / 1_000_000 / EPOCH_SECONDS);
+    let (fallback_keep, fallback_kind) = if let Some(principal) = auth
+        .authentication()
+        .and_then(|a| a.principal.or(a.client_id))
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    {
+        (
+            ctx.keyed.keep(DOMAIN_PRINCIPAL, &principal, epoch),
+            KIND_PRINCIPAL,
+        )
+    } else if let Some(user) = ctx
+        .config
+        .user_id_header
+        .as_deref()
+        .and_then(|name| nonempty(read_header(name)))
+    {
+        (ctx.keyed.keep(DOMAIN_USER, &user, epoch), KIND_USER_ID)
+    } else if let Some(authz) = nonempty(read_header("authorization")) {
+        (
+            ctx.keyed.keep(DOMAIN_AUTHORIZATION, &authz, None),
+            KIND_AUTHORIZATION,
+        )
+    } else {
+        // True terminal: an independent coin. (Deliberately not the
+        // client IP: it is spoofable per request, NAT collapses many
+        // users onto one decision, and behind an L7 balancer with no
+        // client-IP header the connection source is the balancer
+        // itself — one key deciding ALL otherwise-keyless traffic
+        // all-or-nothing.)
+        (ctx.coin.flip(), KIND_REQUEST)
+    };
+
+    // 5. MCP-handshake-shaped? Header-only pre-gate, sharper than it
+    //    looks (see accept_lists_json_and_sse); legacy-era clients
+    //    never send MCP-Protocol-Version on initialize but do on every
+    //    later request, so requiring its absence confines speculative
+    //    capture to genuine handshakes (plus 2025-03-26-era clients
+    //    talking to stateless servers, which resolve to the fallback
+    //    verdict in response_filter).
+    if method == "POST"
+        && content_type_is_json(read_header("content-type").as_deref())
+        && accept_lists_json_and_sse(read_header("accept").as_deref())
+        && read_header(MCP_PROTOCOL_VERSION_HEADER).is_none()
+    {
+        return SampleDecision::PendingHandshake {
+            fallback_keep,
+            fallback_kind,
+        };
+    }
+
+    keep_or_drop(fallback_keep, fallback_kind, None)
 }
 
 async fn request_filter(
     state: RequestState,
     stream: StreamProperties,
+    auth: Authentication,
     ctx: &PolicyContext,
 ) -> Flow<RequestSlot> {
     let headers_state = state.into_headers_state().await;
@@ -341,13 +679,28 @@ async fn request_filter(
     }
 
     // Sampling comes after the (cheaper) health/path checks and before
-    // any extraction work, so sampleRate reads as "fraction of
-    // otherwise-captured traffic" and unsampled requests cost nothing.
-    if !ctx.sampler.should_sample() {
-        return Flow::Continue(RequestSlot::Skip);
-    }
-
+    // any extraction or body work, so sampleRate reads as "fraction of
+    // otherwise-captured traffic" and unsampled requests skip all
+    // capture work (the decision itself costs a few raw header reads
+    // and at most two HMAC-SHA256 computations — see sampler.rs).
     let method = headers_state.method().to_uppercase();
+    let decision = sampling_decision(
+        ctx,
+        |name| headers_state.handler().header(name),
+        &auth,
+        &endpoint,
+        &method,
+        query_string.as_deref(),
+    );
+    let (sample_key, session_id, pending_fallback) = match decision {
+        SampleDecision::Drop => return Flow::Continue(RequestSlot::Skip),
+        SampleDecision::CaptureAll => (None, None, None),
+        SampleDecision::Keep { kind, session_id } => (Some(kind), session_id, None),
+        SampleDecision::PendingHandshake {
+            fallback_keep,
+            fallback_kind,
+        } => (None, None, Some((fallback_keep, fallback_kind))),
+    };
     // PDK exposes `:scheme` ("http" / "https"). The CoreData contract is
     // a boolean: scheme == "https".
     let scheme_https = headers_state.scheme().eq_ignore_ascii_case("https");
@@ -448,31 +801,88 @@ async fn request_filter(
         latency_ms: None,
         response_headers: None,
         response_body: None,
+        session_id,
+        // Stamped whenever sampling is active, including on speculative
+        // handshakes (their sample_key arrives in response_filter).
+        sample_rate: (ctx.config.sample_rate < 1.0).then_some(ctx.config.sample_rate),
+        sample_key,
     };
 
-    Flow::Continue(RequestSlot::Capture {
-        event,
-        start_epoch_micros,
-        ai_content_withheld,
-    })
+    match pending_fallback {
+        None => Flow::Continue(RequestSlot::Capture {
+            event,
+            start_epoch_micros,
+            ai_content_withheld,
+        }),
+        Some((fallback_keep, fallback_kind)) => Flow::Continue(RequestSlot::PendingHandshake {
+            event,
+            start_epoch_micros,
+            ai_content_withheld,
+            fallback_keep,
+            fallback_kind,
+        }),
+    }
 }
 
 /// Containment invariant: once this filter holds a Capture event, every
 /// path ends in `ctx.queue.push(event)` — response-capture failure must
-/// never lose the request event.
+/// never lose the request event. PendingHandshake is the one deliberate
+/// exception: its event is speculative until the decide-late sampling
+/// verdict resolves, and an unsampled verdict discards it here — that
+/// IS the sampling decision, not a loss.
 async fn response_filter(state: ResponseState, data: RequestData<RequestSlot>, ctx: &PolicyContext) {
-    let (mut event, start_epoch_micros, ai_content_withheld) = match data {
+    let (mut event, start_epoch_micros, ai_content_withheld, pending_fallback) = match data {
         RequestData::Continue(RequestSlot::Capture {
             event,
             start_epoch_micros,
             ai_content_withheld,
-        }) => (event, start_epoch_micros, ai_content_withheld),
+        }) => (event, start_epoch_micros, ai_content_withheld, None),
+        RequestData::Continue(RequestSlot::PendingHandshake {
+            event,
+            start_epoch_micros,
+            ai_content_withheld,
+            fallback_keep,
+            fallback_kind,
+        }) => (
+            event,
+            start_epoch_micros,
+            ai_content_withheld,
+            Some((fallback_keep, fallback_kind)),
+        ),
         // Skip / Break / Cancel — nothing to ship.
         _ => return,
     };
     // Response headers already arrived when the filter runs — this is a
     // Ready future, not a suspension point.
     let headers = state.into_headers_state().await;
+    // Decide-late resolution for MCP-handshake-shaped requests. The
+    // minted session id is read raw (captureResponseHeaders settings
+    // never change the decision) and hashed in the same domain as
+    // request-side session ids — the whole point is that a session's
+    // initialize and its later requests reach one verdict. Conforming
+    // servers can't split a session across the two legs: both reference
+    // SDKs refuse to mint a different id for a request that already
+    // carries one. No minted id (stateless server, 401 discovery round
+    // trip, Envoy local reply) resolves to the deterministic fallback
+    // verdict stashed at request time — one decision, not a second
+    // coin.
+    if let Some((fallback_keep, fallback_kind)) = pending_fallback {
+        match nonempty(headers.handler().header(MCP_SESSION_ID_HEADER)) {
+            Some(session_id) => {
+                if !ctx.keyed.keep(DOMAIN_SESSION, &session_id, None) {
+                    return;
+                }
+                event.sample_key = Some(KIND_SESSION_RESPONSE);
+                event.session_id = Some(session_id);
+            }
+            None => {
+                if !fallback_keep {
+                    return;
+                }
+                event.sample_key = Some(fallback_kind);
+            }
+        }
+    }
     let status = headers.status_code();
     // status_code() returns 0 for an absent/unparseable :status — omit
     // the field rather than shipping a bogus 0.
@@ -877,8 +1287,9 @@ async fn configure(
         // Confirmable from pod logs — sampling silently suppressing
         // events is otherwise indistinguishable from a broken pipeline.
         logger::info!(
-            "cerberus-flex-gateway: sampling active; effective sampleRate={}",
-            ctx.config.sample_rate
+            "cerberus-flex-gateway: sampling active; effective sampleRate={} sampleBy={}",
+            ctx.config.sample_rate,
+            ctx.sample_mode.as_str()
         );
     }
 
@@ -888,7 +1299,7 @@ async fn configure(
 
     // Request handling.
     let launched = launcher.launch(
-        on_request(|rs, sp| request_filter(rs, sp, &ctx))
+        on_request(|rs, sp, auth| request_filter(rs, sp, auth, &ctx))
             .on_response(|rs, rd| response_filter(rs, rd, &ctx)),
     );
 
@@ -968,6 +1379,45 @@ mod tests {
             pseudonymize_or_passthrough(Some("topsecret"), "1.2.3.4"),
             crate::hash::hash_pii("1.2.3.4", "topsecret")
         );
+    }
+
+    #[test]
+    fn legacy_mcp_session_query_both_sdk_conventions() {
+        assert_eq!(
+            legacy_mcp_session_query(Some("sessionId=abc")),
+            Some("abc".to_string())
+        );
+        assert_eq!(
+            legacy_mcp_session_query(Some("a=1&session_id=xyz")),
+            Some("xyz".to_string())
+        );
+        assert_eq!(legacy_mcp_session_query(Some("session=nope")), None);
+        assert_eq!(legacy_mcp_session_query(Some("sessionId=")), None);
+        assert_eq!(legacy_mcp_session_query(Some("sessionId=%20%20")), None);
+        assert_eq!(legacy_mcp_session_query(None), None);
+    }
+
+    #[test]
+    fn accept_gate_requires_both_media_types() {
+        // MCP POSTs must advertise both; LLM SDKs send only JSON and
+        // plain SSE streamers only the event-stream type.
+        assert!(accept_lists_json_and_sse(Some(
+            "application/json, text/event-stream"
+        )));
+        assert!(accept_lists_json_and_sse(Some(
+            "Text/Event-Stream;q=0.9, Application/JSON"
+        )));
+        assert!(!accept_lists_json_and_sse(Some("application/json")));
+        assert!(!accept_lists_json_and_sse(Some("text/event-stream")));
+        assert!(!accept_lists_json_and_sse(Some("*/*")));
+        assert!(!accept_lists_json_and_sse(None));
+    }
+
+    #[test]
+    fn nonempty_trims_and_rejects_blank() {
+        assert_eq!(nonempty(Some("  x  ".into())), Some("x".to_string()));
+        assert_eq!(nonempty(Some("   ".into())), None);
+        assert_eq!(nonempty(None), None);
     }
 
     #[test]
