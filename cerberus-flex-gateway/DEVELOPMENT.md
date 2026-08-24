@@ -284,6 +284,11 @@ of the initial release, with the current behavior documented and safe
 | Streaming-body capture for >1MB JSON *request* payloads | PDK's default `into_body_state()` caps at 1MB; large request payloads are silently truncated/dropped. (Response bodies stream and are not subject to this cap.) |
 | Semantic scrubbing for AI prompts/responses | `customPiiPatterns` value rules scrub anything regex-shaped inside prompt text, but free-form PII with no stable shape (names, addresses in prose) still can't be caught. `captureAiContent: false` is the zero-egress option. |
 | Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
+| Body/path-derived session keys | Session handles that live in JSON bodies (A2A `contextId`, OpenAI Responses conversation ids, AG-UI `threadId`) or URL paths (`/threads/{id}`) are not sampling keys in v1 — using them means buffering the body (or adding a path-pattern config) *before* the sampling decision. That traffic falls to the principal/user tier: whole-per-user, coarser but safe. Decide-late on response-body-minted handles additionally requires `captureResponseBody`. |
+| Per-user sampling knob for chat-shaped LLM traffic | Under `sampleBy: session`, well-known LLM paths without an explicit session key are hardcoded to per-request sampling (`sampling_decision` in lib.rs documents why: chat turns re-send their history, so whole-session capture is O(n²) bytes for no added content). A per-user mode would additionally preserve cross-turn ordering; deferred until a concrete need appears. |
+| Queue drop preference for handshake events | `EventQueue` drops on overflow regardless of event kind, so under sustained overload a sampled MCP session can still lose its `initialize` (delivery is at-most-once; sampling guarantees a consistent *decision*, not delivery). Preferring to drop non-handshake events first would protect server attribution. |
+| Backend consumption of `sample_rate` / `sample_key` | Events carry the fields, but nothing re-weights counts by `1/sample_rate` yet — a sampled deployment under-reports totals until the backend learns to re-inflate (tracked backend-side, together with billing policy for sampled events). |
+| Epoch-rotation boundary splits | The weekly rotation on the principal/user tiers splits sessions that straddle a week boundary (~0.3% of 30-minute sessions). Accepted as the cost of avoiding permanent blind spots; a smoother scheme (e.g. dual-epoch grace) is possible if the split rate ever matters. |
 
 ## Source layout
 
@@ -317,7 +322,7 @@ cerberus-flex-gateway/
 │   ├── source_ip.rs          # XFF first-hop / stream fallback
 │   ├── secret.rs             # init-time secret fetch
 │   ├── path_filter.rs        # capturePaths / excludePaths globs
-│   ├── sampler.rs            # sampleRate coin flip (SplitMix64)
+│   ├── sampler.rs            # sampleRate/sampleBy: keyed session sampler + coin
 │   ├── queue.rs              # bounded RefCell<VecDeque>
 │   ├── sink.rs               # POST /v1/ingest/batch
 │   ├── pipeline_tests.rs     # in-crate request-pipeline tests (pdk-unit)

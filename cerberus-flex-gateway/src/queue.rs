@@ -92,6 +92,9 @@ mod tests {
             latency_ms: None,
             response_headers: None,
             response_body: None,
+            session_id: None,
+            sample_rate: None,
+            sample_key: None,
         }
     }
 

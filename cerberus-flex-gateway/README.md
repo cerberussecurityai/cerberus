@@ -24,7 +24,7 @@ The policy is distributed prebuilt: bundles are attached to
   to the built-in `SENSITIVE_KEYS` floor.
 - LLM/AI prompt and model-output capture toggle (`captureAiContent`).
 - Traffic scoping: `captureHeaders` allowlist, `capturePaths` /
-  `excludePaths` globs, probabilistic `sampleRate` load-shedding.
+  `excludePaths` globs, session-consistent `sampleRate` load-shedding (`sampleBy`).
 - Batched delivery: per-worker bounded queue, POSTed to the Cerberus
   batch ingest endpoint every `flushIntervalMs`.
 
@@ -98,7 +98,9 @@ confirm events land in your Cerberus dashboard (see
 | `captureHeaders` | | `[]` (all headers) | Allowlist of header names (case-insensitive). Non-empty = only these headers ship in the event's headers map (sanitization still applies). Empty = all headers. Dedicated fields (`user_agent`, `clientIpHeader`, `userIdHeader`) unaffected. |
 | `capturePaths` | | `[]` | Glob allowlist. Empty = capture everything. Primary lever for high-RPS scoping. |
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
-| `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Out-of-range values clamp with a warning. |
+| `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do no capture work. Out-of-range values clamp with a warning. See "Sampling". |
+| `sampleBy` | | `session` | Sampling unit when `sampleRate` < 1: `session` = deterministic keyed decision, consistent per session/identity and identical on every replica; `request` = independent per-request coin (the pre-0.5.0 behavior). See "Sampling". |
+| `sessionKeyHeader` | | `[]` | Extra request headers to use as the session sampling key when no MCP session id is present (e.g. `traceparent`, `X-Conversation-Id`). First present header wins. Used in memory only — never shipped. |
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
 | `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts) and — with `captureResponseBody` on — LLM/AI response bodies (model output). `true`: detected AI traffic ships the body, sanitized. `false`: detected AI traffic ships events without bodies. MCP/JSON-RPC is never treated as AI content. See "LLM/AI content handling". |
 | `captureResponseBody` | | `false` | Observe `application/json` + `text/event-stream` response bodies. **Read-only tap** — the client's response is never modified, buffered, or delayed. See "Response body capture". |
@@ -158,17 +160,75 @@ skipped regardless of filter config.
 
 ### Sampling
 
-`sampleRate` (0–1, default `1.0`) sheds capture *volume*: each request
-gets an independent coin flip, and unsampled requests do zero capture
-work and pass through untouched. It applies last (health filter →
-path filters → sampling), so it reads as "fraction of
-otherwise-captured traffic".
+`sampleRate` (0–1, default `1.0`) sheds capture *volume*. It applies
+last (health filter → path filters → sampling), so it reads as
+"fraction of otherwise-captured traffic": unsampled requests skip all
+capture work (no header/body extraction, no sanitization, no event)
+and pass through untouched — the decision itself costs at most two
+HMAC-SHA256 computations. Use path filters to scope *which* routes are
+captured and `sampleRate` to shed volume across whatever remains. The
+sample is unbiased but event counts become estimates — multiply
+observed counts by `1/sampleRate` (each event carries the rate, see
+below).
 
-Use path filters to scope *which* routes are captured and `sampleRate`
-to shed volume uniformly across whatever remains. The sample is
-unbiased but event counts become estimates — multiply observed counts
-by `1/sampleRate`. Sampling is per-request with no per-client or
-per-session stickiness.
+`sampleBy` picks the sampling unit:
+
+- **`session` (default).** A deterministic keyed decision: requests
+  carrying the same key are kept or dropped together, and every
+  gateway replica reaches the same verdict with no shared state or
+  coordination. The key is, in order:
+
+  1. the MCP session id (`Mcp-Session-Id` request header, or the
+     legacy `?sessionId=` / `?session_id=` query parameter),
+  2. an operator-configured `sessionKeyHeader`,
+  3. the authenticated principal set by an upstream MuleSoft auth
+     policy (Client ID Enforcement, JWT validation, OAuth2, ...) —
+     requires that policy to be ordered *before* this one,
+  4. the `userIdHeader` value,
+  5. the `Authorization` header,
+  6. an independent per-request coin, when nothing above is present.
+
+  A session is decided by exactly one tier, so it is captured whole or
+  not at all — an MCP session's `initialize` (which carries the
+  server's self-declared name) lands together with its `tools/call`s.
+  Because `initialize` itself carries no session id yet, it is
+  captured speculatively and decided on the session id the server
+  mints in its response.
+
+  The identity tiers (3 and 4) reshuffle weekly, so no principal or
+  user is permanently unobserved at a fixed rate. Session-id keys
+  never rotate — every new session is a fresh draw.
+
+  **Exception:** requests to well-known LLM API paths (chat
+  completions, messages, embeddings, ...) that carry no explicit
+  session key are sampled per-request even in session mode. Chat-style
+  APIs resend the full conversation on every call, so any single
+  sampled request already contains the session so far — capturing
+  every turn would ship the same history over and over for no added
+  information. An explicit key takes precedence: an MCP session id or
+  a configured `sessionKeyHeader` (e.g. `traceparent`) keys these
+  requests like any others, so an agent run keyed by trace context
+  keeps its LLM calls together with its tool calls.
+
+- **`request`.** Every request gets an independent coin flip — the
+  pre-0.5.0 behavior.
+
+When sampling is active (`sampleRate` < 1), each event carries
+`sample_rate` (re-weight counts by `1/sample_rate`) and `sample_key`
+(which tier decided: `session_request` | `session_response` |
+`session_header` | `principal` | `user_id` | `authorization` |
+`request`), and session-keyed events carry the session id in the
+top-level `session_id` field. At `sampleRate: 1.0` none of these
+fields are added — the wire shape is unchanged. `sample_key` doubles
+as a health signal: if every event says `request`, no usable
+session/identity keys are reaching the policy — check the auth
+policy's ordering and `userIdHeader`.
+
+Sampling decisions always read raw headers, so `captureHeaders` /
+`captureResponseHeaders` settings never change a decision. Keys are
+hashed in memory only and never leave the gateway; the one exception
+is the MCP session id, which ships in `session_id` because the backend
+indexes it for correlation.
 
 ### Custom PII scrubbing
 

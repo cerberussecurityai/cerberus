@@ -55,10 +55,14 @@ pub struct Config {
     pub response_head_bytes: Option<i64>,
     #[serde(alias = "responseTailBytes")]
     pub response_tail_bytes: Option<i64>,
+    #[serde(alias = "sampleBy")]
+    pub sample_by: Option<String>,
     #[serde(alias = "sampleRate")]
     pub sample_rate: Option<f64>,
     #[serde(alias = "secretKey")]
     pub secret_key: Option<String>,
+    #[serde(alias = "sessionKeyHeader")]
+    pub session_key_header: Option<Vec<String>>,
     #[serde(alias = "token")]
     pub token: String,
     #[serde(alias = "userIdHeader")]
