@@ -1,53 +1,87 @@
 # Cerberus Flex Gateway Custom Policy
 
-A MuleSoft Flex Gateway custom policy (Rust → WASM, built with the PDK)
-that captures HTTP request metadata, sanitizes PII, and ships events to
-the Cerberus backend.
+A MuleSoft Flex Gateway custom policy (Rust → WASM, built with PDK
+1.8.0) that captures HTTP request metadata, sanitizes PII, and ships
+events to the Cerberus backend.
 
-## Status: **released**
+The policy is distributed prebuilt: bundles are attached to
+`flex-gateway-v*` GitHub Releases and install without a Rust toolchain.
 
-The policy is feature-complete for its initial release: prebuilt
-distribution bundles are attached to `flex-gateway-v*` GitHub Releases,
-and customers install them into their own Anypoint org without a Rust
-toolchain (see [Deployment](#deployment)). Built with PDK 1.8.0;
-building from source requires the toolchain — see [Setup](#setup)
-below. The shipped policy provides:
+## Features
 
-- Request metadata capture (header / query / body sanitization, IP
-  normalization + HMAC, source IP resolution, health-endpoint filter).
-- Customer-configurable PII scrubbing via `customSensitiveKeys` (extra
-  field names) and `customPiiPatterns` (regex rules with redact/hash
-  actions) — additive to the built-in `SENSITIVE_KEYS` floor. See
-  "Custom PII scrubbing".
-- Header allowlisting via `captureHeaders` (only ship the headers you name).
-- LLM/AI prompt-body capture toggle (`captureAiContent`) — AI request
-  bodies are captured and sanitized by default; set it to `false` to
-  withhold prompt content entirely. `customPiiPatterns` value rules
-  reach inside captured prompt text. MCP traffic is unaffected.
-- Path scoping via `capturePaths` / `excludePaths` globs.
-- Probabilistic request sampling via `sampleRate` (load-shedding for
-  high-RPS deployments).
-- Per-worker bounded queue with drop-on-full counter.
-- Batched outbound POST to the Cerberus backend every `flushIntervalMs`.
-- Init-time HMAC secret fetch with 5-second timeout.
+- Request metadata capture: sanitized headers, query params, and JSON
+  bodies; source-IP resolution with normalization + HMAC;
+  health-endpoint filtering; `status_code` and `latency_ms` on every
+  event.
+- Opt-in response-body observation (`captureResponseBody`) — a strictly
+  read-only tap on `application/json` and `text/event-stream`
+  responses. The response the client receives is never modified,
+  buffered, or delayed.
+- Response-header capture (`captureResponseHeaders`), defaulting to
+  `mcp-session-id` for MCP session correlation.
+- Custom PII scrubbing: `customSensitiveKeys` (extra field names) and
+  `customPiiPatterns` (regex rules with redact/hash actions), additive
+  to the built-in `SENSITIVE_KEYS` floor.
+- LLM/AI prompt and model-output capture toggle (`captureAiContent`).
+- Traffic scoping: `captureHeaders` allowlist, `capturePaths` /
+  `excludePaths` globs, session-consistent `sampleRate` load-shedding (`sampleBy`).
+- Batched delivery: per-worker bounded queue, POSTed to the Cerberus
+  batch ingest endpoint every `flushIntervalMs`.
 
-### Planned improvements
+## Installation
 
-There is a decent-sized backlog of follow-up improvements, but none of
-them block production use — each was deliberately scoped out of the
-initial release, and in every case the current behavior is documented
-and safe. Each row records today's behavior and the reasoning.
+### Connected Mode (standard customer install)
 
-| Improvement | Current behavior / why deferred |
-|---|---|
-| `_cerberus_metrics` extraction (response body inspection) | Mutating response bodies interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
-| Retry / backoff on backend failures | Currently at-most-once: failed batches are dropped. |
-| Circuit breaker for sustained backend outages | Without one, every flush during an outage posts into a black hole. Currently logs and moves on. |
-| Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. |
-| `status_code` / `latency_ms` capture | Trivially addable in `response_filter`. |
-| Streaming-body capture for >1MB JSON payloads | PDK's default `into_body_state()` caps at 1MB. Currently silently truncated/dropped for large payloads. |
-| Semantic scrubbing for AI prompts/responses | `customPiiPatterns` value rules scrub anything regex-shaped (SSNs, emails, member IDs) inside prompt text, but free-form PII with no stable shape (names, addresses in prose) still can't be caught. For zero prompt egress, set `captureAiContent: false` to withhold AI request bodies entirely (they are captured by default). |
-| Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
+Custom Flex Gateway policies can't be shared across Anypoint orgs, so
+you publish the prebuilt policy into **your own** org's Exchange.
+Download the bundle from the GitHub Release and run the installer:
+
+```bash
+tar -xzf cerberus-flex-gateway-policy-<version>.tar.gz
+cd cerberus-flex-gateway-policy-<version>
+./install.sh --org-id <your-anypoint-org-uuid>     # try --dry-run first
+```
+
+Requirements: Node ≥ 18, `anypoint-cli-v4` with the PDK plugin, and an
+authenticated Anypoint session — no Rust. The full walkthrough
+(prerequisites, installer flags, upgrade, uninstall, troubleshooting)
+is in **[INSTALL.md](./INSTALL.md)**.
+
+### Local Mode (air-gapped deployments)
+
+1. Take `cerberus_flex_gateway.wasm` and `gcl.yaml` from the bundle's
+   `policy/` directory (or build from source — see
+   [DEVELOPMENT.md](./DEVELOPMENT.md)).
+2. Copy them onto every Flex Gateway pod (ConfigMap / volume mount).
+3. Apply a `PolicyBinding` CR scoped to your API instance with the
+   policy's config values.
+4. Verify with `kubectl logs`: look for policy `configure` log lines
+   and a successful secret-key fetch (if `backendUrl` is set).
+
+When upgrading in Local mode, copy the new `.wasm` before (or together
+with) a config that sets newer options — the schema rejects unknown
+fields, so an old `.wasm` given a new config fails policy load.
+
+Reference:
+<https://docs.mulesoft.com/gateway/latest/flex-local-deploy-custom-policy>.
+
+### Applying the policy in API Manager
+
+Once the policy is in your org's Exchange, apply it to an API instance
+via the API Manager UI (Policies → Add policy → **Custom** tab → select
+the policy → fill the form) or via CLI:
+
+```
+anypoint-cli-v4 api-mgr policy apply \
+  --apiInstanceId <id> \
+  --policyId cerberus-flex-gateway \
+  --config '{"ingestService":"...","token":"..."}'
+```
+
+`ingestService` and `token` are the only required values — see the
+configuration table below for everything else. Then drive traffic and
+confirm events land in your Cerberus dashboard (see
+[Verification](#verification)).
 
 ## Configuration (`gcl.yaml`)
 
@@ -61,42 +95,46 @@ and safe. Each row records today's behavior and the reasoning.
 | `customPiiPatterns` | | `[]` | Regex scrubbing rules (`{pattern, label, action: redact\|hash, scope: keys\|values\|both}`) applied to query params and JSON bodies. Invalid rules fail policy load. See "Custom PII scrubbing". |
 | `clientIpHeader` | | `X-Forwarded-For` | Header to read the client IP from (first hop). Falls back to Envoy connection source if absent. |
 | `userIdHeader` | | unset | Header to read end-user identity from (e.g. `X-User-Id`). Required for per-end-user analytics; intentionally not defaulted so each deployment picks its own header. |
-| `captureHeaders` | | `[]` (all headers) | Allowlist of header names (case-insensitive). Non-empty = only these headers ship in the event's headers map; sanitization still applies to them. Empty = all headers. Dedicated fields (`user_agent`, `clientIpHeader`, `userIdHeader`) unaffected. |
+| `captureHeaders` | | `[]` (all headers) | Allowlist of header names (case-insensitive). Non-empty = only these headers ship in the event's headers map (sanitization still applies). Empty = all headers. Dedicated fields (`user_agent`, `clientIpHeader`, `userIdHeader`) unaffected. |
 | `capturePaths` | | `[]` | Glob allowlist. Empty = capture everything. Primary lever for high-RPS scoping. |
 | `excludePaths` | | `[]` | Glob denylist. Wins over `capturePaths` on overlap. |
-| `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do zero capture work. Non-crypto per-worker PRNG; out-of-range clamps with a warning. |
+| `sampleRate` | | `1.0` | Fraction of capturable traffic to sample (0–1). Applied after path filters; unsampled requests do no capture work. Out-of-range values clamp with a warning. See "Sampling". |
+| `sampleBy` | | `session` | Sampling unit when `sampleRate` < 1: `session` = deterministic keyed decision, consistent per session/identity and identical on every replica; `request` = independent per-request coin (the pre-0.5.0 behavior). See "Sampling". |
+| `sessionKeyHeader` | | `[]` | Extra request headers to use as the session sampling key when no MCP session id is present (e.g. `traceparent`, `X-Conversation-Id`). First present header wins. Used in memory only — never shipped. |
 | `captureRequestBody` | | `true` | Buffer + sanitize JSON request bodies (POST/PUT/PATCH only). Disable globally to skip the buffering cost; for per-route scoping use `capturePaths` / `excludePaths`. |
-| `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts). On by default: detected AI traffic ships the body, SENSITIVE_KEYS-sanitized (free-form prompt text still ships raw). Set to `false` to withhold prompt content — detected AI traffic then ships events without the body. MCP/JSON-RPC bodies are not treated as AI content. See "LLM/AI content handling". |
+| `captureAiContent` | | `true` | Capture LLM/AI request bodies (prompts) and — with `captureResponseBody` on — LLM/AI response bodies (model output). `true`: detected AI traffic ships the body, sanitized. `false`: detected AI traffic ships events without bodies. MCP/JSON-RPC is never treated as AI content. See "LLM/AI content handling". |
+| `captureResponseBody` | | `false` | Observe `application/json` + `text/event-stream` response bodies. **Read-only tap** — the client's response is never modified, buffered, or delayed. See "Response body capture". |
+| `captureResponseHeaders` | | `["mcp-session-id"]` | Allowlist of **response** header names captured into the event's `response_headers` map. Read-only, independent of `captureResponseBody`, pure opt-in (empty = none). Sanitized like request headers. |
+| `responseHeadBytes` | | `24576` | First N bytes of a captured response body retained (max 49152). See sizing guidance under "Response body capture". |
+| `responseTailBytes` | | `16384` | Rolling last N bytes retained (max 49152) — stream terminators (usage, finish reasons) live in the tail. Same sizing guidance. |
 | `batchSize` | | `50` | Events per outbound POST (max 1000 — server-side cap). |
 | `flushIntervalMs` | | `2000` | Flush cadence. Min 100ms (prevents tight-loop misconfig). |
-| `queueCapacity` | | `10000` | Per-worker queue. Total memory ~ `workers × queueCapacity × ~5KB`. |
+| `queueCapacity` | | `10000` | Per-worker queue. Memory ~ `workers × queueCapacity × ~5KB`, plus up to `responseHeadBytes + responseTailBytes` per event carrying a response body. Size for the worst case — the queue only fills during a backend outage. |
 | `logLevel` | | `info` | One of: `debug`, `info`, `warn`, `error`. |
 
 ### Header semantics
 
-Envoy presents headers as `(name, value)` pairs with name lowercased per
-HTTP/2 conventions, and multi-valued headers (e.g. `Set-Cookie`,
-comma-folded `X-Forwarded-For`) appear as multiple entries with the
-same name. The policy:
+Header names arrive lowercased (HTTP/2 convention) and multi-valued
+headers appear as repeated entries. For each request the policy:
 
-1. Skips Envoy pseudo-headers (`:method`, `:path`, `:scheme`, ...) —
-   their metadata is captured in dedicated event fields.
-2. Applies the `captureHeaders` allowlist (if configured): headers not
-   on the list are omitted from the event entirely.
+1. Skips Envoy pseudo-headers (`:method`, `:path`, ...) — their values
+   ship in dedicated event fields.
+2. Applies the `captureHeaders` allowlist, if configured.
 3. Applies sensitivity handling: `Authorization` is HMAC'd (secret
    configured) or `[REDACTED]` (no secret); other `SENSITIVE_HEADERS`
    are `[REDACTED]`.
-4. Title-cases header names (`x-api-key` → `X-Api-Key`).
-5. Collapses multi-valued headers with `, ` separator before storing
-   in the event payload.
+4. Title-cases names (`x-api-key` → `X-Api-Key`) and collapses
+   multi-valued headers with `, `.
+
+Response headers captured via `captureResponseHeaders` go through the
+same steps, so the two directions cannot drift.
 
 The allowlist controls which headers are *present*; sanitization
 controls their *values* — listing `Authorization` or `Cookie` in
 `captureHeaders` does not bypass redaction. The dedicated `user_agent`
-event field is populated regardless of the allowlist. Allowlist
-entries are trimmed and blank entries ignored; a list containing only
-blank entries counts as empty, so all headers are captured and the
-policy logs a startup warning.
+field ships regardless of the allowlist. Allowlist entries are trimmed;
+a list of only blank entries counts as empty (all headers captured,
+with a startup warning).
 
 ### Path scoping
 
@@ -122,35 +160,87 @@ skipped regardless of filter config.
 
 ### Sampling
 
-`sampleRate` (0–1, default `1.0`) sheds capture *volume*: each request
-gets a uniform per-request coin flip, and requests that lose it do no
-capture work at all — no header/body extraction, no sanitization, no
-event — and pass through untouched. It sits last in the decision order
-(health-endpoint filter → `capturePaths` / `excludePaths` → sampling),
-so it reads as "fraction of otherwise-captured traffic".
+`sampleRate` (0–1, default `1.0`) sheds capture *volume*. It applies
+last (health filter → path filters → sampling), so it reads as
+"fraction of otherwise-captured traffic": unsampled requests skip all
+capture work (no header/body extraction, no sanitization, no event)
+and pass through untouched — the decision itself costs at most two
+HMAC-SHA256 computations. Use path filters to scope *which* routes are
+captured and `sampleRate` to shed volume across whatever remains. The
+sample is unbiased but event counts become estimates — multiply
+observed counts by `1/sampleRate` (each event carries the rate, see
+below).
 
-Use `capturePaths` / `excludePaths` to scope *which* routes are
-captured, and `sampleRate` to shed volume uniformly across whatever
-remains. The sampled subset is unbiased, but event counts become
-estimates — multiply observed counts by `1/sampleRate`. Sampling is
-per-request and memoryless: there is no per-client or per-session
-stickiness, so a given caller's requests land in the sample
-independently.
+`sampleBy` picks the sampling unit:
+
+- **`session` (default).** A deterministic keyed decision: requests
+  carrying the same key are kept or dropped together, and every
+  gateway replica reaches the same verdict with no shared state or
+  coordination. The key is, in order:
+
+  1. the MCP session id (`Mcp-Session-Id` request header, or the
+     legacy `?sessionId=` / `?session_id=` query parameter),
+  2. an operator-configured `sessionKeyHeader`,
+  3. the authenticated principal set by an upstream MuleSoft auth
+     policy (Client ID Enforcement, JWT validation, OAuth2, ...) —
+     requires that policy to be ordered *before* this one,
+  4. the `userIdHeader` value,
+  5. the `Authorization` header,
+  6. an independent per-request coin, when nothing above is present.
+
+  A session is decided by exactly one tier, so it is captured whole or
+  not at all — an MCP session's `initialize` (which carries the
+  server's self-declared name) lands together with its `tools/call`s.
+  Because `initialize` itself carries no session id yet, it is
+  captured speculatively and decided on the session id the server
+  mints in its response.
+
+  The identity tiers (3 and 4) reshuffle weekly, so no principal or
+  user is permanently unobserved at a fixed rate. Session-id keys
+  never rotate — every new session is a fresh draw.
+
+  **Exception:** requests to well-known LLM API paths (chat
+  completions, messages, embeddings, ...) that carry no explicit
+  session key are sampled per-request even in session mode. Chat-style
+  APIs resend the full conversation on every call, so any single
+  sampled request already contains the session so far — capturing
+  every turn would ship the same history over and over for no added
+  information. An explicit key takes precedence: an MCP session id or
+  a configured `sessionKeyHeader` (e.g. `traceparent`) keys these
+  requests like any others, so an agent run keyed by trace context
+  keeps its LLM calls together with its tool calls.
+
+- **`request`.** Every request gets an independent coin flip — the
+  pre-0.5.0 behavior.
+
+When sampling is active (`sampleRate` < 1), each event carries
+`sample_rate` (re-weight counts by `1/sample_rate`) and `sample_key`
+(which tier decided: `session_request` | `session_response` |
+`session_header` | `principal` | `user_id` | `authorization` |
+`request`), and session-keyed events carry the session id in the
+top-level `session_id` field. At `sampleRate: 1.0` none of these
+fields are added — the wire shape is unchanged. `sample_key` doubles
+as a health signal: if every event says `request`, no usable
+session/identity keys are reaching the policy — check the auth
+policy's ordering and `userIdHeader`.
+
+Sampling decisions always read raw headers, so `captureHeaders` /
+`captureResponseHeaders` settings never change a decision. Keys are
+hashed in memory only and never leave the gateway; the one exception
+is the MCP session id, which ships in `session_id` because the backend
+indexes it for correlation.
 
 ### Custom PII scrubbing
 
-The built-in sanitization contract is fixed: `SENSITIVE_KEYS` matching
-by key name only. Customers carry domain-specific PII the fixed list
-can't know about — internal member numbers, custom token field names —
-and PII embedded in *values* (an SSN inside a free-text note) that
-key-name matching can never reach. Two config properties close both
-gaps. Rules only ever **add** scrubbing: the built-in `SENSITIVE_KEYS`
-/ `SENSITIVE_HEADERS` floor always applies and cannot be removed or
-weakened by customer rules.
+Built-in sanitization matches the fixed `SENSITIVE_KEYS` list by key
+name. Two properties extend it for domain-specific PII — internal
+member numbers, custom token fields, PII embedded in free-text values.
+Rules only ever **add** scrubbing: the built-in `SENSITIVE_KEYS` /
+`SENSITIVE_HEADERS` floor always applies and cannot be weakened.
 
 `customSensitiveKeys` — extra field names, matched case-insensitively
-exactly like the built-in list. A matching key's entire value (nested
-objects/arrays included) becomes `[REDACTED]`:
+like the built-in list. A matching key's entire value (nested
+subtrees included) becomes `[REDACTED]`:
 
 ```yaml
 customSensitiveKeys:
@@ -159,8 +249,8 @@ customSensitiveKeys:
 ```
 
 `customPiiPatterns` — regex rules applied to query params and JSON
-request bodies (including captured LLM/AI prompt bodies — this is the
-mechanism that reaches inside free-form prompt text):
+request bodies, including captured LLM/AI prompt text (this is the
+mechanism that reaches inside free-form prompts):
 
 ```yaml
 customPiiPatterns:
@@ -180,108 +270,172 @@ Per-rule knobs:
 
 - `action` — `redact` (default) replaces matches with `[REDACTED]`.
   `hash` replaces each match with its HMAC-SHA256 hex digest, keyed on
-  the policy's secret (`secretKey` / `backendUrl` fetch) — use it for
-  stable identifiers where "same value across requests" keeps analytics
-  value. If no secret is available, `hash` falls back to redact and the
-  policy logs a startup warning: matched PII never ships raw.
+  the policy's secret — use it for stable identifiers where "same value
+  across requests" keeps analytics value. With no secret available,
+  `hash` falls back to redact and logs a startup warning: matched PII
+  never ships raw.
 - `scope` — `values` (default) rewrites matched substrings inside
-  string values, preserving surrounding text (`"ssn is 123-45-6789"` →
-  `"ssn is [REDACTED]"`). `keys` matches field *names* and replaces the
-  entire value, like `customSensitiveKeys` but regex (a `hash` action
-  on a non-string value redacts instead — there is no cross-language-
-  stable subtree serialization to hash). `both` does both.
-- `label` — optional name used in startup logs and config error
-  messages; never appears in event output.
+  string values, preserving surrounding text. `keys` matches field
+  *names* and replaces the entire value, like `customSensitiveKeys` but
+  regex (a `hash` action on a non-string value redacts instead).
+  `both` does both.
+- `label` — optional name used in logs and config errors; never
+  appears in event output.
 
 Semantics worth knowing:
 
 - Rules apply after built-in key redaction, in declaration order; each
-  value rule scans the previous rule's output. A value already replaced
-  wholesale by key matching is not pattern-scanned.
-- Patterns match **case-insensitively by default** (a PII net that
-  misses `SSN` because the rule said `ssn` is a leak); prefix a pattern
-  with `(?-i)` to opt out.
-- The engine is linear-time (`regex-lite`) — catastrophic-backtracking
-  ReDoS is structurally impossible, and compiled-pattern size is
-  capped. Character classes `\d` `\w` `\s` are ASCII-only.
-- Pattern matching is text-only: an SSN stored as a JSON *number*
+  value rule scans the previous rule's output.
+- Patterns match **case-insensitively by default**; prefix `(?-i)` to
+  opt out. Character classes `\d` `\w` `\s` are ASCII-only.
+- The engine is linear-time (no catastrophic backtracking) with a
+  capped compiled-pattern size.
+- Matching is text-only: an SSN stored as a JSON *number*
   (`123456789`) will not match; numbers, bools, and null pass through.
 - A rule that fails to compile (bad regex, unknown `action`/`scope`,
   empty `pattern`) **fails policy load** with a descriptive error
   rather than silently not scrubbing.
-- Scrubbing applies to query params and JSON bodies — the literal
-  customer ask. Header values are governed by `captureHeaders` + the
-  fixed `SENSITIVE_HEADERS` set and are not pattern-scanned.
+- Headers are not pattern-scanned — they are governed by
+  `captureHeaders` and the fixed `SENSITIVE_HEADERS` set.
 - Matching cost is O(rules × body size) on the request path. Keep rule
   counts modest on high-RPS APIs; `capturePaths` / `sampleRate` scope
   the traffic that pays it.
 
-The rule engine is pinned by `parity-fixtures/custom_pii_rules.yaml`
-(Rust-only for now — the fixture is the contract the Python
-integrations must match when they adopt the feature).
-
 ### LLM/AI content handling
 
-LLM prompts and responses are free-form text with high PII potential.
-By default the policy captures LLM/AI request bodies and sanitizes them
-like any other JSON body (`captureAiContent: true`): built-in
-sanitization is key-matching only, so prompt text ships raw unless
-`customPiiPatterns` value rules are configured — those rewrite matched
-substrings inside prompt strings (SSNs, emails, account numbers), but
-PII with no stable shape (names in prose) still passes. Set
-`captureAiContent: false` to withhold detected LLM/AI request bodies
-entirely.
+By default (`captureAiContent: true`) the policy captures LLM/AI
+request bodies and sanitizes them like any other JSON body. Built-in
+sanitization matches key names only, so free-form prompt text ships
+raw unless `customPiiPatterns` value rules scrub it — and PII with no
+stable shape (names in prose) is beyond regex too. Keep the default
+only if you accept prompt content leaving the gateway; set
+`captureAiContent: false` to withhold it.
 
-When `captureAiContent: false` and a request is detected as LLM/AI
-traffic, its event still ships with everything except `body`: endpoint,
-method, sanitized headers and query params, source IP, timestamp, user
-agent, and user id — so AI endpoint discovery and traffic analytics keep
-working; only the prompt content is withheld.
+With `captureAiContent: false`, a request detected as LLM/AI traffic
+ships its event without `body` — endpoint, method, sanitized headers
+and query params, source IP, timestamp, user agent, and user id still
+ship, so AI endpoint discovery and traffic analytics keep working.
 
-The detection heuristic below governs which requests are withheld when
-`captureAiContent: false`. It is biased toward recall: a false positive
-only costs body capture for one event, while a false negative ships
-prompt text. A request counts as LLM/AI traffic if either matches:
+Detection is biased toward recall (a false positive costs one event's
+body; a false negative ships prompt text). A request counts as LLM/AI
+if either matches:
 
-- **Path** (lowercased, query-stripped): ends with `/completions` or
-  `/embeddings`; contains `/v1/messages`, `generatecontent` (Gemini
-  `:generateContent` / `:streamGenerateContent`), or `/v1/responses`;
-  ends with `/converse` or `/converse-stream` (Bedrock Converse);
-  contains `/model/` and ends with `/invoke` or
+- **Path** (lowercased, query-stripped): ends with `/completions`,
+  `/embeddings`, `/converse`, or `/converse-stream` (Bedrock Converse);
+  contains `/v1/messages`, `/v1/responses`, or `generatecontent`
+  (Gemini); contains `/model/` and ends with `/invoke` or
   `/invoke-with-response-stream` (Bedrock InvokeModel); or contains a
   Vertex AI custom method (`:predict`, `:rawPredict`,
-  `:streamRawPredict` — the colon keeps ordinary `/predict` business
-  routes out). Path-matched requests skip body buffering entirely —
-  prompts are the largest bodies the gateway sees.
+  `:streamRawPredict` — the colon keeps ordinary `/predict` routes
+  out). Path-matched requests skip body buffering entirely.
 - **Body shape** (parsed JSON): a `messages` array whose elements carry
   a `role`; a `model` key alongside `prompt` / `input` / `messages` /
-  `contents` / `message` / `chat_history` / `texts` (the last three are
-  Cohere-style); a Gemini-style `contents` array whose elements carry
-  `parts`; `prompt` alongside a generation parameter (`max_tokens`,
-  `max_tokens_to_sample`, `temperature`, `top_p`); `anthropic_version`
-  (Bedrock-Anthropic); `inputText` + `textGenerationConfig` (Bedrock
-  Titan); or a bare top-level array of `{role, content}` messages.
+  `contents` / `message` / `chat_history` / `texts`; a Gemini-style
+  `contents` array whose elements carry `parts`; `prompt` alongside a
+  generation parameter (`max_tokens`, `max_tokens_to_sample`,
+  `temperature`, `top_p`); `anthropic_version` (Bedrock-Anthropic);
+  `inputText` + `textGenerationConfig` (Bedrock Titan); or a bare
+  top-level array of `{role, content}` messages.
 
-**MCP traffic is never treated as AI content.** Bodies that look like
-JSON-RPC (a top-level object with a `jsonrpc` key) are captured
-normally: MCP bodies are well-structured (method names + typed
-params), standard `SENSITIVE_KEYS` sanitization handles them, and MCP
-discovery depends on the captured arguments. One caveat, and only when
-`captureAiContent: false`: this carve-out applies to bodies that get
-buffered, but requests on the well-known LLM API paths above skip
-buffering before the body can be inspected, so an MCP server mounted on
-such a path (e.g. a mount containing `/v1/messages`) ships its events
-without a body — real MCP mounts don't collide with provider API path
-shapes.
+**MCP traffic is never treated as AI content.** JSON-RPC bodies (a
+top-level `jsonrpc` key) are captured normally — they are
+well-structured, standard sanitization handles them, and MCP discovery
+depends on the captured arguments. One caveat when
+`captureAiContent: false`: requests on the well-known LLM paths above
+skip buffering before the body can be inspected, so an MCP server
+mounted on such a path (e.g. a mount containing `/v1/messages`) ships
+its events without a body.
 
-Leaving `captureAiContent` at its `true` default means prompt content
-(sanitized for `SENSITIVE_KEYS` and any `customPiiPatterns`, but
-otherwise raw free-form text) leaves the gateway; keep it enabled only
-if you accept that. Set it to `false` to withhold AI request bodies
-entirely.
+The same flag governs the response side. With `captureResponseBody` on
+and `captureAiContent: false`, model output is withheld when any of
+three signals fires: the request hit a well-known LLM path (the
+response stream is never opened); the request body was itself withheld
+as prompt-shaped (the decision carries over, SSE or JSON); or the
+response body looks like model output — a structural check on whole
+JSON bodies (OpenAI `choices[]` / Responses-API `output[]`, Anthropic
+`type: message` + `content[]` / `stop_reason`, Gemini `candidates[]`,
+embeddings `data[].embedding`, Bedrock Converse `stopReason` / Titan
+`results[].outputText`, Cohere `finish_reason` + `text`/`message`),
+and a signature sniff over the first 2 KiB for text that cannot be
+parsed (SSE streams, truncated bodies). JSON-RPC always wins: an MCP
+result is never treated as AI content, even one carrying model text.
+Like the request side this is shape-based and recall-biased — a
+provider whose output matches none of these shapes, on a custom path
+whose request wasn't detected, would not be caught.
 
-Response bodies are not captured by the policy at all yet; when
-response capture lands, it will respect this same flag.
+### Response body capture
+
+`captureResponseBody` (default `false`) observes `application/json`
+and `text/event-stream` response bodies.
+
+**The policy is a read-only tap.** The response delivered to the
+client is never modified, buffered, or delayed — chunks pass through
+exactly as they arrive from the upstream, and the policy retains only
+a bounded copy as they stream past.
+
+What ships in `response_body`:
+
+- **Whole body** — when it fits within `responseHeadBytes` +
+  `responseTailBytes`. JSON is parsed and sanitized exactly like a
+  request body (`SENSITIVE_KEYS` + custom rules). An SSE stream ships
+  as one string, sanitized per `data:` frame — JSON frames are
+  key-sanitized in place, all other lines get `customPiiPatterns`
+  value rules — with framing preserved.
+- **Truncation marker** — when the body exceeds the budget:
+  `{"body_truncated": true, "body_bytes_total": N,
+  "body_bytes_dropped": M, "head": "...", "tail": "..."}` — the first
+  `responseHeadBytes` plus the rolling last `responseTailBytes`,
+  middle discarded as it streams. Truncation is never silent. The tail
+  is sized generously because stream terminators (token usage, finish
+  reasons) arrive last.
+- **Compression marker** — `{"body_skipped_encoding": "<enc>"}` when
+  `Content-Encoding` is anything other than `identity`; a compressed
+  stream is never sliced or read.
+
+`status_code` and `latency_ms` ship on every event regardless of this
+setting. Body-less responses (204/304/HEAD) produce no `response_body`.
+
+**Sizing.** The ingest endpoint enforces a per-event size cap and
+drops oversized events server-side. Size `responseHeadBytes +
+responseTailBytes` so the response slices, the request body, and the
+rest of the event stay under it — the defaults (24 KiB + 16 KiB) leave
+headroom for typical events. Setting both to `0` gives a valid
+"response size telemetry" mode: markers with byte counts, empty
+slices.
+
+**PII caveat.** Full key-based sanitization applies to whole JSON
+bodies and complete SSE data frames. Truncated head/tail slices, the
+SSE frame split by each truncation cut, and an SSE payload spread
+across multiple `data:` lines are unparseable text — only
+`customPiiPatterns` value rules run over them (regex-shaped PII such
+as SSNs and account numbers is still scrubbed). Prose PII with no
+stable shape (a name in generated text) is beyond key matching or
+regex in every case — the same limit that applies to captured prompts.
+For zero model-output egress, set `captureAiContent: false`.
+
+**Memory.** Capture memory is capped at head+tail per in-flight
+response regardless of body size — long or unbounded streams cannot
+grow it.
+
+### Response header capture
+
+`captureResponseHeaders` names the response headers to copy into the
+event's `response_headers` map — independent of body capture, same
+read-only guarantee, same sanitization as request headers (sensitive
+headers redact even when listed). Unlike `captureHeaders` it is a pure
+opt-in allowlist: empty means no response headers are captured.
+
+The default `["mcp-session-id"]` captures the session id that stateful
+APIs such as MCP assign in a response header, letting the backend
+correlate a session's events (clients echo it as a request header,
+which normal request capture already sees). Set the list to `[]` to
+disable.
+
+Two scoping notes: the allowlist is matched on every response, not
+only MCP traffic — a non-MCP route that sets an allowlisted header
+ships it too. And only the response *headers* phase is read; a value
+sent as an HTTP trailer is not observed (MCP assigns `mcp-session-id`
+in the initial headers, so this does not affect it).
 
 ### TLS to the Cerberus backend
 
@@ -292,108 +446,7 @@ pin `defaultTLS.outboundPolicyCalls.minversion: "1.3"` in a gateway
 `Configuration` resource — see `INSTALL.md` ("Enforcing TLS 1.3 to Cerberus")
 for the YAML and the gateway-wide scope caveat.
 
-## Setup
-
-Prerequisites (PDK 1.8.0, April 2026):
-
-```bash
-# Rust toolchain
-rustup target add wasm32-wasip1
-
-# Anypoint CLI + PDK plugin
-npm install -g anypoint-cli-v4
-anypoint-cli-v4 plugins:install anypoint-pdk-plugin
-
-# Anypoint cargo extensions (build / publish helpers)
-cargo install --locked cargo-anypoint cargo-llvm-cov
-
-# Sync parity fixtures (creates tests/fixtures -> ../parity-fixtures)
-make sync-fixtures
-```
-
-## Build / test
-
-```bash
-make build   # compile to wasm32-wasip1; emits target/wasm32-wasip1/release/cerberus_flex_gateway.wasm + GCL manifests
-make test    # cargo test (parity + unit)
-make run     # boots a local Flex Gateway in Docker Compose with the policy attached
-```
-
-`make sync-fixtures` is required before `make test` if you've never
-run it — the parity test runner reads from `tests/fixtures/`, which is
-a symlink to the repo-root `parity-fixtures/` directory.
-
-## Deployment
-
-Two operator-facing modes are supported.
-
-### Customer installation (Connected Mode)
-
-This is how an end customer installs the policy. Custom Flex Gateway policies
-can't be shared across Anypoint orgs, so each customer publishes the prebuilt
-policy into **their own** org's Exchange. We ship a distribution bundle; the
-customer runs a one-line installer:
-
-```bash
-tar -xzf cerberus-flex-gateway-policy-<version>.tar.gz
-cd cerberus-flex-gateway-policy-<version>
-./install.sh --org-id <your-anypoint-org-uuid>     # try --dry-run first
-```
-
-The installer needs **Node ≥ 18** + `anypoint-cli-v4` (the PDK plugin) and an
-authenticated Anypoint session. It regenerates the Exchange asset files stamped
-with the customer's org id (`pdk policy-project build-asset-files`) from the
-prebuilt wasm + definition source, then publishes an immutable Exchange release
-via `anypoint-cli-v4 pdk policy-project release`. Full walkthrough
-(prerequisites, applying the policy in API Manager, upgrade, uninstall,
-troubleshooting): **[INSTALL.md](./INSTALL.md)**.
-
-Maintainers build the bundle with `make bundle`; CI attaches it to a GitHub
-Release on a `flex-gateway-v*` tag.
-
-### Maintainer publish (our own org)
-
-`make publish` / `make release` publish from this repo into **our** Anypoint org
-(the default `[package.metadata.anypoint] group_id` in `Cargo.toml`). These
-require the Rust toolchain (via `make build`) and target our org — they are
-**not** the customer path. ⚠️ `make release` is immutable; don't run it as a
-test.
-
-### Local mode (development + air-gapped operators)
-
-1. `make build` → produces `cerberus_flex_gateway.wasm` and the GCL
-   manifests under `target/wasm32-wasip1/release/`.
-2. Copy `.wasm` and `gcl.yaml` onto every Flex Gateway pod (via
-   ConfigMap / volume mount).
-3. Apply a `PolicyBinding` CR scoped to your API instance with the
-   policy's config values.
-4. Verify with `kubectl logs` — should see policy `configure` log
-   lines and a successful secret-key fetch (if `backendUrl` is set).
-
-Reference:
-<https://docs.mulesoft.com/gateway/latest/flex-local-deploy-custom-policy>.
-
-### Applying the policy in API Manager
-
-Once the policy is in an org's Exchange (customer install or maintainer
-publish, above), apply it to an API instance via the API Manager UI (Custom tab
-→ select policy → fill the form rendered from `gcl.yaml`) or via CLI:
-
-```
-anypoint-cli-v4 api-mgr policy apply \
-  --apiInstanceId <id> \
-  --policyId cerberus-flex-gateway \
-  --config '{"ingestService":"...","token":"..."}'
-```
-
-Then verify in API Manager + gateway pod logs. The customer-facing version of
-this walkthrough (with a config example) is in [INSTALL.md](./INSTALL.md).
-
-References:
-- Publishing: <https://docs.mulesoft.com/pdk/latest/policies-pdk-publish-policies>
-- API Manager apply: <https://docs.mulesoft.com/api-manager/latest/policies-custom-task>
-
-## Verification end-to-end
+## Verification
 
 ```bash
 # Drive traffic
@@ -408,68 +461,30 @@ The `Authorization` header value should be either `[REDACTED]` (no
 secret configured) or a 64-char lowercase hex digest (HMAC-SHA256).
 The body should have `password` replaced by `[REDACTED]`.
 
-## Parity testing
+## Operational notes
 
-The crate duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` /
-`REDACTED` and reimplements `sanitize_dict` / `normalize_ip` /
-`hash_pii` so the WASM target has no Python dependency. The Cerberus
-implementations all consume the same YAML fixtures from
-`../parity-fixtures/`:
+- **Delivery is at-most-once.** Failed batch POSTs are dropped without
+  retry, and up to ~`flushIntervalMs` of buffered events are lost when
+  a gateway pod restarts or scales down.
+- **Queue overflow drops events.** During a backend outage the bounded
+  per-worker queue fills and further events are dropped; the drop
+  count is logged.
+- **Upstream resets.** If the upstream connection resets or times out
+  before response headers exist, that request's event is not shipped.
+- **Long-lived streams ship late.** With `captureResponseBody` on, an
+  event ships when its response body ends. A keep-alive
+  `text/event-stream` (e.g. an MCP notification stream) holds its
+  event until the connection closes, and `latency_ms` then reads as
+  the stream's lifetime. The client is unaffected — the event is just
+  late.
+- **Per-event size cap.** Events whose serialized form exceeds the
+  ingest endpoint's cap are dropped server-side — see "Sizing" above.
+- **Large request bodies.** JSON request bodies above 1 MB are not
+  captured in full (platform buffering cap). Response bodies stream
+  and are not subject to this.
 
-- `cerberus-django/tests/test_parity.py` runs them against `cerberus_core`.
-- `cerberus-flex-gateway/tests/parity_runner.rs` runs them against the
-  Rust ports.
+## Development
 
-`custom_pii_rules.yaml` (the customer rule engine) and
-`path_filter.yaml` are Rust-only: this crate ships those features
-first, and the fixtures are the contract the Python implementations
-must match when they adopt them.
-
-If you change a constant in `cerberus-core/src/cerberus_core/sanitization.py`,
-update the fixture file in the **same PR** so the other implementations
-are forced to follow.
-
-## Layout
-
-```
-cerberus-flex-gateway/
-├── Cargo.toml
-├── Makefile                  # `make bundle` assembles the customer tarball
-├── README.md (this file)
-├── DEVELOPMENT.md            # dev-env setup (Anypoint account → `make run` walkthrough)
-├── INSTALL.md                # customer install guide (also ships in the bundle)
-├── install.sh                # customer installer (publishes into their org)
-├── rust-toolchain.toml       # pinned build toolchain (build-side only)
-├── scripts/
-│   └── bundle.sh             # `make bundle` staging logic
-├── definition/
-│   └── gcl.yaml              # operator-facing config schema
-├── playground/
-│   ├── config/
-│   │   ├── api.yaml          # Flex Gateway API definition
-│   │   └── custom-policies/  # populated by `make run`
-│   └── docker-compose.yaml   # local Flex Gateway harness
-├── src/
-│   ├── lib.rs                # entrypoint, request/response/flush handlers
-│   ├── ai_content.rs         # LLM/AI prompt detection (captureAiContent gate)
-│   ├── config.rs             # Config struct (mirrors gcl.yaml)
-│   ├── event.rs              # CerberusEvent (CoreData mirror)
-│   ├── sanitize.rs           # SENSITIVE_KEYS/HEADERS, sanitize_value(_with)
-│   ├── pii_rules.rs          # customSensitiveKeys / customPiiPatterns compiler
-│   ├── hash.rs               # hash_pii, normalize_ip
-│   ├── source_ip.rs          # XFF first-hop / stream fallback
-│   ├── secret.rs             # init-time secret fetch
-│   ├── path_filter.rs        # capturePaths / excludePaths globs
-│   ├── sampler.rs            # sampleRate coin flip (SplitMix64)
-│   ├── queue.rs              # bounded RefCell<VecDeque>
-│   ├── sink.rs               # POST /v1/ingest/batch
-│   ├── pipeline_tests.rs     # in-crate request-pipeline tests (pdk-unit)
-│   └── generated/            # toolchain-generated from definition/gcl.yaml (committed)
-└── tests/
-    ├── fixtures              # symlink → ../../parity-fixtures (created by `make sync-fixtures`)
-    └── parity_runner.rs      # consumes the YAML fixtures
-```
-
-## Architecture references
-
-- [`pdk-custom-policy-examples`](https://github.com/mulesoft/pdk-custom-policy-examples) — `metrics/`, `certs/`, `ip-filter/`, `crypto/` are the closest stylistic precedents.
+Building from source, running tests, the local playground, parity
+testing, and the release process are covered in
+[DEVELOPMENT.md](./DEVELOPMENT.md).

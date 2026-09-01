@@ -13,9 +13,11 @@ spec:
             destinationPath: /anything/echo/
   policies:
     - policyRef:
-        # Patched by `make run` from $(POLICY_REF_NAME) — the value
-        # below is a placeholder so this file is valid as committed.
-        name: cerberus-flex-gateway-flex-v0-1
+        # Kept in sync with the current policy build so a plain
+        # `docker compose up` loads without the cargo toolchain.
+        # (`make run` re-patches this from $(POLICY_REF_NAME) on rebuild —
+        # commit the new name here when the policy version bumps.)
+        name: cerberus-flex-gateway-flex-v0-5
         namespace: default
       config:
         ingestService: http://echo:8080

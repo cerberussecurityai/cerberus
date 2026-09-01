@@ -1,10 +1,14 @@
-# Local Development Setup (Apple Silicon macOS)
+# Development Guide
 
-End-to-end setup for iterating on the Cerberus Flex Gateway custom policy:
-Anypoint account → CLI install → registration → `make run` → verify a sanitized
-batch arrives at the mock backend.
+Maintainer-facing guide for the Cerberus Flex Gateway custom policy:
+local dev-env setup (Anypoint account → `make run` → verify a sanitized
+batch at the mock backend), build/test, parity testing, publishing, and
+the deferred-work backlog. Setup instructions assume Apple Silicon
+macOS.
 
-This is **dev-facing** — for operator deployment guidance see `README.md`.
+Operator configuration and deployment guidance lives in
+[README.md](./README.md); the customer install guide is
+[INSTALL.md](./INSTALL.md).
 
 ## Prerequisites
 
@@ -16,9 +20,10 @@ nvm install 20 && nvm use 20
 brew install rustup
 rustup target add wasm32-wasip1
 
-# Cargo helpers used by the PDK build pipeline.
+# Cargo helpers used by the PDK build/publish pipeline.
 cargo install --locked cargo-generate
 cargo install --locked cargo-anypoint@1.8.0
+cargo install --locked cargo-llvm-cov
 
 # Docker Desktop with Rosetta enabled for x86_64 emulation.
 # Settings → General → "Use Rosetta for x86/amd64 emulation on Apple Silicon".
@@ -217,3 +222,116 @@ re-registration with the same name.
   `dispatch_http_call` fails with `Proxy status problem: BadArgument`.
 - **Node 16 breaks** the `anypoint-pdk-plugin` with an opaque `Unexpected
   token '{'` syntax error. Use Node 18+.
+
+## Parity testing
+
+The crate duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` /
+`REDACTED` and reimplements `sanitize_dict` / `normalize_ip` /
+`hash_pii` so the WASM target has no Python dependency. The Cerberus
+implementations all consume the same YAML fixtures from
+`../parity-fixtures/`:
+
+- `cerberus-django/tests/test_parity.py` runs them against `cerberus_core`.
+- `cerberus-flex-gateway/tests/parity_runner.rs` runs them against the
+  Rust ports.
+
+`custom_pii_rules.yaml` (the customer rule engine) and
+`path_filter.yaml` are Rust-only: this crate ships those features
+first, and the fixtures are the contract the Python implementations
+must match when they adopt them.
+
+If you change a constant in `cerberus-core/src/cerberus_core/sanitization.py`,
+update the fixture file in the **same PR** so the other implementations
+are forced to follow.
+
+## Publishing and releasing
+
+### Customer distribution bundle
+
+`make bundle` assembles
+`dist/cerberus-flex-gateway-policy-<version>.tar.gz`: the prebuilt wasm
++ implementation GCL, the definition source, `install.sh`, and
+`INSTALL.md` — no Rust sources. Our Anypoint group id is rewritten to a
+placeholder that `install.sh` stamps with the customer's org id at
+install time (see `scripts/bundle.sh`). CI builds the bundle and
+attaches it to a GitHub Release on `flex-gateway-v*` tags; customers
+publish it into their own org's Exchange per `INSTALL.md`.
+
+### Maintainer publish (our own org)
+
+`make publish` / `make release` publish from this repo into **our**
+Anypoint org (the default `[package.metadata.anypoint] group_id` in
+`Cargo.toml`). Both build first, so they need the Rust toolchain — they
+are **not** the customer path. ⚠️ `make release` publishes an immutable
+Exchange version; don't run it as a test.
+
+## Planned improvements
+
+None of these block production use — each was deliberately scoped out
+of the initial release, with the current behavior documented and safe
+(the customer-visible ones are summarized under "Operational notes" in
+`README.md`). Each row records today's behavior and the reasoning.
+
+| Improvement | Current behavior / why deferred |
+|---|---|
+| `_cerberus_metrics` extraction | Requires *stripping* the injected key before the client sees it — response mutation, which this policy never does (the observe-only guarantee is the point). Mutation interacts badly with `Content-Length` / `Content-Encoding` / streaming bodies / response signing. Customers who set `_cerberus_metrics` already install at the application layer. |
+| Retry / backoff on backend failures | At-most-once today: failed batches are dropped. |
+| Bounded cutoff for long-lived streams | With `captureResponseBody` on, an event ships when its response body *ends*, so a keep-alive `text/event-stream` holds its event (and reports `latency_ms` as the stream's lifetime) until the connection closes. Memory stays capped at head+tail and the client is unaffected. Future work: ship with a truncation marker after N bytes / N seconds. |
+| Event-loss on upstream reset before response headers | If the upstream connection resets/times out before response headers exist, the response filter never runs and the request's event is lost (pre-existing behavior, unchanged by response capture). Fixing it means pushing at request time with a mutable-event queue. |
+| Pre-flight event-size guard | A request body (up to the 1 MiB buffer) plus response head+tail can push a serialized event past the ingest endpoint's per-event size cap, dropping the whole event server-side. Sizing guidance is in the README; a gateway-side guard is future work. |
+| Circuit breaker for sustained backend outages | Without one, every flush during an outage posts into a black hole. Currently logs and moves on. |
+| Policy-side observability (queue depth, drop rate, ingest-failure rate) | Currently surfaces `dropped` count via `logger::warn!` only. |
+| Streaming-body capture for >1MB JSON *request* payloads | PDK's default `into_body_state()` caps at 1MB; large request payloads are silently truncated/dropped. (Response bodies stream and are not subject to this cap.) |
+| Semantic scrubbing for AI prompts/responses | `customPiiPatterns` value rules scrub anything regex-shaped inside prompt text, but free-form PII with no stable shape (names, addresses in prose) still can't be caught. `captureAiContent: false` is the zero-egress option. |
+| Graceful shutdown / drain | proxy-wasm has no `on_drain` hook. Up to ~`flushIntervalMs` of buffered events are lost on every pod churn (rolling deploy, OOM, scale-down). Documented and accepted. |
+| Body/path-derived session keys | Session handles that live in JSON bodies (A2A `contextId`, OpenAI Responses conversation ids, AG-UI `threadId`) or URL paths (`/threads/{id}`) are not sampling keys in v1 — using them means buffering the body (or adding a path-pattern config) *before* the sampling decision. That traffic falls to the principal/user tier: whole-per-user, coarser but safe. Decide-late on response-body-minted handles additionally requires `captureResponseBody`. |
+| Per-user sampling knob for chat-shaped LLM traffic | Under `sampleBy: session`, well-known LLM paths without an explicit session key are hardcoded to per-request sampling (`sampling_decision` in lib.rs documents why: chat turns re-send their history, so whole-session capture is O(n²) bytes for no added content). A per-user mode would additionally preserve cross-turn ordering; deferred until a concrete need appears. |
+| Queue drop preference for handshake events | `EventQueue` drops on overflow regardless of event kind, so under sustained overload a sampled MCP session can still lose its `initialize` (delivery is at-most-once; sampling guarantees a consistent *decision*, not delivery). Preferring to drop non-handshake events first would protect server attribution. |
+| Backend consumption of `sample_rate` / `sample_key` | Events carry the fields, but nothing re-weights counts by `1/sample_rate` yet — a sampled deployment under-reports totals until the backend learns to re-inflate (tracked backend-side, together with billing policy for sampled events). |
+| Epoch-rotation boundary splits | The weekly rotation on the principal/user tiers splits sessions that straddle a week boundary (~0.3% of 30-minute sessions). Accepted as the cost of avoiding permanent blind spots; a smoother scheme (e.g. dual-epoch grace) is possible if the split rate ever matters. |
+
+## Source layout
+
+```
+cerberus-flex-gateway/
+├── Cargo.toml
+├── Makefile                  # `make bundle` assembles the customer tarball
+├── README.md                 # operator-facing configuration + deployment guide
+├── DEVELOPMENT.md (this file)
+├── INSTALL.md                # customer install guide (also ships in the bundle)
+├── install.sh                # customer installer (publishes into their org)
+├── rust-toolchain.toml       # pinned build toolchain (build-side only)
+├── scripts/
+│   └── bundle.sh             # `make bundle` staging logic
+├── definition/
+│   └── gcl.yaml              # operator-facing config schema
+├── playground/
+│   ├── config/
+│   │   ├── api.yaml          # Flex Gateway API definition
+│   │   └── custom-policies/  # populated by `make run`
+│   └── docker-compose.yaml   # local Flex Gateway harness
+├── src/
+│   ├── lib.rs                # entrypoint, request/response/flush handlers
+│   ├── ai_content.rs         # LLM/AI prompt detection (captureAiContent gate)
+│   ├── config.rs             # Config struct (mirrors gcl.yaml)
+│   ├── event.rs              # CerberusEvent (CoreData mirror)
+│   ├── response_capture.rs   # head+tail accumulator, response_body finalization
+│   ├── sanitize.rs           # SENSITIVE_KEYS/HEADERS, sanitize_value(_with)
+│   ├── pii_rules.rs          # customSensitiveKeys / customPiiPatterns compiler
+│   ├── hash.rs               # hash_pii, normalize_ip
+│   ├── source_ip.rs          # XFF first-hop / stream fallback
+│   ├── secret.rs             # init-time secret fetch
+│   ├── path_filter.rs        # capturePaths / excludePaths globs
+│   ├── sampler.rs            # sampleRate/sampleBy: keyed session sampler + coin
+│   ├── queue.rs              # bounded RefCell<VecDeque>
+│   ├── sink.rs               # POST /v1/ingest/batch
+│   ├── pipeline_tests.rs     # in-crate request-pipeline tests (pdk-unit)
+│   └── generated/            # toolchain-generated from definition/gcl.yaml (committed)
+└── tests/
+    ├── fixtures              # symlink → ../../parity-fixtures (created by `make sync-fixtures`)
+    └── parity_runner.rs      # consumes the YAML fixtures
+```
+
+## Architecture references
+
+- [`pdk-custom-policy-examples`](https://github.com/mulesoft/pdk-custom-policy-examples) — `metrics/`, `certs/`, `ip-filter/`, `crypto/` are the closest stylistic precedents.

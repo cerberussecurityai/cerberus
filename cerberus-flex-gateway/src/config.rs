@@ -77,6 +77,21 @@ pub struct Config {
     #[serde(default = "default_sample_rate")]
     pub sample_rate: f64,
 
+    /// Sampling unit when sampleRate < 1: "session" (default —
+    /// deterministic keyed decision per session/identity, identical on
+    /// every replica; see sampler.rs) or "request" (independent
+    /// per-request coin, the pre-0.5.0 behavior). Unknown values warn
+    /// and fall back to "session" in PolicyContext::new — a typo in
+    /// this knob must not take capture down.
+    #[serde(default = "default_sample_by")]
+    pub sample_by: String,
+
+    /// Optional. Extra request headers to use as the session sampling
+    /// key when no MCP session id is present (e.g. traceparent,
+    /// X-Conversation-Id). Checked in order; first present header
+    /// wins. The value is used in memory only — never shipped.
+    pub session_key_header: Option<Vec<String>>,
+
     /// Buffer + sanitize JSON request bodies. Default: true.
     #[serde(default = "default_capture_request_body")]
     pub capture_request_body: bool,
@@ -89,6 +104,32 @@ pub struct Config {
     /// the body). MCP (JSON-RPC) bodies are never treated as AI content.
     #[serde(default = "default_capture_ai_content")]
     pub capture_ai_content: bool,
+
+    /// Observe response bodies (application/json + text/event-stream).
+    /// Default: false — opt-in first; the response stream is never even
+    /// opened when off. Read-only tap: the response the client receives
+    /// is never modified, buffered, or delayed.
+    #[serde(default)]
+    pub capture_response_body: bool,
+
+    /// Allowlist of RESPONSE header names to capture (case-insensitive)
+    /// into the event's `response_headers` map. Unlike captureHeaders,
+    /// this is a pure opt-in: empty = capture no response headers.
+    /// Default: ["mcp-session-id"] — the session correlator stateful
+    /// APIs (e.g. MCP) assign in a response and clients echo on
+    /// subsequent requests. Sanitization applies as for request headers.
+    #[serde(default = "default_capture_response_headers")]
+    pub capture_response_headers: Vec<String>,
+
+    /// First N bytes of a response body retained. Default: 24576.
+    #[serde(default = "default_response_head_bytes")]
+    pub response_head_bytes: u32,
+
+    /// Rolling last N bytes of a response body retained. Default: 16384.
+    /// The tail is where SSE terminal events / usage live, hence
+    /// generous relative to typical response tails.
+    #[serde(default = "default_response_tail_bytes")]
+    pub response_tail_bytes: u32,
 
     /// Max events per outbound batch. Default: 50.
     #[serde(default = "default_batch_size")]
@@ -118,11 +159,23 @@ fn default_client_ip_header() -> String {
 fn default_sample_rate() -> f64 {
     1.0
 }
+fn default_sample_by() -> String {
+    "session".to_string()
+}
 fn default_capture_request_body() -> bool {
     true
 }
 fn default_capture_ai_content() -> bool {
     true
+}
+fn default_capture_response_headers() -> Vec<String> {
+    vec!["mcp-session-id".to_string()]
+}
+fn default_response_head_bytes() -> u32 {
+    24_576
+}
+fn default_response_tail_bytes() -> u32 {
+    16_384
 }
 fn default_batch_size() -> u32 {
     50

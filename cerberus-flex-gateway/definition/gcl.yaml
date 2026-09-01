@@ -101,7 +101,16 @@ spec:
       default: 1
       minimum: 0
       maximum: 1
-      description: "Fraction of capturable traffic to sample, 0 to 1. 1 = capture every request (default); 0.25 = ~25% of requests; 0 = capture nothing. Requests that are not sampled do no capture work at all (no header/body extraction, no sanitization, no event) and pass through untouched. Applied after capturePaths/excludePaths and the health-endpoint filter, so it reads as 'fraction of otherwise-captured traffic'. Per-request and memoryless (no per-client or per-trace stickiness); uses a non-cryptographic per-worker PRNG. Out-of-range values are clamped with a startup warning."
+      description: "Fraction of capturable traffic to sample, 0 to 1. 1 = capture every request (default); 0.25 = ~25% of requests; 0 = capture nothing. Applied after capturePaths/excludePaths and the health-endpoint filter, so it reads as 'fraction of otherwise-captured traffic'. Requests that are not sampled do no capture work (no header/body extraction, no sanitization, no event) and pass through untouched; the decision itself costs at most two HMAC-SHA256 computations. How the sampled subset is chosen is governed by sampleBy. When sampling is active, each event carries sample_rate and sample_key fields so the backend can re-weight counts. Out-of-range values are clamped with a startup warning."
+    sampleBy:
+      type: string
+      default: "session"
+      description: "Sampling unit when sampleRate < 1. 'session' (default): a deterministic keyed decision — requests carrying the same key are kept or dropped together, and every gateway replica reaches the same verdict with no shared state. The key is, in order: the MCP session id (request header, or legacy sessionId query param), an operator sessionKeyHeader, the authenticated principal set by an upstream MuleSoft auth policy (requires that policy ordered before this one), the userIdHeader value, the Authorization header, else an independent per-request coin. MCP handshakes (initialize) carry no session id yet, so they are captured speculatively and decided on the session id the server mints in its response — a sampled MCP session therefore always includes the handshake that names the server. Exception: requests to well-known LLM API paths that carry no explicit session key are sampled per-request even in session mode, because chat-style APIs resend the conversation history on every call — any single sampled request already contains the session so far, and capturing every turn would ship that history repeatedly. An explicit key (MCP session id or a configured sessionKeyHeader such as traceparent) takes precedence, so an agent run keyed by trace context keeps its LLM calls together with its tool calls. 'request': every request gets an independent coin flip (the pre-0.5.0 behavior). At sampleRate 1 this setting has no effect. Unknown values warn at startup and fall back to 'session'."
+    sessionKeyHeader:
+      type: array
+      items:
+        type: string
+      description: "Optional. Extra request headers to use as the session sampling key when the request carries no MCP session id — e.g. traceparent (agent frameworks that propagate trace context), X-Conversation-Id, or a framework/session cookie header. Checked in declaration order; the first header present on the request wins. The header value is only used in memory to make the keep/drop decision — it is never added to the event (header capture stays governed by captureHeaders and sanitization). Only meaningful with sampleBy: session and sampleRate < 1."
 
     # ---------------------------------------------------------------------
     # Body capture
@@ -113,15 +122,30 @@ spec:
     captureAiContent:
       type: boolean
       default: true
-      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and sanitized like any other JSON body. Built-in sanitization is key-matching only; configure customPiiPatterns value rules to scrub regex-shaped PII (SSNs, emails, account numbers) inside free-form prompt text — PII with no stable shape still ships raw. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
-
-    # NOTE: captureResponseBody is intentionally absent for now.
-    # Response-body mutation interacts badly with Content-Length /
-    # Content-Encoding / streaming bodies / signed responses.
-    # See README "Planned improvements".
-    # If we add it later: bump endpoint version to /v2/ingest/batch.
-    # When response capture is added, response bodies must respect
-    # captureAiContent — model output carries the same PII risk as prompts.
+      description: "Capture request bodies for LLM/AI traffic. Default true: requests detected as LLM/AI — via well-known LLM API paths (/chat/completions, /v1/messages, :generateContent, /converse, /embeddings, Bedrock /model/*/invoke, Vertex :predict, ...) or prompt-shaped JSON bodies (messages/prompt/contents/message/chat_history/texts alongside model, ...) — have their body captured and sanitized like any other JSON body. Built-in sanitization is key-matching only; configure customPiiPatterns value rules to scrub regex-shaped PII (SSNs, emails, account numbers) inside free-form prompt text — PII with no stable shape still ships raw. Set to false to withhold prompt content: detected AI traffic then ships its event WITHOUT the body, while endpoint, method, sanitized headers and query params still ship, so AI endpoint discovery keeps working. Detected LLM/AI RESPONSE bodies (model output) are withheld under the same setting when captureResponseBody is enabled — generated output carries the same PII risk as prompts. MCP (JSON-RPC) bodies are never treated as AI content — they are structured and standard sanitization applies. (When false, the path check runs before body inspection, so JSON-RPC posted to a well-known LLM API path also ships without its body.)"
+    captureResponseBody:
+      type: boolean
+      default: false
+      description: "Observe application/json and text/event-stream response bodies. READ-ONLY TAP: the response delivered to the client is never modified, buffered, or delayed — streamed chunks pass through as they arrive, and the policy only retains a capped copy (responseHeadBytes + responseTailBytes) as it streams. Bodies within the head+tail budget ship whole (JSON sanitized exactly like request bodies; SSE streams as one text blob in which every complete JSON data frame is key-sanitized like a JSON body and the remaining lines are scrubbed by customPiiPatterns value rules); larger bodies ship as head/tail slices with explicit truncation markers (body_truncated, body_bytes_total, body_bytes_dropped) so truncation is never silent; compressed (Content-Encoding other than identity) bodies ship a body_skipped_encoding marker and are never sliced. Detected LLM/AI response bodies respect captureAiContent. Off by default; when off, the response stream is never opened and per-request cost is unchanged. status_code and latency_ms ship on every event regardless of this setting."
+    captureResponseHeaders:
+      type: array
+      items:
+        type: string
+      default:
+        - mcp-session-id
+      description: "Allowlist of RESPONSE header names to capture (case-insensitive) into the event's response_headers map — a read-only header tap, independent of captureResponseBody. Unlike captureHeaders this is a pure opt-in: empty = no response headers captured. Default [mcp-session-id]: the opaque session correlator that stateful APIs such as MCP assign in a response header and clients echo on subsequent requests — capturing it lets the backend correlate a session's events. Sanitization applies exactly as for request headers (sensitive headers redact even when listed). Set to [] to disable."
+    responseHeadBytes:
+      type: integer
+      default: 24576
+      minimum: 0
+      maximum: 49152
+      description: "First N bytes of a captured response body to retain. With responseTailBytes, bounds the policy's per-response capture memory; the middle of an over-budget body is discarded as it streams. Size so that head + tail + the rest of the event stay under the ingest endpoint's per-event size cap — an oversized event is dropped server-side."
+    responseTailBytes:
+      type: integer
+      default: 16384
+      minimum: 0
+      maximum: 49152
+      description: "Rolling last N bytes of a captured response body to retain. Generous relative to typical response tails because stream terminators (usage totals, finish reasons, terminal SSE events) arrive last. Same sizing constraint as responseHeadBytes: head + tail + the rest of the event must stay under the ingest endpoint's per-event size cap."
 
     # ---------------------------------------------------------------------
     # Buffering / batching

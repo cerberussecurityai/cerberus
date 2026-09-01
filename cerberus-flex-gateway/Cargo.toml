@@ -6,7 +6,7 @@
 # The Anypoint Exchange asset IDs in [package.metadata.anypoint] keep
 # hyphens, since those are the user-facing identifiers in Exchange.
 name = "cerberus_flex_gateway"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.88.0"
 resolver = "2"
@@ -61,7 +61,10 @@ chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 pdk-test = "1.8.0"
-pdk-unit = "1.8.0"
+# `experimental_logs` exposes UnitTest::logs() so pipeline tests can
+# assert startup warnings (e.g. the sampleBy/captureResponseHeaders
+# interaction). Dev-only; no effect on the shipped wasm.
+pdk-unit = { version = "1.8.0", features = ["experimental_logs"] }
 serde_yaml = "0.9"
 
 [profile.release]

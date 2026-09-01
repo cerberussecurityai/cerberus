@@ -21,6 +21,7 @@ fail and force the Rust port to update. **Don't skip these tests.**
 | `sensitive_headers.yaml` | ✅ | ✅ | `SENSITIVE_HEADERS` set membership. |
 | `path_filter.yaml`       | ✗  | ✅ | Rust-only. Django scopes per-app via middleware inclusion. |
 | `custom_pii_rules.yaml`  | ✗  | ✅ | Rust-only *for now*. Customer scrub rules (`customSensitiveKeys` + `customPiiPatterns`) shipped in flex-gateway first; this fixture is the contract `cerberus-core` must match when the Python integrations adopt the feature. |
+| `sample_decision.yaml`   | ✗  | ✅ | Rust-only *for now*. Keyed-threshold sampling decision (`sampleBy: session`, flex-gateway 0.5.0); the contract the Python integrations and the Envoy bridge must match if they adopt sampling. |
 
 The Python runner lives at `cerberus-django/tests/test_parity.py`. The Rust
 runner is `cerberus-flex-gateway/tests/parity_runner.rs`.
