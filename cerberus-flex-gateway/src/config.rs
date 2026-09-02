@@ -17,6 +17,7 @@
 use serde::Deserialize;
 
 use crate::pii_rules::PiiPatternConfig;
+use crate::sanitize::REDACTED;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -188,4 +189,170 @@ fn default_queue_capacity() -> u32 {
 }
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+// ---------------------------------------------------------------------
+// Config parsing
+// ---------------------------------------------------------------------
+
+/// Top-level config properties whose values must never reach a log
+/// line, as named on the wire (camelCase). Both are declared
+/// `security:sensitive` in definition/gcl.yaml.
+const SENSITIVE_CONFIG_KEYS: [&str; 2] = ["token", "secretKey"];
+
+/// Parse the policy configuration handed to us at init.
+///
+/// The error for a rejected config names the problem — unknown or
+/// missing field, type mismatch, JSON syntax error, each with serde's
+/// line/column — but never includes the configuration itself: it
+/// carries `token` and `secretKey`, and the PDK runtime writes a failed
+/// configure to the gateway log at Error level. See
+/// [`redact_parse_error`] for the value scrubbing on top of that.
+pub fn parse(bytes: &[u8]) -> anyhow::Result<Config> {
+    serde_json::from_slice::<Config>(bytes).map_err(|err| {
+        anyhow::anyhow!(
+            "cerberus-flex-gateway: failed to parse config: {}",
+            redact_parse_error(bytes, &err)
+        )
+    })
+}
+
+/// Render a config deserialization error for logging.
+///
+/// serde's type-mismatch messages quote the offending value
+/// (``invalid type: integer `1234`, expected a string``), so a
+/// wrongly-typed `token` or `secretKey` would otherwise land in the
+/// log verbatim. The values of the sensitive top-level properties are
+/// therefore replaced with the redaction sentinel wherever they occur
+/// in the message, both as serde renders strings (Debug-escaped and
+/// quoted) and raw. JSON syntax errors carry only positions, never
+/// content, so there is nothing to scrub when the config isn't
+/// parseable at all.
+///
+/// Also used by the toolchain-generated init hook in
+/// `src/generated/config.rs` (patched in by
+/// `scripts/redact_generated_config.sh` during `make build-asset-files`).
+pub fn redact_parse_error(bytes: &[u8], err: &serde_json::Error) -> String {
+    let mut message = err.to_string();
+    for value in sensitive_config_values(bytes) {
+        // Quoted/escaped form first so the raw form doesn't leave a
+        // stray pair of quotes behind.
+        for needle in [format!("{value:?}"), value] {
+            message = message.replace(&needle, REDACTED);
+        }
+    }
+    message
+}
+
+/// String renderings of the sensitive top-level properties present in
+/// `bytes`, if it parses as a JSON object at all. Non-string values
+/// (the type-mismatch case) render as their JSON text, which is how
+/// serde quotes them.
+fn sensitive_config_values(bytes: &[u8]) -> Vec<String> {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes)
+    else {
+        return Vec::new();
+    };
+    SENSITIVE_CONFIG_KEYS
+        .iter()
+        .filter_map(|key| map.get(*key))
+        .map(|value| match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Stand-ins for the sensitive fields so the scrubbing can be
+    // exercised without a Service-bearing Config (whose URL fields
+    // deserialize through the PDK host). `parse` itself is covered end
+    // to end by
+    // pipeline_tests::config_parse_failure_does_not_log_sensitive_values.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct Probe {
+        token: String,
+        #[serde(rename = "secretKey")]
+        secret_key: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct NumericProbe {
+        token: u32,
+    }
+
+    fn redacted<T: serde::de::DeserializeOwned>(json: &str) -> String {
+        let err = match serde_json::from_str::<T>(json) {
+            Ok(_) => panic!("probe config must be rejected"),
+            Err(err) => err,
+        };
+        redact_parse_error(json.as_bytes(), &err)
+    }
+
+    #[test]
+    fn unknown_field_names_the_field_not_the_values() {
+        let msg = redacted::<Probe>(r#"{"token":"tok-4f9a","secretKey":"sk-77c1","tokn":"x"}"#);
+        assert!(msg.contains("unknown field `tokn`"), "{msg}");
+        assert!(
+            !msg.contains("tok-4f9a") && !msg.contains("sk-77c1"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn wrongly_typed_token_is_scrubbed() {
+        // A digits-only token in Local-mode YAML arrives as a JSON
+        // number; serde's message quotes it.
+        let msg = redacted::<Probe>(r#"{"token":81234567}"#);
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(!msg.contains("81234567"), "{msg}");
+        assert!(msg.contains(REDACTED), "{msg}");
+    }
+
+    #[test]
+    fn wrongly_typed_secret_key_is_scrubbed() {
+        let msg = redacted::<Probe>(r#"{"token":"tok-4f9a","secretKey":true}"#);
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(!msg.contains("true") && !msg.contains("tok-4f9a"), "{msg}");
+    }
+
+    #[test]
+    fn string_quoted_by_serde_is_scrubbed_including_escapes() {
+        // serde renders strings Debug-escaped: a token containing a
+        // quote or backslash must still be found and replaced.
+        let msg = redacted::<NumericProbe>(r#"{"token":"tok\"q\\z"}"#);
+        assert!(msg.contains("invalid type"), "{msg}");
+        assert!(!msg.contains("tok"), "{msg}");
+        assert!(msg.contains(&format!("string {REDACTED}")), "{msg}");
+    }
+
+    #[test]
+    fn syntax_error_carries_no_config_content() {
+        let msg = redacted::<Probe>(r#"{"token":"tok-4f9a","secretKey":"#);
+        assert!(!msg.contains("tok-4f9a"), "{msg}");
+    }
+
+    /// `make build-asset-files` regenerates src/generated/config.rs and
+    /// then runs scripts/redact_generated_config.sh over it. Guard
+    /// against a regeneration (or toolchain bump) that skips the script
+    /// and brings the config echo back.
+    #[test]
+    fn generated_init_hook_does_not_echo_config() {
+        let generated = include_str!("generated/config.rs");
+        assert!(
+            !generated.contains("from_utf8_lossy"),
+            "generated init hook echoes the configuration; run scripts/redact_generated_config.sh"
+        );
+        assert!(
+            generated.contains("crate::config::redact_parse_error"),
+            "generated init hook must report parse errors through config::redact_parse_error"
+        );
+    }
 }
