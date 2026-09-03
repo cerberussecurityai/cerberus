@@ -488,33 +488,50 @@ The body should have `password` replaced by `[REDACTED]`.
 Putting this policy in front of an MCP server surfaces a gotcha that has
 nothing to do with the policy itself: Flex Gateway rewrites the `Host` header
 to the upstream address it proxies to (a Kubernetes service DNS name, an
-internal hostname, whatever the route target is). Python FastMCP (the `mcp`
-SDK, ≥ 1.10) auto-enables DNS-rebinding protection for servers constructed
-with the default host (`127.0.0.1` / `localhost`), and that protection's
-allow-list only contains `localhost:*`, `127.0.0.1:*`, and `[::1]:*`. Every
+internal hostname, whatever the route target is). The Python `mcp` SDK
+(FastMCP in 1.10+, `MCPServer` in 2.x) auto-enables DNS-rebinding protection
+for servers bound to the default host (`127.0.0.1` / `localhost`), and that
+protection's allow-list only contains `localhost:*`, `127.0.0.1:*`, and `[::1]:*`. Every
 proxied request gets `421 Misdirected Request` — a direct health probe on the
 server's own port stays green, so the failure only shows up once traffic goes
 through the gateway, and Cerberus faithfully captures the resulting all-421
 traffic.
 
 The server log line to look for is `Invalid Host header: <upstream>`. Fix it
-on the MCP server side by adding the upstream name to the SDK's host
-allow-list:
+on the MCP server side by giving the SDK an explicit allow-list that names
+the upstream address the gateway sends (`allowed_hosts`) **and** the origin
+browser-based clients present when they reach the gateway's public URL
+(`allowed_origins` — the SDK checks a present `Origin` separately and
+answers 403 when it is missing from the list, so an allow-list that only
+covers the rewritten `Host` turns a browser client's 421 into a 403):
 
 ```python
 from mcp.server.transport_security import TransportSecuritySettings
-mcp.settings.transport_security = TransportSecuritySettings(
+
+security = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
-    allowed_hosts=["localhost:*", "127.0.0.1:*", "[::1]:*", "<upstream-name>", "<upstream-name>:*"],
-    allowed_origins=["http://localhost:*", "http://127.0.0.1:*", "http://<upstream-name>:*"],
+    allowed_hosts=["<upstream-name>", "<upstream-name>:*", "localhost:*", "127.0.0.1:*"],
+    allowed_origins=["https://<public-gateway-host>", "http://localhost:*", "http://127.0.0.1:*"],
 )
+
+# mcp 1.x (FastMCP): the settings object carries it.
+mcp.settings.transport_security = security
+
+# mcp 2.x (FastMCP was renamed MCPServer): pass it to the transport entry point.
+app = mcp.streamable_http_app(transport_security=security)   # or mcp.run(..., transport_security=security)
 ```
 
-Alternatives: construct the FastMCP server with `host="0.0.0.0"` (the SDK
-skips the protection entirely — weaker), or rewrite `Host` back to the
+`<upstream-name>` is whatever the route's upstream address is (`mcp-weather`
+in a compose network, a Kubernetes service DNS name, a hostname);
+`<public-gateway-host>` is the scheme and authority clients use to reach the
+gateway. Drop the localhost entries once nothing calls the server directly.
+
+Alternatives: construct the server with `host="0.0.0.0"` (both majors then
+skip the protection entirely — weaker), or rewrite `Host` back to the
 server's public name on the gateway route. The TypeScript SDK
 (`@modelcontextprotocol/sdk`) has the equivalent `enableDnsRebindingProtection`
-/ `allowedHosts` options on `StreamableHTTPServerTransport`, off by default.
+/ `allowedHosts` / `allowedOrigins` options on `StreamableHTTPServerTransport`,
+off by default.
 
 ## Development
 
