@@ -499,8 +499,8 @@ traffic.
 
 The server log line to look for is `Invalid Host header: <upstream>`. Fix it
 on the MCP server side by giving the SDK an explicit allow-list that names
-the upstream address the gateway sends (`allowed_hosts`) **and** the origin
-browser-based clients present when they reach the gateway's public URL
+the upstream address the gateway sends (`allowed_hosts`) **and**, if browser
+clients call the server, the origins those browser apps are served from
 (`allowed_origins` — the SDK checks a present `Origin` separately and
 answers 403 when it is missing from the list, so an allow-list that only
 covers the rewritten `Host` turns a browser client's 421 into a 403):
@@ -510,8 +510,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 security = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
-    allowed_hosts=["<upstream-name>", "<upstream-name>:*", "localhost:*", "127.0.0.1:*"],
-    allowed_origins=["https://<public-gateway-host>", "http://localhost:*", "http://127.0.0.1:*"],
+    # what the gateway sends as Host, plus the SDK's own loopback defaults
+    allowed_hosts=["<upstream-name>", "<upstream-name>:*", "localhost:*", "127.0.0.1:*", "[::1]:*"],
+    # the Origin a browser client presents = the site the browser app is served from,
+    # e.g. https://app.example (add the gateway's own origin only when the app is served
+    # from the gateway itself); non-browser clients send no Origin and are unaffected
+    allowed_origins=["https://<browser-app-origin>", "http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"],
 )
 
 # mcp 1.x (FastMCP): the settings object carries it.
@@ -522,9 +526,9 @@ app = mcp.streamable_http_app(transport_security=security)   # or mcp.run(..., t
 ```
 
 `<upstream-name>` is whatever the route's upstream address is (`mcp-weather`
-in a compose network, a Kubernetes service DNS name, a hostname);
-`<public-gateway-host>` is the scheme and authority clients use to reach the
-gateway. Drop the localhost entries once nothing calls the server directly.
+in a compose network, a Kubernetes service DNS name, a hostname). The
+loopback entries reproduce the SDK's defaults so direct health probes over
+IPv4 or IPv6 keep working; drop them once nothing calls the server directly.
 
 Alternatives: construct the server with `host="0.0.0.0"` (both majors then
 skip the protection entirely — weaker), or rewrite `Host` back to the
@@ -532,6 +536,11 @@ server's public name on the gateway route. The TypeScript SDK
 (`@modelcontextprotocol/sdk`) has the equivalent `enableDnsRebindingProtection`
 / `allowedHosts` / `allowedOrigins` options on `StreamableHTTPServerTransport`,
 off by default.
+
+Cross-origin deployments (a browser app on one origin calling an MCP server
+behind the gateway on another) are still subject to the browser's CORS
+preflight — that is a separate configuration on the gateway or server, not
+covered here.
 
 ## Development
 
