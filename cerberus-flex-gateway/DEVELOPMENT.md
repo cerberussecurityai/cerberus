@@ -216,7 +216,12 @@ re-registration with the same name.
 - **`src/generated/`** is committed (matches the `pdk policy-project create`
   scaffold convention). `make build-asset-files` regenerates `config.rs` from
   `definition/gcl.yaml` — diffs in PRs there are the signal that the GCL was
-  edited.
+  edited — and then runs `scripts/redact_generated_config.sh` over it, which
+  rewrites the generated init hook so a config that fails to parse is
+  reported without echoing the configuration (it carries `token` /
+  `secretKey`, and init errors go to the gateway log). The script fails the
+  build if the generated code changes shape, and a unit test in
+  `src/config.rs` fails if the echo ever comes back.
 - **`format: service`** on URL fields in `gcl.yaml` is what causes Flex to
   register an Envoy cluster for outbound dispatch. Without it,
   `dispatch_http_call` fails with `Proxy status problem: BadArgument`.

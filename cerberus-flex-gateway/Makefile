@@ -97,6 +97,7 @@ bundle: build ## Assemble the customer distribution tarball into dist/
 build-asset-files: $(DEFINITION_SRC_GCL_PATH)
 	@anypoint-cli-v4 pdk policy-project build-asset-files --metadata '$(ANYPOINT_METADATA_JSON)'
 	@cargo anypoint config-gen -p -m $(DEFINITION_SRC_GCL_PATH) -o src/generated/config.rs
+	@bash scripts/redact_generated_config.sh src/generated/config.rs
 
 .PHONY: install-cargo-anypoint
 install-cargo-anypoint:

@@ -311,6 +311,29 @@ fn invalid_custom_pii_pattern_fails_policy_load() {
 }
 
 #[test]
+fn config_parse_failure_does_not_log_sensitive_values() {
+    // The typed Config rejects unknown fields, so a typo'd property is
+    // the everyday way onto the parse-failure path. The runtime logs the
+    // failure at Error level: the message must name the problem but carry
+    // neither the config nor the sensitive values in it.
+    let config = format!(
+        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"tok-must-not-log-4f9a","secretKey":"sk-must-not-log-77c1","tokn":"typo"}}"#
+    );
+    let (events, logs) =
+        run_pipeline_multi(vec![minimal_post()], config, UnitHttpResponse::new(200));
+    assert!(events.is_empty(), "policy must not load with a rejected config");
+    let logs = logs.join("\n");
+    assert!(
+        logs.contains("failed to parse config") && logs.contains("unknown field `tokn`"),
+        "parse failure must be logged with the offending field: {logs}"
+    );
+    assert!(
+        !logs.contains("tok-must-not-log-4f9a") && !logs.contains("sk-must-not-log-77c1"),
+        "sensitive config values must not reach the log: {logs}"
+    );
+}
+
+#[test]
 fn health_endpoint_is_skipped() {
     let req = UnitHttpRequest::get()
         .with_header(":scheme", "https")
