@@ -483,6 +483,39 @@ The body should have `password` replaced by `[REDACTED]`.
   captured in full (platform buffering cap). Response bodies stream
   and are not subject to this.
 
+## Fronting an MCP server
+
+Putting this policy in front of an MCP server surfaces a gotcha that has
+nothing to do with the policy itself: Flex Gateway rewrites the `Host` header
+to the upstream address it proxies to (a Kubernetes service DNS name, an
+internal hostname, whatever the route target is). Python FastMCP (the `mcp`
+SDK, ≥ 1.10) auto-enables DNS-rebinding protection for servers constructed
+with the default host (`127.0.0.1` / `localhost`), and that protection's
+allow-list only contains `localhost:*`, `127.0.0.1:*`, and `[::1]:*`. Every
+proxied request gets `421 Misdirected Request` — a direct health probe on the
+server's own port stays green, so the failure only shows up once traffic goes
+through the gateway, and Cerberus faithfully captures the resulting all-421
+traffic.
+
+The server log line to look for is `Invalid Host header: <upstream>`. Fix it
+on the MCP server side by adding the upstream name to the SDK's host
+allow-list:
+
+```python
+from mcp.server.transport_security import TransportSecuritySettings
+mcp.settings.transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=["localhost:*", "127.0.0.1:*", "[::1]:*", "<upstream-name>", "<upstream-name>:*"],
+    allowed_origins=["http://localhost:*", "http://127.0.0.1:*", "http://<upstream-name>:*"],
+)
+```
+
+Alternatives: construct the FastMCP server with `host="0.0.0.0"` (the SDK
+skips the protection entirely — weaker), or rewrite `Host` back to the
+server's public name on the gateway route. The TypeScript SDK
+(`@modelcontextprotocol/sdk`) has the equivalent `enableDnsRebindingProtection`
+/ `allowedHosts` options on `StreamableHTTPServerTransport`, off by default.
+
 ## Development
 
 Building from source, running tests, the local playground, parity

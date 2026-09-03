@@ -183,6 +183,7 @@ in API Manager.
 | Publish says the version already exists | It's already installed — Exchange versions are immutable. Nothing to do (the installer treats this as success). |
 | Every batch 403s **after** applying the policy | The Cerberus `token` you entered in API Manager has surrounding whitespace (e.g. a trailing newline from copy-paste). The policy trims whitespace, but double-check the value. |
 | `SHA256SUMS verification failed` | The extracted bundle is incomplete or modified — re-download and re-extract. |
+| MCP server behind the gateway 421s every request | Flex Gateway rewrites `Host` to the upstream address; FastMCP's DNS-rebinding protection (`mcp` SDK ≥ 1.10) only allows `localhost` / `127.0.0.1` / `[::1]` by default, and a direct health probe on the server's own port stays green. Add the upstream name to the server's `TransportSecuritySettings.allowed_hosts` — see the policy README's "Fronting an MCP server". |
 
 For development/build details (Rust toolchain, local-mode, parity tests) see
 the `cerberus-flex-gateway` project repository (`README.md` and
