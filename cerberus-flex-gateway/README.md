@@ -501,9 +501,10 @@ The server log line to look for is `Invalid Host header: <upstream>`. Fix it
 on the MCP server side by giving the SDK an explicit allow-list that names
 the upstream address the gateway sends (`allowed_hosts`) **and**, if browser
 clients call the server, the origins those browser apps are served from
-(`allowed_origins` — the SDK checks a present `Origin` separately and
-answers 403 when it is missing from the list, so an allow-list that only
-covers the rewritten `Host` turns a browser client's 421 into a 403):
+(`allowed_origins`). The two headers are checked independently: an
+unlisted `Host` is answered with `421 Misdirected Request`, and a present
+but unlisted `Origin` with `403 Forbidden`. So an allow-list that covers
+only the rewritten `Host` turns a browser client's 421 into a 403:
 
 ```python
 from mcp.server.transport_security import TransportSecuritySettings
@@ -530,9 +531,14 @@ in a compose network, a Kubernetes service DNS name, a hostname). The
 loopback entries reproduce the SDK's defaults so direct health probes over
 IPv4 or IPv6 keep working; drop them once nothing calls the server directly.
 
-Alternatives: construct the server with `host="0.0.0.0"` (both majors then
-skip the protection entirely — weaker), or rewrite `Host` back to the
-server's public name on the gateway route. The TypeScript SDK
+Alternatives: bind the server to `0.0.0.0` instead of the default loopback —
+the SDK only auto-enables the protection for a loopback host, so binding
+elsewhere skips it entirely, which is weaker. Note where the host goes: in
+1.x it is a `FastMCP(...)` constructor argument, while in 2.x `MCPServer`
+takes no `host` and it belongs to the transport entry point
+(`mcp.run(..., host="0.0.0.0")` or `mcp.streamable_http_app(...)` behind a
+server bound that way). Or rewrite `Host` back to the server's public name
+on the gateway route and change nothing on the server. The TypeScript SDK
 (`@modelcontextprotocol/sdk`) has the equivalent `enableDnsRebindingProtection`
 / `allowedHosts` / `allowedOrigins` options on `StreamableHTTPServerTransport`,
 off by default.
