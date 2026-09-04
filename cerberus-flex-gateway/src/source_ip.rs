@@ -10,8 +10,11 @@
 //   3. If neither yields a usable string, return None and the event
 //      ships without remote_addr.
 //
-// Hashing happens in lib.rs via PolicyContext::maybe_hash AFTER
-// normalization (normalize_ip strips IPv6 zone IDs etc.).
+// The value shipped in the event is `event_value(resolved)`: the address
+// normalized (normalize_ip strips IPv6 zone IDs, expands compressed
+// forms) and nothing else. Source IPs are not treated as PII and are
+// never hashed; the HMAC secret only ever touches the Authorization
+// header and `action: hash` PII rules (see lib.rs).
 
 use pdk::hl::{PropertyAccessor, StreamProperties};
 
@@ -36,6 +39,13 @@ pub fn resolve(client_ip_header_value: Option<String>, stream: &StreamProperties
     let bytes = stream.read_property(&["source", "address"])?;
     let s = std::str::from_utf8(&bytes).ok()?;
     Some(strip_port(s))
+}
+
+/// The `remote_addr` value for an event: the resolved client IP,
+/// normalized, sent as-is. Takes no secret on purpose -- there is no
+/// hashing branch for this field.
+pub fn event_value(resolved: &str) -> String {
+    crate::hash::normalize_ip(resolved)
 }
 
 /// "1.2.3.4:5678" → "1.2.3.4"
@@ -65,7 +75,16 @@ fn strip_port(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_port;
+    use super::{event_value, strip_port};
+
+    // The event's remote_addr is the normalized client IP and nothing
+    // else -- no secret is involved anywhere in this path.
+    #[test]
+    fn event_value_is_the_normalized_ip_verbatim() {
+        assert_eq!(event_value("1.2.3.4"), "1.2.3.4");
+        assert_eq!(event_value("fe80::1%eth0"), "fe80::1");
+        assert_eq!(event_value("0000:0000:0000:0000:0000:0000:0000:0001"), "::1");
+    }
 
     #[test]
     fn strips_ipv4_port() {

@@ -12,7 +12,8 @@
 //     - extract method, scheme, endpoint, query params (sanitized)
 //     - extract headers (captureHeaders allowlist if configured, then
 //       sanitized; Authorization HMAC'd if secret available)
-//     - resolve source IP from clientIpHeader (XFF first hop) or stream
+//     - resolve source IP from clientIpHeader (XFF first hop) or stream;
+//       shipped normalized, never hashed
 //     - if captureRequestBody && content-type matches application/json:
 //       buffer body, parse, recursively sanitize; bodies detected as
 //       LLM/AI prompt content are withheld unless captureAiContent is
@@ -356,35 +357,19 @@ impl PolicyContext {
         })
     }
 
-    /// HMAC-hash a value if a secret is configured; otherwise return
-    /// the raw value. Used for fields where pseudoanonymization is
-    /// useful but raw passthrough is acceptable when no secret is set
-    /// (e.g. source IP).
-    fn maybe_hash(&self, value: &str) -> String {
-        pseudonymize_or_passthrough(self.secret_key.as_deref(), value)
-    }
-
-    /// Like `maybe_hash` but redacts when no secret is configured.
-    /// Used for high-sensitivity fields (e.g. Authorization header)
-    /// that must never ship raw.
+    /// HMAC-hash a value if a secret is configured; otherwise redact.
+    /// Used for high-sensitivity fields (the Authorization header) that
+    /// must never ship raw. Source IPs do not go through here -- they are
+    /// not PII and ship normalized (see `source_ip::event_value`).
     fn hash_or_redact(&self, value: &str) -> String {
         pseudonymize_or_redact(self.secret_key.as_deref(), value)
     }
 }
 
-/// HMAC-hash with the secret if present, otherwise pass the value
-/// through raw. Backs `PolicyContext::maybe_hash`; a free function so
-/// the secret-present/absent policy is unit-testable without a full
-/// `Config`.
-fn pseudonymize_or_passthrough(secret_key: Option<&str>, value: &str) -> String {
-    match secret_key {
-        Some(key) => crate::hash::hash_pii(value, key),
-        None => value.to_string(),
-    }
-}
-
 /// HMAC-hash with the secret if present, otherwise redact entirely.
-/// Backs `PolicyContext::hash_or_redact`.
+/// Backs `PolicyContext::hash_or_redact`; a free function so the
+/// secret-present/absent policy is unit-testable without a full
+/// `Config`.
 fn pseudonymize_or_redact(secret_key: Option<&str>, value: &str) -> String {
     match secret_key {
         Some(key) => crate::hash::hash_pii(value, key),
@@ -722,10 +707,9 @@ async fn request_filter(
         headers_state.handler().header(&ctx.config.client_ip_header),
         &stream,
     );
-    let source_ip = source_ip_raw.as_deref().map(|raw| {
-        let normalized = crate::hash::normalize_ip(raw);
-        ctx.maybe_hash(&normalized)
-    });
+    // Normalized and sent as-is: source IPs are not PII and are never
+    // hashed (the secret only touches Authorization + `action: hash`).
+    let source_ip = source_ip_raw.as_deref().map(source_ip::event_value);
 
     // user_id — passed through verbatim if header is configured and present.
     let user_id = ctx
@@ -1366,17 +1350,6 @@ mod tests {
         assert_ne!(out, "Bearer sk-live-abc");
         assert_ne!(out, REDACTED);
         assert_eq!(out, crate::hash::hash_pii("Bearer sk-live-abc", "topsecret"));
-    }
-
-    #[test]
-    fn maybe_hash_passes_through_when_no_secret() {
-        // Source IP is allowed to ship raw when no secret is set
-        // (parity with cerberus-django) — verify the passthrough branch.
-        assert_eq!(pseudonymize_or_passthrough(None, "1.2.3.4"), "1.2.3.4");
-        assert_eq!(
-            pseudonymize_or_passthrough(Some("topsecret"), "1.2.3.4"),
-            crate::hash::hash_pii("1.2.3.4", "topsecret")
-        );
     }
 
     #[test]

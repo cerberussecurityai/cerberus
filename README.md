@@ -4,7 +4,7 @@
 
 These are the libraries and gateway policies you add to your application, or place in front of it, so that a request, an MCP tool call, or an LLM call becomes something you can see. Each integration targets a different runtime and they all emit the same event schema, so they are interchangeable and can be mixed in one deployment.
 
-Values under known sensitive key names are redacted in the client, and source IPs are HMAC pseudonymized when a secret key is configured, both before anything is transmitted.
+Values under known sensitive key names are redacted in the client before anything is transmitted, and bearer tokens are HMAC-pseudonymized rather than stored. Source IPs are not treated as PII: the Flex Gateway policy (0.6.0+) sends them as-is, and the Python integrations' legacy IP hashing is being removed to match.
 
 > Looking for the backend/platform (event ingestion, processing, dashboards, infrastructure)? That lives in the separate **`cerberus-int`** repository.
 
@@ -37,7 +37,7 @@ Background on what these packages are for, independent of which one you use:
 ## How they fit together
 
 - All integrations emit the **same event payload** (`CoreData` / `MCPEventData`), so the Cerberus backend (`event_ingest`) needs no per-client changes.
-- Sanitization happens **before** any data leaves the client, via `cerberus-core` (Python) or its ported equivalent in the Rust gateway. Redaction matches **key names** against `SENSITIVE_KEYS`, so it catches the usual suspects rather than inspecting values. Source-IP pseudonymization is **HMAC-SHA256** and requires a configured secret key; without one, IPs are sent in the clear.
+- Sanitization happens **before** any data leaves the client, via `cerberus-core` (Python) or its ported equivalent in the Rust gateway. Redaction matches **key names** against `SENSITIVE_KEYS`, so it catches the usual suspects rather than inspecting values. Source IPs are not treated as PII: the Flex Gateway policy sends the normalized client IP as-is, and the Python integrations' remaining HMAC-SHA256 IP hashing (when a secret key is configured) is being removed to match.
 - The Flex Gateway policy re-implements the sanitization logic in Rust (there is no shared crate across languages). **Parity is enforced** by [`parity-fixtures`](./parity-fixtures/README.md): `cerberus-flex-gateway/tests/parity_runner.rs` and `cerberus-django/tests/test_parity.py` consume the same YAML cases, so any drift fails CI. (`cerberus-envoy-ai-gateway` *imports* `cerberus-core` directly, so it needs no parity runner.)
   - ⚠️ If you change `SENSITIVE_KEYS` (or other sanitization rules) in `cerberus-core`, update the matching fixture in the **same PR**.
 

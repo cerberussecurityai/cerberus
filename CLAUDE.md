@@ -171,6 +171,8 @@ make bundle          # assemble the customer distribution tarball into dist/
 
 **Deployment:** see `cerberus-flex-gateway/README.md` for Local-mode (copy `.wasm` + `gcl.yaml` onto pod) and customer Connected-mode install (`INSTALL.md` — prebuilt bundle + `install.sh` into the customer's own org, no Rust). The maintainer publish path (`make publish` / `make release` into our org), dev setup, parity testing, and the improvement backlog live in `DEVELOPMENT.md`.
 
+**Source IPs are not PII (flex-gateway 0.6.0+):** `remote_addr` is the resolved client IP, normalized and sent as-is; the HMAC secret only ever touches the `Authorization` header and `action: hash` rules. Do not reintroduce IP hashing here. (The Python integrations still hash IPs when a secret is configured; that is being removed under the same decision.)
+
 **Parity guarantees:** the crate duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` / sanitize/hash/normalize logic from `cerberus-core` (no shared crate; would force translating Python types). Drift is caught by `tests/parity_runner.rs` which consumes the same `../parity-fixtures/*.yaml` as `cerberus-django/tests/test_parity.py`. **If you change `SENSITIVE_KEYS` in `cerberus-core/src/cerberus_core/sanitization.py`, update the matching fixture file in the same PR.**
 
 ## Development

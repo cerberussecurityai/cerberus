@@ -10,7 +10,8 @@ The policy is distributed prebuilt: bundles are attached to
 ## Features
 
 - Request metadata capture: sanitized headers, query params, and JSON
-  bodies; source-IP resolution with normalization + HMAC;
+  bodies; source-IP resolution (first hop of `clientIpHeader`,
+  normalized, sent as-is);
   health-endpoint filtering; `status_code` and `latency_ms` on every
   event.
 - Opt-in response-body observation (`captureResponseBody`) — a strictly
@@ -89,8 +90,8 @@ confirm events land in your Cerberus dashboard (see
 |---|:---:|---|---|
 | `ingestService` | ✓ | — | Cerberus backend URL. The policy POSTs to `<ingestService>/v1/ingest/batch`. |
 | `token` | ✓ | — | Cerberus API key. Sent as the `X-API-Key` header on outbound requests. Trimmed at config-parse time. |
-| `secretKey` | | — | HMAC key for PII hashing. Inline alternative to `backendUrl`. |
-| `backendUrl` | | — | Base URL to fetch HMAC key from at startup. 5-second timeout; failure logs and falls back to raw PII. Use `https://` in production. |
+| `secretKey` | | — | HMAC key for hashing the `Authorization` header and `action: hash` PII rules. Inline alternative to `backendUrl`. Source IPs are never hashed (0.6.0+). |
+| `backendUrl` | | — | Base URL to fetch the HMAC key from at startup. 5-second timeout; failure logs and falls back to redaction. Use `https://` in production. |
 | `customSensitiveKeys` | | `[]` | Extra field names (case-insensitive) redacted in query params and JSON bodies, additive to the built-in `SENSITIVE_KEYS` floor. Matching a key redacts its entire value, subtrees included. |
 | `customPiiPatterns` | | `[]` | Regex scrubbing rules (`{pattern, label, action: redact\|hash, scope: keys\|values\|both}`) applied to query params and JSON bodies. Invalid rules fail policy load. See "Custom PII scrubbing". |
 | `clientIpHeader` | | `X-Forwarded-For` | Header to read the client IP from (first hop). Falls back to Envoy connection source if absent. |
@@ -459,7 +460,11 @@ curl -X POST https://your-flex-gateway/api/v1/users \
 
 The `Authorization` header value should be either `[REDACTED]` (no
 secret configured) or a 64-char lowercase hex digest (HMAC-SHA256).
-The body should have `password` replaced by `[REDACTED]`.
+The body should have `password` replaced by `[REDACTED]`. `remote_addr`
+is the client IP the gateway saw (first hop of `clientIpHeader`, or the
+connection source), normalized and unhashed: source IPs are not treated
+as PII. Policies before 0.6.0 HMAC'd it when a secret was configured;
+the backend stores those digests but cannot use them as addresses.
 
 ## Operational notes
 
