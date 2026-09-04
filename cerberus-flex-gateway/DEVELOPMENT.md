@@ -182,12 +182,13 @@ Expected sanitization in the batch payload:
 | `body.password` | `abc` | `[REDACTED]` |
 | `body.email` | `alice@example.com` | passthrough (not in `SENSITIVE_KEYS`) |
 | `Authorization` header | `Bearer secret-token` | HMAC-SHA256 hash |
-| Source IP | `1.2.3.4` (from XFF) | HMAC-SHA256 hash |
+| Source IP | `1.2.3.4` (from XFF) | `1.2.3.4` (normalized, never hashed) |
 | `endpoint` | — | `/api/test` |
 | `timestamp` | — | RFC 3339 UTC, microsecond precision |
 
-To test the no-secret fallback (PII passes through with a warn log), comment
-out `secretKey:` in `playground/config/api.yaml` and `make run` again.
+To test the no-secret fallback (`Authorization` becomes `[REDACTED]`, hash
+rules redact, one warn log), comment out `secretKey:` in
+`playground/config/api.yaml` and `make run` again.
 
 ## Iteration loop
 
