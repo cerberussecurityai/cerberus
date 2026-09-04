@@ -537,8 +537,10 @@ elsewhere skips it entirely, which is weaker. Note where the host goes: in
 1.x it is a `FastMCP(...)` constructor argument, while in 2.x `MCPServer`
 takes no `host` and it belongs to the transport entry point
 (`mcp.run(..., host="0.0.0.0")` or `mcp.streamable_http_app(...)` behind a
-server bound that way). Or rewrite `Host` back to the server's public name
-on the gateway route and change nothing on the server. The TypeScript SDK
+server bound that way). Or rewrite `Host` on the gateway route to a name the
+server already allows — one of the loopback patterns above — since rewriting
+it to the server's public name still fails unless that name is in
+`allowed_hosts` too. The TypeScript SDK
 (`@modelcontextprotocol/sdk`) has the equivalent `enableDnsRebindingProtection`
 / `allowedHosts` / `allowedOrigins` options on `StreamableHTTPServerTransport`,
 off by default.
