@@ -1221,13 +1221,11 @@ async fn configure(
     clock: Clock,
     client: HttpClient,
 ) -> Result<()> {
-    let config: Config = serde_json::from_slice(&bytes).map_err(|err| {
-        anyhow!(
-            "cerberus-flex-gateway: failed to parse config '{}': {}",
-            String::from_utf8_lossy(&bytes),
-            err
-        )
-    })?;
+    // A rejected config is logged at Error level by the runtime, so the
+    // parse error must never echo the config (it carries token /
+    // secretKey). `config::parse` also scrubs those values from serde's
+    // own message.
+    let config = config::parse(&bytes)?;
 
     // Token normalization — trim whitespace defensively. A pasted token
     // with a trailing newline silently 403s every batch otherwise.
