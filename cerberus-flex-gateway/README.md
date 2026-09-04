@@ -483,6 +483,73 @@ The body should have `password` replaced by `[REDACTED]`.
   captured in full (platform buffering cap). Response bodies stream
   and are not subject to this.
 
+## Fronting an MCP server
+
+Putting this policy in front of an MCP server surfaces a gotcha that has
+nothing to do with the policy itself: Flex Gateway rewrites the `Host` header
+to the upstream address it proxies to (a Kubernetes service DNS name, an
+internal hostname, whatever the route target is). The Python `mcp` SDK
+(FastMCP in 1.10+, `MCPServer` in 2.x) auto-enables DNS-rebinding protection
+for servers bound to the default host (`127.0.0.1` / `localhost`), and that
+protection's allow-list only contains `localhost:*`, `127.0.0.1:*`, and `[::1]:*`. Every
+proxied request gets `421 Misdirected Request` — a direct health probe on the
+server's own port stays green, so the failure only shows up once traffic goes
+through the gateway, and Cerberus faithfully captures the resulting all-421
+traffic.
+
+The server log line to look for is `Invalid Host header: <upstream>`. Fix it
+on the MCP server side by giving the SDK an explicit allow-list that names
+the upstream address the gateway sends (`allowed_hosts`) **and**, if browser
+clients call the server, the origins those browser apps are served from
+(`allowed_origins`). The two headers are checked independently: an
+unlisted `Host` is answered with `421 Misdirected Request`, and a present
+but unlisted `Origin` with `403 Forbidden`. So an allow-list that covers
+only the rewritten `Host` turns a browser client's 421 into a 403:
+
+```python
+from mcp.server.transport_security import TransportSecuritySettings
+
+security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    # what the gateway sends as Host, plus the SDK's own loopback defaults
+    allowed_hosts=["<upstream-name>", "<upstream-name>:*", "localhost:*", "127.0.0.1:*", "[::1]:*"],
+    # the Origin a browser client presents = the site the browser app is served from,
+    # e.g. https://app.example (add the gateway's own origin only when the app is served
+    # from the gateway itself); non-browser clients send no Origin and are unaffected
+    allowed_origins=["https://<browser-app-origin>", "http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"],
+)
+
+# mcp 1.x (FastMCP): the settings object carries it.
+mcp.settings.transport_security = security
+
+# mcp 2.x (FastMCP was renamed MCPServer): pass it to the transport entry point.
+app = mcp.streamable_http_app(transport_security=security)   # or mcp.run(..., transport_security=security)
+```
+
+`<upstream-name>` is whatever the route's upstream address is (`mcp-weather`
+in a compose network, a Kubernetes service DNS name, a hostname). The
+loopback entries reproduce the SDK's defaults so direct health probes over
+IPv4 or IPv6 keep working; drop them once nothing calls the server directly.
+
+Alternatives: bind the server to `0.0.0.0` instead of the default loopback —
+the SDK only auto-enables the protection for a loopback host, so binding
+elsewhere skips it entirely, which is weaker. Note where the host goes: in
+1.x it is a `FastMCP(...)` constructor argument, while in 2.x `MCPServer`
+takes no `host` and it belongs to the transport entry point
+(`mcp.run(..., host="0.0.0.0")` or `mcp.streamable_http_app(...)` behind a
+server bound that way). Or rewrite `Host` on the gateway route to a name the
+server already allows — one of the loopback patterns above — since rewriting
+it to the server's public name still fails unless that name is in
+`allowed_hosts` too. The TypeScript SDK
+(`@modelcontextprotocol/sdk`) has the equivalent `enableDnsRebindingProtection`
+/ `allowedHosts` / `allowedOrigins` options on `StreamableHTTPServerTransport`,
+off by default.
+
+Cross-origin deployments (a browser app on one origin calling an MCP server
+behind the gateway on another) are still subject to the browser's CORS
+preflight — that is a separate configuration on the gateway or server, not
+covered here.
+
 ## Development
 
 Building from source, running tests, the local playground, parity

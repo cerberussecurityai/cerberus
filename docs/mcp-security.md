@@ -207,5 +207,6 @@ server received what was sent.
 
 - [`cerberus-mcp`](../cerberus-mcp/README.md), installation and configuration
 - [`cerberus-envoy-ai-gateway`](../cerberus-envoy-ai-gateway/README.md), gateway-side coverage for LLM and MCP traffic
+- [`cerberus-flex-gateway`](../cerberus-flex-gateway/README.md), gateway-side coverage for MuleSoft Flex Gateway deployments — see its [DNS-rebinding gotcha](../cerberus-flex-gateway/README.md#fronting-an-mcp-server) when fronting an MCP server
 - [Model Context Protocol specification](https://modelcontextprotocol.io)
 - [OWASP GenAI Security Project](https://genai.owasp.org/)
