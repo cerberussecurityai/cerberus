@@ -128,6 +128,24 @@ class TestNormalizeIp:
         result = normalize_ip("::ffff:192.168.1.1")
         assert result == "::ffff:c0a8:101"
 
+    def test_ipv4_mapped_ipv6_independent_of_str(self):
+        """Hex form holds on interpreters whose str() emits dotted quads."""
+        assert normalize_ip("::ffff:1.2.3.4") == "::ffff:102:304"
+        assert normalize_ip("::ffff:c0a8:101") == "::ffff:c0a8:101"
+        assert normalize_ip("::ffff:0.0.0.0") == "::ffff:0:0"
+        assert normalize_ip("::ffff:192.168.1.1%eth0") == "::ffff:c0a8:101"
+
+    def test_ipv6_embedded_ipv4_other_forms(self):
+        assert normalize_ip("::1.2.3.4") == "::102:304"
+        assert normalize_ip("::255.255.255.255") == "::ffff:ffff"
+        assert normalize_ip("::ffff:0:1.2.3.4") == "::ffff:0:102:304"
+
+    def test_ipv6_zero_run_compression(self):
+        assert normalize_ip("1:0:0:1:0:0:1:1") == "1::1:0:0:1:1"
+        assert normalize_ip("1:2:0:4:5:6:7:8") == "1:2:0:4:5:6:7:8"
+        assert normalize_ip("1:2:3:4:5:6:0:0") == "1:2:3:4:5:6::"
+        assert normalize_ip("::") == "::"
+
 
 class TestSanitizeDict:
     """Test the recursive dict sanitization function."""

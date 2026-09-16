@@ -34,12 +34,41 @@ SENSITIVE_KEYS = frozenset({
 })
 
 
+def _compress_ipv6(packed):
+    """Format 16 packed bytes as compressed IPv6 text with hex groups only."""
+    segments = [(packed[i] << 8) | packed[i + 1] for i in range(0, 16, 2)]
+    best_start = best_len = 0
+    run_start = run_len = 0
+    for i, segment in enumerate(segments):
+        if segment:
+            run_len = 0
+            continue
+        if run_len == 0:
+            run_start = i
+        run_len += 1
+        if run_len > best_len:
+            best_start, best_len = run_start, run_len
+    groups = [format(segment, 'x') for segment in segments]
+    if best_len < 2:
+        return ':'.join(groups)
+    return '%s::%s' % (
+        ':'.join(groups[:best_start]),
+        ':'.join(groups[best_start + best_len:]),
+    )
+
+
 def normalize_ip(ip_string):
     """Normalize an IP address string for consistent hashing.
 
     Strips IPv6 zone IDs (e.g., ``fe80::1%eth0`` → ``fe80::1``) and
     compresses IPv6 addresses to their canonical form so the same
     logical address always produces the same hash.
+
+    IPv6 text is built here rather than with ``str()``: CPython changed
+    ``IPv6Address.__str__`` to print IPv4-mapped addresses as dotted quads
+    (``::ffff:192.168.1.1``) and backported it into patch releases of 3.9
+    through 3.14, so ``str()`` is not a stable canonical form. The hex form
+    (``::ffff:c0a8:101``) is, and ``parity-fixtures/normalize_ip.yaml`` pins it.
 
     Args:
         ip_string: IP address string to normalize
@@ -50,9 +79,12 @@ def normalize_ip(ip_string):
     if ip_string is None:
         return None
     try:
-        return str(ipaddress.ip_address(ip_string.split('%')[0].strip()))
+        address = ipaddress.ip_address(ip_string.split('%')[0].strip())
     except (ValueError, AttributeError):
         return ip_string
+    if address.version == 6:
+        return _compress_ipv6(address.packed)
+    return str(address)
 
 
 def hash_pii(value, secret_key):
