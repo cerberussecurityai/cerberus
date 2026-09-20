@@ -277,3 +277,51 @@ class TestSanitizeDict:
         assert data["nested"]["token"] == "abc"
         assert result["password"] == REDACTED
         assert result["nested"]["token"] == REDACTED
+
+
+class TestSanitizeDictExtraKeys:
+    """Caller-supplied key names, additive to SENSITIVE_KEYS."""
+
+    def test_extra_key_redacts_case_insensitively(self):
+        data = {"Member_Number": "M-12345", "name": "alice"}
+        result = sanitize_dict(data, extra_keys=["member_number"])
+        assert result == {"Member_Number": REDACTED, "name": "alice"}
+
+    def test_extra_key_redacts_entire_subtree(self):
+        data = {"beneficiary": {"name": "bob", "relation": "spouse"}, "plan": "gold"}
+        result = sanitize_dict(data, extra_keys=["beneficiary"])
+        assert result == {"beneficiary": REDACTED, "plan": "gold"}
+
+    def test_extra_keys_do_not_replace_the_builtin_floor(self):
+        data = {"password": "hunter2", "member_number": "M-1"}
+        result = sanitize_dict(data, extra_keys=["member_number"])
+        assert result == {"password": REDACTED, "member_number": REDACTED}
+
+    def test_extra_keys_apply_at_every_depth(self):
+        data = {"outer": {"items": [{"member_number": "M-1"}]}}
+        result = sanitize_dict(data, extra_keys=["member_number"])
+        assert result["outer"]["items"][0]["member_number"] == REDACTED
+
+    def test_extra_keys_are_trimmed_and_blanks_ignored(self):
+        data = {"member_number": "M-1", "name": "alice"}
+        result = sanitize_dict(data, extra_keys=["  Member_Number  ", "", "   ", None])
+        assert result == {"member_number": REDACTED, "name": "alice"}
+
+    def test_no_extra_keys_matches_the_base_contract(self):
+        data = {"password": "hunter2", "member_number": "M-1"}
+        assert sanitize_dict(data, extra_keys=[]) == sanitize_dict(data)
+        assert sanitize_dict(data, extra_keys=None) == sanitize_dict(data)
+
+    def test_extra_keys_do_not_leak_between_calls(self):
+        data = {"member_number": "M-1"}
+        sanitize_dict(data, extra_keys=["member_number"])
+        assert sanitize_dict(data) == {"member_number": "M-1"}
+
+    def test_max_depth_still_keyword_addressable(self):
+        data = {"value": "leaf"}
+        for _ in range(25):
+            data = {"level": data}
+        node = sanitize_dict(data, _max_depth=20)
+        for _ in range(21):
+            node = node["level"]
+        assert node == REDACTED

@@ -112,7 +112,7 @@ def hash_pii(value, secret_key):
     return hmac.new(secret_key, value, hashlib.sha256).hexdigest()
 
 
-def sanitize_dict(data, _depth=0, _max_depth=20):
+def sanitize_dict(data, extra_keys=None, _depth=0, _max_depth=20):
     """Recursively redact sensitive keys in a dict or list.
 
     Walks nested dicts and lists, replacing values whose keys match
@@ -120,30 +120,53 @@ def sanitize_dict(data, _depth=0, _max_depth=20):
     capped at ``_max_depth`` levels to prevent stack overflow from
     adversarial deeply-nested payloads.
 
+    ``extra_keys`` adds caller-supplied names for this call only.  The
+    built-in set is a floor, names are trimmed and lowercased, blank
+    entries are ignored, and a match redacts the whole value including any
+    subtree — the contract ``parity-fixtures/custom_pii_rules.yaml`` pins
+    for customSensitiveKeys.
+
     Args:
         data: Dict or list to sanitize
+        extra_keys: Additional key names to redact, or None
         _depth: Current recursion depth (internal — do not set)
         _max_depth: Maximum recursion depth before redacting entire subtree
 
     Returns:
         New sanitized structure with sensitive values replaced
     """
-    if _depth > _max_depth:
+    return _sanitize(data, _sensitive_key_set(extra_keys), _depth, _max_depth)
+
+
+def _sensitive_key_set(extra_keys):
+    """Union SENSITIVE_KEYS with the caller's extra names."""
+    if not extra_keys:
+        return SENSITIVE_KEYS
+    extra = {
+        key.strip().lower()
+        for key in extra_keys
+        if isinstance(key, str) and key.strip()
+    }
+    return SENSITIVE_KEYS | extra if extra else SENSITIVE_KEYS
+
+
+def _sanitize(data, keys, depth, max_depth):
+    if depth > max_depth:
         return REDACTED
 
     if isinstance(data, dict):
         sanitized = {}
         for key, value in data.items():
-            if isinstance(key, str) and key.lower() in SENSITIVE_KEYS:
+            if isinstance(key, str) and key.lower() in keys:
                 sanitized[key] = REDACTED
             elif isinstance(value, (dict, list)):
-                sanitized[key] = sanitize_dict(value, _depth + 1, _max_depth)
+                sanitized[key] = _sanitize(value, keys, depth + 1, max_depth)
             else:
                 sanitized[key] = value
         return sanitized
     if isinstance(data, list):
         return [
-            sanitize_dict(item, _depth + 1, _max_depth) if isinstance(item, (dict, list)) else item
+            _sanitize(item, keys, depth + 1, max_depth) if isinstance(item, (dict, list)) else item
             for item in data
         ]
     return data
