@@ -25,6 +25,9 @@ DEFAULT_FIREHOSE_READ_MS = 500
 MAX_STREAMS = 16
 STREAM_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 
+MAX_GATEWAY_IDS = 64
+LAMBDA_ARN = re.compile(r"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:[^\s]+$")
+
 
 class ConfigError(ValueError):
     """Raised when a CERBERUS_* value is missing or unusable."""
@@ -43,6 +46,9 @@ class Config:
     max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES
     firehose_connect_ms: int = DEFAULT_FIREHOSE_CONNECT_MS
     firehose_read_ms: int = DEFAULT_FIREHOSE_READ_MS
+    chain_arn: str = ""
+    gateway_ids: tuple[str, ...] = ()
+    chain_read_ms: int = 0
     log_level: str = "INFO"
 
     def mapper_options(self, version: str) -> MapperOptions:
@@ -80,6 +86,24 @@ class Config:
         if not claim:
             raise ConfigError("CERBERUS_USER_ID_CLAIM must not be empty")
 
+        chain_arn = _raw(source, "CERBERUS_CHAIN_REQUEST_ARN")
+        gateway_ids = _list(source, "CERBERUS_GATEWAY_IDS")
+        chain_read_ms = _int(source, "CERBERUS_CHAIN_READ_MS", 0, 0, 300000)
+        if chain_arn:
+            if not LAMBDA_ARN.match(chain_arn):
+                raise ConfigError(
+                    f"CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN ({chain_arn!r})"
+                )
+            if not gateway_ids:
+                raise ConfigError("CERBERUS_GATEWAY_IDS is required when chaining")
+            if len(gateway_ids) > MAX_GATEWAY_IDS:
+                raise ConfigError(
+                    f"CERBERUS_GATEWAY_IDS accepts at most {MAX_GATEWAY_IDS} ids "
+                    f"(got {len(gateway_ids)})"
+                )
+            if not chain_read_ms:
+                raise ConfigError("CERBERUS_CHAIN_READ_MS is required when chaining")
+
         log_level = _text(source, "CERBERUS_LOG_LEVEL", "INFO").upper()
         if log_level not in LOG_LEVELS:
             raise ConfigError(f"CERBERUS_LOG_LEVEL must be one of {LOG_LEVELS} (got {log_level!r})")
@@ -104,6 +128,9 @@ class Config:
             firehose_read_ms=_int(
                 source, "CERBERUS_FIREHOSE_READ_MS", DEFAULT_FIREHOSE_READ_MS, 10, 10000
             ),
+            chain_arn=chain_arn,
+            gateway_ids=gateway_ids,
+            chain_read_ms=chain_read_ms,
             log_level=log_level,
         )
 
