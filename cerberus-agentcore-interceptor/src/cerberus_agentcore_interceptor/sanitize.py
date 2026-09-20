@@ -6,6 +6,7 @@ from typing import Any
 
 from cerberus_core import SENSITIVE_HEADERS, sanitize_dict
 
+from .bounding import clip_text
 from .envelope import header as _header
 
 # Captured by default. Everything else is dropped, so a header that is useful
@@ -35,11 +36,9 @@ def _from_wsgi(name: str) -> str:
 # Dropped whatever the allowlist says. cerberus-core's set is the floor.
 ALWAYS_DROP: frozenset[str] = frozenset(
     {_from_wsgi(name) for name in SENSITIVE_HEADERS}
-    | {
-        "x-amz-security-token",
-        "www-authenticate",
-        "mcp-session-id",
-    }
+    | {"x-amz-security-token", "www-authenticate"}
+    # Session ids ride in the event's own field instead.
+    | {name.lower() for name in SESSION_HEADERS}
 )
 
 # VPC-endpoint and TLS-negotiation headers the gateway adds to every request.
@@ -61,7 +60,7 @@ def capture_headers(headers: Any, allowlist: tuple[str, ...]) -> dict[str, str]:
         wanted = canonical.get(lower)
         if wanted is None:
             continue
-        captured[wanted] = _value(value)[:MAX_HEADER_VALUE_CHARS]
+        captured[wanted] = clip_text(_value(value), MAX_HEADER_VALUE_CHARS)
     return captured
 
 

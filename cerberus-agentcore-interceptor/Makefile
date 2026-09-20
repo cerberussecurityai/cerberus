@@ -8,7 +8,7 @@ PY := $(VENV)/bin/python
 .PHONY: venv test lint typecheck fmt clean
 
 venv:
-	uv venv --clear $(VENV)
+	uv venv --clear --python 3.13 $(VENV)
 	uv pip install --python $(PY) -e ".[dev]" -e ../cerberus-core
 
 test: $(VENV)

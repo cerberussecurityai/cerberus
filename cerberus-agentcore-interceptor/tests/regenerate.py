@@ -1,7 +1,6 @@
 """Rewrite the expected-event goldens from the input fixtures.
 
-Run after a deliberate change to the source-event contract:
-    .venv/bin/python tests/regenerate.py
+Run when the source-event contract changes: .venv/bin/python tests/regenerate.py
 """
 
 import json

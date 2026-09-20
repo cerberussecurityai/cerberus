@@ -1,23 +1,25 @@
-"""The source event: one interception, in the HTTP shape the platform already ingests.
+"""The source event: one interception, in the shape the platform ingests.
 
 Provider semantics — model labels, target names, the MCP method ladder — are
-left to the backend, so a provider change needs no redeploy here.
+resolved server-side, so a provider change needs no redeploy here.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from cerberus_core import normalize_ip
 
+from . import __version__
 from . import identity as identity_mod
 from .bounding import (
     DEFAULT_MAX_EVENT_BYTES,
     STATE_CAPTURED,
     STATE_DISABLED,
     STATE_OMITTED,
+    clip_text,
     fit,
 )
 from .envelope import BODY_EMPTY, Envelope, GatewayContext, header, request_body
@@ -42,7 +44,7 @@ class MapperOptions:
     capture_bodies: bool = True
     sensitive_keys: tuple[str, ...] = ()
     max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES
-    version: str = field(default="")
+    version: str = __version__
 
 
 def source_event(
@@ -58,8 +60,8 @@ def source_event(
     body, body_note = _body(envelope, options)
 
     event: dict[str, Any] = {
-        "event_id": context.request_id[:MAX_EVENT_ID_CHARS],
-        "timestamp": timestamp.isoformat(),
+        "event_id": clip_text(context.request_id, MAX_EVENT_ID_CHARS),
+        "timestamp": _timestamp(timestamp),
         "method": envelope.method,
         "endpoint": _endpoint(envelope.path),
         "host": context.host,
@@ -84,9 +86,9 @@ def source_event(
     # Absent rather than empty, following the other integrations' wire shape.
     optional = {
         "headers": capture_headers(headers, options.capture_headers),
-        "user_agent": header(headers, "user-agent")[:MAX_USER_AGENT_CHARS],
-        "user_id": who.user_id[:MAX_USER_ID_CHARS],
-        "session_id": session_id(headers)[:MAX_SESSION_ID_CHARS],
+        "user_agent": clip_text(header(headers, "user-agent"), MAX_USER_AGENT_CHARS),
+        "user_id": clip_text(who.user_id, MAX_USER_ID_CHARS),
+        "session_id": clip_text(session_id(headers), MAX_SESSION_ID_CHARS),
         "body": body,
     }
     event.update({key: value for key, value in optional.items() if value})
@@ -107,4 +109,10 @@ def _body(envelope: Envelope, options: MapperOptions) -> tuple[Any, dict[str, An
 
 
 def _endpoint(path: str) -> str:
-    return path.split("?", 1)[0][:MAX_ENDPOINT_CHARS]
+    return clip_text(path.split("?", 1)[0], MAX_ENDPOINT_CHARS)
+
+
+def _timestamp(value: datetime) -> str:
+    """ISO-8601 UTC with microseconds, whatever the caller handed us."""
+    moment = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return moment.isoformat(timespec="microseconds")

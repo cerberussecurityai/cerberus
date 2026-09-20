@@ -1,7 +1,7 @@
-"""The AgentCore interceptor envelope: shape, phase, headers, body, client context.
+"""Reading the AgentCore interceptor envelope: shape, phase, headers, body, context.
 
-Everything here is a read of what the gateway handed us. Nothing raises: a
-malformed part degrades the capture, never the customer's request.
+Nothing here raises. A malformed part degrades the capture, never the
+customer's request.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ RESPONSE = "response"
 
 INPUT_VERSION = "1.0"
 
-# Reasons a body is not attached to the source event. A source event without a
-# dict body derives nothing downstream, so the reason travels with the event.
+# Why a body is not attached to the event. The reason travels with the event,
+# so a gap in what was captured is explained rather than silent.
 BODY_EMPTY = "empty"
 BODY_DECODE_ERROR = "decode_error"
 BODY_NOT_JSON = "not_json"
@@ -86,14 +86,10 @@ def parse(event: Any) -> Envelope:
     version = _text(event.get("interceptorInputVersion"))
     shape_key = next((key for key in SHAPE_KEYS if isinstance(event.get(key), dict)), "")
     if not shape_key:
-        # A future shape still has to be echoed back, so keep whichever key
-        # carries an object and let the output builder work from it.
+        # A shape we do not know still has to be echoed back, so keep whichever
+        # key carries an envelope and let the output builder work from it.
         shape_key = next(
-            (
-                key
-                for key, value in event.items()
-                if key != "interceptorInputVersion" and isinstance(value, dict)
-            ),
+            (key for key, value in event.items() if _looks_like_shape(value)),
             "",
         )
     shape = event.get(shape_key) if shape_key else None
@@ -190,6 +186,10 @@ def _load_json(text: str) -> tuple[Any, str]:
     if not isinstance(value, dict):
         return None, BODY_NOT_OBJECT
     return value, ""
+
+
+def _looks_like_shape(value: Any) -> bool:
+    return isinstance(value, dict) and ("gatewayRequest" in value or "gatewayResponse" in value)
 
 
 def _split_gateway_arn(arn: str) -> tuple[str, str, str]:

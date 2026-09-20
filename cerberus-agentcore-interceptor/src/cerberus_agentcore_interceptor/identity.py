@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .bounding import clip_text
 from .envelope import header
 
 JWT = "jwt"
@@ -94,13 +95,13 @@ def _access_key_id(value: str) -> str:
     """The key id out of `AWS4-HMAC-SHA256 Credential=<id>/<date>/…`."""
     for part in value.replace(",", " ").split():
         if part.startswith("Credential="):
-            return part[len("Credential=") :].split("/", 1)[0][:MAX_CLAIM_CHARS]
+            return clip_text(part[len("Credential=") :].split("/", 1)[0], MAX_CLAIM_CHARS)
     return ""
 
 
 def _claim_text(value: Any) -> str:
     if isinstance(value, str):
-        return value.strip()[:MAX_CLAIM_CHARS]
+        return clip_text(value.strip(), MAX_CLAIM_CHARS)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(value)[:MAX_CLAIM_CHARS]
     return ""

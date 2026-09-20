@@ -23,20 +23,16 @@ stream's HTTP endpoint holds the ingest key.
 
 ## Read this before you attach it
 
-**AgentCore Gateway fails closed on interceptor failure.** If the Lambda
-raises, times out, is throttled, loses its invoke permission or is deleted, the
-caller gets an error and the target never runs. That is the platform's
-behaviour, not a choice this package makes, and it is why the handler treats
-availability as the first requirement: every step that builds a capture runs
-under its own guard, and a capture that cannot be built is dropped while the
-request goes through untouched.
+**AgentCore Gateway fails closed on interceptor failure.** If the function
+cannot answer, the caller gets an error and the target never runs. That is the
+platform's behaviour, not a choice this package makes, and it is why the
+handler treats availability as the first requirement: every step that builds a
+capture runs under its own guard, so a capture that cannot be built is dropped
+while the request goes through untouched.
 
-Two boundaries, opposite policies:
-
-| Boundary | On failure |
-|---|---|
-| Gateway → this Lambda | Fails **closed**. The caller's request is blocked. |
-| This Lambda → Cerberus | Fails **open**. Capture is lost, traffic keeps flowing. |
+The interceptor is therefore part of your gateway's availability. Alarm on the
+function's `Errors` and `Throttles`, give it reserved concurrency, and move an
+alias rather than editing the gateway role in place.
 
 ## What it captures
 

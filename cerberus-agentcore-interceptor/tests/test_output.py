@@ -1,11 +1,7 @@
 from helpers import load_case
 
 from cerberus_agentcore_interceptor import envelope as env
-from cerberus_agentcore_interceptor.output import (
-    OUTPUT_VERSION,
-    is_valid_output,
-    passthrough,
-)
+from cerberus_agentcore_interceptor.output import OUTPUT_VERSION, is_valid_output, passthrough
 
 
 def out(name: str) -> dict:
@@ -34,11 +30,15 @@ def test_mcp_echoes_the_request_body():
 
 
 def test_mcp_echoes_the_response_body_at_response_phase():
-    case = load_case("mcp-tools-call-response-phase")
-    body = case["input"]["mcp"]["gatewayResponse"]["body"]
+    response = load_case("mcp-tools-call-response-phase")["input"]["mcp"]["gatewayResponse"]
     assert out("mcp-tools-call-response-phase") == {
         "interceptorOutputVersion": OUTPUT_VERSION,
-        "mcp": {"transformedGatewayResponse": {"body": body}},
+        "mcp": {
+            "transformedGatewayResponse": {
+                "body": response["body"],
+                "statusCode": response["statusCode"],
+            }
+        },
     }
 
 
@@ -78,6 +78,50 @@ def test_an_unknown_shape_is_echoed_under_its_own_key():
     assert passthrough(env.parse(envelope)) == {
         "interceptorOutputVersion": OUTPUT_VERSION,
         "grpc": {"transformedGatewayRequest": {"body": {"x": 1}}},
+    }
+
+
+def test_an_unrecognisable_envelope_uses_the_documented_pass_through():
+    # Nothing to echo: the empty http form is the only one that means "keep it".
+    for payload in (None, {}, {"interceptorInputVersion": "1.0"}, {"meta": {"id": 1}}):
+        assert passthrough(env.parse(payload)) == {
+            "interceptorOutputVersion": OUTPUT_VERSION,
+            "http": {},
+        }
+
+
+def test_the_http_pass_through_is_not_shared_between_calls():
+    first = passthrough(env.parse(load_case("inference-chat")["input"]))
+    first["http"]["mutated"] = True
+    assert passthrough(env.parse(load_case("inference-chat")["input"]))["http"] == {}
+
+
+def test_the_response_echo_carries_the_status_code():
+    envelope = {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": None,
+            "gatewayResponse": {"body": {"result": {}}, "statusCode": 503},
+        },
+    }
+    assert passthrough(env.parse(envelope))["mcp"]["transformedGatewayResponse"] == {
+        "body": {"result": {}},
+        "statusCode": 503,
+    }
+
+
+def test_a_string_mcp_body_is_echoed_as_the_call_it_encodes():
+    envelope = {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": {"body": '{"jsonrpc":"2.0","method":"ping","id":9}'},
+            "gatewayResponse": None,
+        },
+    }
+    assert passthrough(env.parse(envelope))["mcp"]["transformedGatewayRequest"]["body"] == {
+        "jsonrpc": "2.0",
+        "method": "ping",
+        "id": 9,
     }
 
 

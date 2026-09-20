@@ -9,6 +9,5 @@ scrubbed: account `123456789012`, RFC 5737 addresses, JWT signatures removed.
 cases carry one; response-phase and unsupported-version cases do not, because
 nothing is captured for them.
 
-Regenerate the goldens with `python tests/regenerate.py` after a deliberate
-contract change. Cases with a `note` field were edited by hand; the note says
-how.
+Regenerate the goldens with `python tests/regenerate.py` when the contract
+changes. Cases with a `note` field were edited by hand; the note says how.

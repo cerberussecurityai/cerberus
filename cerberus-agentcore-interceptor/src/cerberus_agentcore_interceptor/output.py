@@ -1,9 +1,8 @@
-"""Interceptor outputs that leave the caller's request untouched.
+"""Interceptor outputs that return the caller's payload unchanged.
 
 The `mcp` shape has no empty pass-through: `{"mcp": {}}` is accepted, answers
-HTTP 200 and replaces the payload — the target never runs at REQUEST, and the
-caller receives a literal `{}` at RESPONSE. An `mcp` output must echo the body
-back. `{"http": {}}` is a true pass-through in both phases.
+HTTP 200 and replaces the payload. An `mcp` output has to echo the body back.
+`{"http": {}}` is a true pass-through in both phases.
 """
 
 from __future__ import annotations
@@ -11,32 +10,45 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .envelope import HTTP, MCP, REQUEST, RESPONSE, Envelope
+from .envelope import HTTP, REQUEST, RESPONSE, Envelope
 
 OUTPUT_VERSION = "1.0"
 
-HTTP_PASSTHROUGH: dict[str, Any] = {"interceptorOutputVersion": OUTPUT_VERSION, HTTP: {}}
+
+def http_passthrough() -> dict[str, Any]:
+    """The documented pass-through, fresh each call so no caller shares it."""
+    return {"interceptorOutputVersion": OUTPUT_VERSION, HTTP: {}}
 
 
 def passthrough(envelope: Envelope) -> dict[str, Any]:
     """An output that returns the payload the gateway gave us, unchanged."""
-    if envelope.kind == HTTP:
-        return dict(HTTP_PASSTHROUGH)
+    if envelope.kind == HTTP or not envelope.shape_key:
+        # An unidentified shape has nothing to echo, and this is the one empty
+        # form the gateway treats as "keep what you were given".
+        return http_passthrough()
 
-    key = envelope.shape_key or MCP
+    key = envelope.shape_key
     if envelope.phase == RESPONSE:
-        body = (envelope.response or {}).get("body")
-        field = "transformedGatewayResponse"
-    else:
-        body = _request_body(envelope)
-        field = "transformedGatewayRequest"
+        response = envelope.response or {}
+        body = response.get("body")
+        if body is None:
+            return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
+        transformed: dict[str, Any] = {"body": body}
+        status = response.get("statusCode")
+        if status is not None:
+            transformed["statusCode"] = status
+        return {
+            "interceptorOutputVersion": OUTPUT_VERSION,
+            key: {"transformedGatewayResponse": transformed},
+        }
 
+    body = _request_body(envelope)
     if body is None:
-        # Nothing to echo. `body: null` is refused outright at REQUEST, so the
-        # empty form is the only option left and the caller loses the payload
-        # either way.
         return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
-    return {"interceptorOutputVersion": OUTPUT_VERSION, key: {field: {"body": body}}}
+    return {
+        "interceptorOutputVersion": OUTPUT_VERSION,
+        key: {"transformedGatewayRequest": {"body": body}},
+    }
 
 
 def is_valid_output(value: Any) -> bool:
@@ -46,13 +58,19 @@ def is_valid_output(value: Any) -> bool:
 
 def _request_body(envelope: Envelope) -> Any:
     body = (envelope.request or {}).get("body")
+    if isinstance(body, str):
+        # The gateway hands the target a parsed body; echoing the text would
+        # send it a JSON string instead of the call.
+        body = _parsed(body)
     if body is not None:
         return body
     if envelope.phase == REQUEST and envelope.raw_body:
-        # The parsed body is what the gateway hands the target; echoing the raw
-        # string would send the target a JSON string instead of the call.
-        try:
-            return json.loads(envelope.raw_body)
-        except ValueError:
-            return None
+        return _parsed(envelope.raw_body)
     return None
+
+
+def _parsed(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None

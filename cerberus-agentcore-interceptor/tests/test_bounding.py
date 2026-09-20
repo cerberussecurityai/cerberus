@@ -1,4 +1,5 @@
 import copy
+import json
 
 from helpers import TIMESTAMP, LambdaContext, load_case, options
 
@@ -185,3 +186,97 @@ def test_serialize_is_what_the_ladder_measures():
     event = {"a": "é"}
     assert bounding.serialize(event) == b'{"a":"\\u00e9"}'
     assert bounding.size(event) == len(bounding.serialize(event))
+
+
+def test_padded_headers_cannot_push_an_event_out_of_capture():
+    # Headers are capped in bytes as well as characters, so a caller cannot pad
+    # them until the event no longer fits.
+    case = load_case("mcp-tools-call-lambda")
+    request = case["input"]["mcp"]["gatewayRequest"]
+    for name in ("User-Agent", "Content-Type", "X-Amzn-Trace-Id", "anthropic-version"):
+        request["headers"][name] = "\U0001f600" * 40000
+
+    event = source_event(
+        envelope_mod.parse(case["input"]),
+        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
+        options(case),
+        TIMESTAMP,
+    )
+
+    assert event is not None
+    assert event["body"]["method"] == "tools/call"
+    assert bounding.size(event) <= MAX
+
+
+def test_headers_are_shed_before_the_body():
+    case = load_case("mcp-tools-call-lambda")
+    case["input"]["mcp"]["gatewayRequest"]["headers"]["User-Agent"] = "u" * 900
+    event = source_event(
+        envelope_mod.parse(case["input"]),
+        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
+        options(case, max_event_bytes=1000),
+        TIMESTAMP,
+    )
+
+    assert event is not None
+    assert "headers" not in event
+    assert "user_agent" not in event
+    assert event["body"]["method"] == "tools/call"
+    assert event["custom_data"]["agentcore"]["headers"]["state"] == "shed"
+
+
+def test_a_large_messages_body_sheds_the_system_prompt_before_the_conversation():
+    body = {
+        "model": "anthropic.claude-haiku-4-5",
+        "max_tokens": 64,
+        "system": "s" * 200000,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    event = map_with_body("inference-messages", body)
+
+    assert event["body"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert event["body"]["model"] == "anthropic.claude-haiku-4-5"
+    assert len(event["body"]["system"]) == bounding.MAX_STRING_CHARS
+    assert bounding.size(event) <= MAX
+
+
+def test_the_system_prompt_goes_before_the_conversation_does():
+    body = {
+        "model": "anthropic.claude-haiku-4-5",
+        "system": "s" * 200000,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    event = map_with_body("inference-messages", body, max_event_bytes=1400)
+
+    assert "system" not in event["body"]
+    assert event["body"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert note(event)["system"] == "dropped"
+
+
+def test_a_capped_body_that_is_then_reduced_keeps_both_facts():
+    messages = [{"role": "user", "content": f"{index}:" + "y" * 40000} for index in range(40)]
+    event = map_with_body("inference-chat", chat(messages))
+    assert note(event)["state"] == "reduced"
+    assert note(event)["strings"] > 0
+
+
+def test_a_reduced_body_is_never_empty():
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 100}], "tools": ["t"] * 50}
+    event = map_with_body("inference-chat", body, max_event_bytes=1024)
+    assert event is None or event.get("body") is None or event["body"]
+
+
+def test_an_mcp_body_without_params_keeps_its_method():
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "extra": {"x": "y" * 200000}}
+    event = map_with_body("mcp-tools-call-lambda", body)
+    assert event["body"]["method"] == "tools/list"
+    assert "params" not in event["body"]
+
+
+def test_clip_text_bounds_bytes_as_well_as_characters():
+    assert bounding.clip_text("abc", 10) == "abc"
+    assert bounding.clip_text("a" * 50, 10) == "a" * 10
+
+    emoji = bounding.clip_text("\U0001f600" * 50, 10)
+    assert len(emoji) < 10
+    assert len(json.dumps(emoji)) - 2 <= 10 * bounding.BYTES_PER_CAPPED_CHAR
