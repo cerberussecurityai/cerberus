@@ -280,3 +280,23 @@ def test_clip_text_bounds_bytes_as_well_as_characters():
     emoji = bounding.clip_text("\U0001f600" * 50, 10)
     assert len(emoji) < 10
     assert len(json.dumps(emoji)) - 2 <= 10 * bounding.BYTES_PER_CAPPED_CHAR
+
+
+def test_many_cached_system_blocks_do_not_cost_the_whole_body():
+    # Anthropic's cached prompt form: a list of blocks, each under the string
+    # cap, that only a shed can bring under the event cap.
+    body = {
+        "model": "anthropic.claude-haiku-4-5",
+        "max_tokens": 1024,
+        "system": [
+            {"type": "text", "text": "S" * 8000, "cache_control": {"type": "ephemeral"}}
+            for _ in range(20)
+        ],
+        "messages": [{"role": "user", "content": "what is in /etc/hosts"}],
+    }
+    event = map_with_body("inference-messages", body)
+
+    assert event["body"]["model"] == "anthropic.claude-haiku-4-5"
+    assert event["body"]["messages"] == [{"role": "user", "content": "what is in /etc/hosts"}]
+    assert note(event)["system"] == "dropped"
+    assert bounding.size(event) <= MAX
