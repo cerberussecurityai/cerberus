@@ -1,0 +1,43 @@
+{
+  "name": "passthrough-echo",
+  "options": {
+    "identity_mode": "sigv4"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-15",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "http": {
+      "gatewayRequest": {
+        "path": "/passthru/echo",
+        "httpMethod": "POST",
+        "headers": {
+          "X-Amz-Date": "20260920T062429Z",
+          "x-amzn-tls-version": "TLSv1.3",
+          "x-amzn-vpce-config": "",
+          "Accept": "*/*",
+          "X-Forwarded-Proto": "https",
+          "User-Agent": "python-requests/2.34.2",
+          "Host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+          "x-amzn-vpc-id": "",
+          "Accept-Encoding": "gzip, deflate",
+          "x-amzn-vpce-policy-url": "",
+          "X-Forwarded-Port": "443",
+          "X-Amzn-Trace-Id": "Root=1-6aaf7c1d-4b11a9c94436d2e7147705de",
+          "Authorization": "AWS4-HMAC-SHA256 Credential=EXAMPLE/20260101/us-west-2/bedrock-agentcore/aws4_request, SignedHeaders=host, Signature=REMOVED",
+          "x-amzn-tls-cipher-suite": "TLS_AES_128_GCM_SHA256",
+          "X-Forwarded-For": "192.0.2.10",
+          "Content-Length": "62",
+          "x-amzn-vpce-id": "",
+          "Content-Type": "application/json"
+        },
+        "body": "eyJjYW5hcnkiOiAiQ0VSQkNBTkFSWS1wYXNzdGhyb3VnaC05ZDc3ODExNDExIiwgImhlbGxvIjogInB0In0="
+      },
+      "gatewayResponse": null
+    }
+  }
+}

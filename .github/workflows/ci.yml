@@ -1,0 +1,108 @@
+name: CI
+
+# Tests every package on pull requests and on main. Lint and typecheck run for
+# cerberus-agentcore-interceptor only; the older packages are not yet clean
+# under ruff/black.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Test ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: cerberus-core
+            install: -e . pytest
+          - package: cerberus-django
+            install: -e ".[dev]" -e ../cerberus-core
+          - package: cerberus-mcp
+            install: -e ".[dev]" -e ../cerberus-core
+          - package: cerberus-envoy-ai-gateway
+            install: -e ".[dev]" -e ../cerberus-core
+          - package: cerberus-agentcore-interceptor
+            install: -e ".[dev]" -e ../cerberus-core
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+
+      - name: Create the venv
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python ${{ matrix.install }}
+
+      - name: Test
+        run: .venv/bin/python -m pytest tests/ -q
+
+  interceptor-quality:
+    name: Lint cerberus-agentcore-interceptor
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cerberus-agentcore-interceptor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+
+      - name: Create the venv
+        run: |
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python -e ".[dev]" -e ../cerberus-core
+
+      - name: Ruff
+        run: .venv/bin/python -m ruff check src/ tests/
+
+      - name: Black
+        run: .venv/bin/python -m black --check src/ tests/
+
+      - name: Mypy
+        run: .venv/bin/python -m mypy src/
+
+  rust-parity:
+    name: Flex gateway parity
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cerberus-flex-gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cerberus-flex-gateway/target
+          key: ${{ runner.os }}-cargo-parity-${{ hashFiles('cerberus-flex-gateway/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-parity-
+
+      # The shared fixtures are the only cross-language contract: a change to
+      # SENSITIVE_KEYS or normalize_ip in cerberus-core has to land here too.
+      - name: Parity fixtures
+        run: cargo test --test parity_runner
