@@ -92,6 +92,27 @@ reason.
 The echo changes one thing: an unpaired UTF-16 surrogate, which the Lambda
 runtime cannot encode, comes back as U+FFFD.
 
+## Chaining
+
+A gateway has one REQUEST interceptor slot. If yours is taken, point this
+function at the one that is already there: it runs first on the raw input, its
+answer is returned to the gateway unchanged, and our own failures can neither
+skip it nor alter what it decided. If we cannot get its answer, the request is
+refused rather than served without it.
+
+Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
+to the gateways this function serves, and `CERBERUS_CHAIN_READ_MS` to the
+chained function's own timeout plus a cold-start allowance. A gateway that is
+not on the list is refused, because it may have had an interceptor of its own
+before this one. The execution role needs `lambda:InvokeFunction` on the ARN,
+and the function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus the
+throttle retries plus about a second for the capture.
+
+What their interceptor did travels with the event: `passed`, `transformed`
+(the transformed body is what gets captured, since it is what reaches the
+target), `short_circuit` with its status code (a refused request is still a
+captured attempt), `invalid_output`, or `error`.
+
 ## Configuration
 
 | Variable | Default | |
@@ -103,6 +124,9 @@ runtime cannot encode, comes back as U+FFFD.
 | `CERBERUS_CAPTURE_BODIES` | `true` | `false` captures metadata and identity only |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
+| `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
+| `CERBERUS_GATEWAY_IDS` | unset | Required when chaining; any other gateway is refused |
+| `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | At most 750; connect plus read is capped at 1500 |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | Lowered when connect plus read exceeds 1500 |
 | `CERBERUS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `WARNING`, `ERROR`. Logs carry request ids and outcomes, never bodies or headers |
@@ -111,8 +135,9 @@ A number out of range is clamped to the nearest bound, and an unknown log level
 becomes `INFO`, each with a warning in the function's log. Any other value that
 cannot be used turns capture off rather than failing the function: it logs an
 `ERROR` naming the variable, passes every request through unchanged, and counts
-`CaptureDropped` with reason `config_invalid`. Lambda caps all environment
-variables at 4 KB together.
+`CaptureDropped` with reason `config_invalid`. A chaining setting that cannot be
+used does fail the function at init, since no request may be served without the
+chained interceptor. Lambda caps all environment variables at 4 KB together.
 
 ## Deployment
 
@@ -125,7 +150,7 @@ variables at 4 KB together.
 | Runtime | `python3.13`, `arm64` |
 | Memory | 512 MB to start; raise it from your own worst-case body sizes |
 | Timeout | 3 s |
-| Permissions | `firehose:PutRecord` on each stream |
+| Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
 | Interception points | `["REQUEST"]` only |
 
 Do not attach it at RESPONSE. It captures nothing there, and the attachment

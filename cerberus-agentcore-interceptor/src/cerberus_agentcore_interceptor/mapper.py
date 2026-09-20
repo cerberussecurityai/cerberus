@@ -28,6 +28,7 @@ from .bounding import (
 )
 from .envelope import (
     BODY_EMPTY,
+    BODY_NOT_OBJECT,
     Envelope,
     GatewayContext,
     header,
@@ -64,6 +65,7 @@ def source_event(
     options: MapperOptions,
     timestamp: datetime,
     chain: dict[str, Any] | None = None,
+    body_override: Any = None,
     deadline: float | None = None,
 ) -> dict[str, Any] | None:
     """Build the event for one interception. None when it could not be bounded.
@@ -72,7 +74,7 @@ def source_event(
     """
     headers = envelope.headers
     who = identity_mod.resolve(options.identity_mode, headers, options.user_id_claim)
-    body, body_note, pruned = _body(envelope, options, deadline)
+    body, body_note, pruned = _body(envelope, options, body_override, deadline)
 
     event: dict[str, Any] = {
         "event_id": clip_text(context.request_id, MAX_EVENT_ID_CHARS),
@@ -115,17 +117,22 @@ def source_event(
 
 
 def _body(
-    envelope: Envelope, options: MapperOptions, deadline: float | None
+    envelope: Envelope, options: MapperOptions, override: Any, deadline: float | None
 ) -> tuple[Any, dict[str, Any], dict[str, Any] | None]:
     """The sanitised body, its note, and what prune() took out of it."""
     if not options.capture_bodies:
         return None, {"state": STATE_DISABLED}, None
-    body, reason = request_body(envelope)
+    # With a chain, the transformed body is the one that reaches the target.
+    if override is not None:
+        body, reason = (override, "") if isinstance(override, dict) else (None, BODY_NOT_OBJECT)
+    else:
+        body, reason = request_body(envelope)
     if not body:
         return None, {"state": STATE_OMITTED, "reason": reason or BODY_EMPTY}, None
 
     pruned = None
-    sent = request_body_size(envelope)
+    # The size as sent is the original body's, which says nothing of an override.
+    sent = None if override is not None else request_body_size(envelope)
     if sent is None or sent > PRUNE_FACTOR * options.max_event_bytes:
         body, pruned = prune(body, options.max_event_bytes)
         if body is None:
