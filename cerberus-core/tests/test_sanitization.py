@@ -128,6 +128,24 @@ class TestNormalizeIp:
         result = normalize_ip("::ffff:192.168.1.1")
         assert result == "::ffff:c0a8:101"
 
+    def test_ipv4_mapped_ipv6_independent_of_str(self):
+        """Hex form holds on interpreters whose str() emits dotted quads."""
+        assert normalize_ip("::ffff:1.2.3.4") == "::ffff:102:304"
+        assert normalize_ip("::ffff:c0a8:101") == "::ffff:c0a8:101"
+        assert normalize_ip("::ffff:0.0.0.0") == "::ffff:0:0"
+        assert normalize_ip("::ffff:192.168.1.1%eth0") == "::ffff:c0a8:101"
+
+    def test_ipv6_embedded_ipv4_other_forms(self):
+        assert normalize_ip("::1.2.3.4") == "::102:304"
+        assert normalize_ip("::255.255.255.255") == "::ffff:ffff"
+        assert normalize_ip("::ffff:0:1.2.3.4") == "::ffff:0:102:304"
+
+    def test_ipv6_zero_run_compression(self):
+        assert normalize_ip("1:0:0:1:0:0:1:1") == "1::1:0:0:1:1"
+        assert normalize_ip("1:2:0:4:5:6:7:8") == "1:2:0:4:5:6:7:8"
+        assert normalize_ip("1:2:3:4:5:6:0:0") == "1:2:3:4:5:6::"
+        assert normalize_ip("::") == "::"
+
 
 class TestSanitizeDict:
     """Test the recursive dict sanitization function."""
@@ -259,3 +277,51 @@ class TestSanitizeDict:
         assert data["nested"]["token"] == "abc"
         assert result["password"] == REDACTED
         assert result["nested"]["token"] == REDACTED
+
+
+class TestSanitizeDictExtraKeys:
+    """Caller-supplied key names, additive to SENSITIVE_KEYS."""
+
+    def test_extra_key_redacts_case_insensitively(self):
+        data = {"Member_Number": "M-12345", "name": "alice"}
+        result = sanitize_dict(data, extra_keys=["member_number"])
+        assert result == {"Member_Number": REDACTED, "name": "alice"}
+
+    def test_extra_key_redacts_entire_subtree(self):
+        data = {"beneficiary": {"name": "bob", "relation": "spouse"}, "plan": "gold"}
+        result = sanitize_dict(data, extra_keys=["beneficiary"])
+        assert result == {"beneficiary": REDACTED, "plan": "gold"}
+
+    def test_extra_keys_do_not_replace_the_builtin_floor(self):
+        data = {"password": "hunter2", "member_number": "M-1"}
+        result = sanitize_dict(data, extra_keys=["member_number"])
+        assert result == {"password": REDACTED, "member_number": REDACTED}
+
+    def test_extra_keys_apply_at_every_depth(self):
+        data = {"outer": {"items": [{"member_number": "M-1"}]}}
+        result = sanitize_dict(data, extra_keys=["member_number"])
+        assert result["outer"]["items"][0]["member_number"] == REDACTED
+
+    def test_extra_keys_are_trimmed_and_blanks_ignored(self):
+        data = {"member_number": "M-1", "name": "alice"}
+        result = sanitize_dict(data, extra_keys=["  Member_Number  ", "", "   ", None])
+        assert result == {"member_number": REDACTED, "name": "alice"}
+
+    def test_no_extra_keys_matches_the_base_contract(self):
+        data = {"password": "hunter2", "member_number": "M-1"}
+        assert sanitize_dict(data, extra_keys=[]) == sanitize_dict(data)
+        assert sanitize_dict(data, extra_keys=None) == sanitize_dict(data)
+
+    def test_extra_keys_do_not_leak_between_calls(self):
+        data = {"member_number": "M-1"}
+        sanitize_dict(data, extra_keys=["member_number"])
+        assert sanitize_dict(data) == {"member_number": "M-1"}
+
+    def test_max_depth_still_keyword_addressable(self):
+        data = {"value": "leaf"}
+        for _ in range(25):
+            data = {"level": data}
+        node = sanitize_dict(data, _max_depth=20)
+        for _ in range(21):
+            node = node["level"]
+        assert node == REDACTED

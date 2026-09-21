@@ -9,8 +9,8 @@
 #
 # Both runners assert: `normalize_ip(input) == expected`.
 #
-# See cerberus-core/src/cerberus_core/sanitization.py:37-55 for the
-# canonical implementation.
+# See cerberus-core/src/cerberus_core/sanitization.py for the canonical
+# implementation.
 cases:
   # --- IPv4 ---
 
@@ -57,13 +57,79 @@ cases:
     expected: "fe80::1"
 
   # --- IPv4-mapped IPv6 ---
+  # Every group is hex. Neither language's default formatter agrees: both
+  # print `::ffff:0:0/96` as a dotted quad, so each side formats the groups
+  # itself.
 
   - name: ipv4_mapped_ipv6_canonical_hex
-    # Python's ipaddress canonicalizes `::ffff:1.2.3.4` to `::ffff:102:304`.
-    # Rust's `std::net::Ipv6Addr::to_string` may produce the dotted form;
-    # the Rust port must canonicalize to match Python's output here.
     input: "::ffff:192.168.1.1"
     expected: "::ffff:c0a8:101"
+
+  - name: ipv4_mapped_ipv6_hex_input_idempotent
+    input: "::ffff:c0a8:101"
+    expected: "::ffff:c0a8:101"
+
+  - name: ipv4_mapped_ipv6_long_form
+    input: "0:0:0:0:0:ffff:1.2.3.4"
+    expected: "::ffff:102:304"
+
+  - name: ipv4_mapped_ipv6_zero
+    input: "::ffff:0.0.0.0"
+    expected: "::ffff:0:0"
+
+  - name: ipv4_mapped_ipv6_all_ones
+    input: "::ffff:255.255.255.255"
+    expected: "::ffff:ffff:ffff"
+
+  - name: ipv4_mapped_ipv6_zone_stripped
+    input: "::ffff:192.168.1.1%eth0"
+    expected: "::ffff:c0a8:101"
+
+  # --- Other embedded IPv4 forms ---
+
+  - name: ipv4_compatible_ipv6
+    input: "::1.2.3.4"
+    expected: "::102:304"
+
+  - name: ipv4_compatible_ipv6_all_ones
+    # Not IPv4-mapped, though the output looks like it: a `::ffff:` prefix
+    # rule would corrupt this one.
+    input: "::255.255.255.255"
+    expected: "::ffff:ffff"
+
+  - name: ipv4_translated_ipv6
+    input: "::ffff:0:1.2.3.4"
+    expected: "::ffff:0:102:304"
+
+  # --- Zero-run compression ---
+
+  - name: ipv6_leftmost_of_equal_zero_runs
+    input: "1:0:0:1:0:0:1:1"
+    expected: "1::1:0:0:1:1"
+
+  - name: ipv6_longest_run_not_leftmost
+    input: "1:0:1:0:0:0:1:1"
+    expected: "1:0:1::1:1"
+
+  - name: ipv6_single_zero_group_not_compressed
+    input: "1:2:0:4:5:6:7:8"
+    expected: "1:2:0:4:5:6:7:8"
+
+  - name: ipv6_leading_single_zero_group
+    input: "0:1:2:3:4:5:6:7"
+    expected: "0:1:2:3:4:5:6:7"
+
+  - name: ipv6_all_zeros
+    input: "::"
+    expected: "::"
+
+  - name: ipv6_trailing_zero_run
+    input: "1:2:3:4:5:6:0:0"
+    expected: "1:2:3:4:5:6::"
+
+  - name: ipv6_uppercase_and_leading_zeros
+    input: "2001:0DB8:0000:0000:0000:0000:1428:57AB"
+    expected: "2001:db8::1428:57ab"
 
   # --- Failure / passthrough ---
 

@@ -29,4 +29,4 @@ clean = sanitize_dict(data)
 - **`SENSITIVE_KEYS`** — Unified set of key names whose values should be redacted (passwords, tokens, API keys, PII identifiers, etc.)
 - **`SENSITIVE_HEADERS`** — HTTP headers that should always be redacted
 - **`REDACTED`** — The sentinel string `[REDACTED]`
-- **`sanitize_dict(data)`** — Recursively redacts sensitive keys in dicts and lists
+- **`sanitize_dict(data, extra_keys=None)`** — Recursively redacts sensitive keys in dicts and lists; `extra_keys` adds caller-supplied names on top of `SENSITIVE_KEYS`
