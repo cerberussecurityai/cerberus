@@ -79,8 +79,8 @@ jobs:
       - name: Mypy
         run: .venv/bin/python -m mypy src/
 
-  rust-parity:
-    name: Flex gateway parity
+  rust-tests:
+    name: Test cerberus-flex-gateway
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -99,10 +99,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             cerberus-flex-gateway/target
-          key: ${{ runner.os }}-cargo-parity-${{ hashFiles('cerberus-flex-gateway/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-parity-
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('cerberus-flex-gateway/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-
 
-      # The shared fixtures are the only cross-language contract: a change to
-      # SENSITIVE_KEYS or normalize_ip in cerberus-core has to land here too.
-      - name: Parity fixtures
-        run: cargo test --test parity_runner
+      # Includes tests/parity_runner.rs, the only cross-language contract: a
+      # change to SENSITIVE_KEYS or normalize_ip in cerberus-core lands here too.
+      - name: Test
+        run: cargo test
