@@ -78,6 +78,27 @@ and the caller gets a JSON-RPC parse error. `{"http": {}}` is a true
 pass-through. This package's golden fixtures pin the echo form for exactly that
 reason.
 
+## Chaining
+
+A gateway has one REQUEST interceptor slot. If yours is taken, point this
+function at the one that is already there: it runs first on the raw input, its
+answer is returned to the gateway unchanged, and our own failures can neither
+skip it nor alter what it decided. If we cannot get its answer, the request is
+refused rather than served without it.
+
+Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
+to the gateways this function serves, and `CERBERUS_CHAIN_READ_MS` to the
+chained function's own timeout plus a cold-start allowance. A gateway that is
+not on the list is refused, because it may have had an interceptor of its own
+before this one. The execution role needs `lambda:InvokeFunction` on the ARN,
+and the function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus the
+throttle retries plus about a second for the capture.
+
+What their interceptor did travels with the event: `passed`, `transformed`
+(the transformed body is what gets captured, since it is what reaches the
+target), `short_circuit` with its status code (a refused request is still a
+captured attempt), `invalid_output`, or `error`.
+
 ## Configuration
 
 | Variable | Default | |
@@ -89,6 +110,9 @@ reason.
 | `CERBERUS_CAPTURE_BODIES` | `true` | `false` captures metadata and identity only |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | Ceiling 63488 |
+| `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
+| `CERBERUS_GATEWAY_IDS` | unset | Required when chaining; any other gateway is refused |
+| `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | |
 | `CERBERUS_LOG_LEVEL` | `INFO` | Logs carry request ids and outcomes, never bodies or headers |
@@ -108,7 +132,7 @@ environment variables at 4 KB together.
 | Runtime | `python3.13`, `arm64` |
 | Memory | 512 MB to start; raise it from your own worst-case body sizes |
 | Timeout | 3 s |
-| Permissions | `firehose:PutRecord` on each stream |
+| Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
 
 The gateway's role needs `lambda:InvokeFunction` on `function:<name>:*` — a
 grant on the unqualified ARN does not cover an alias, and permission edits take

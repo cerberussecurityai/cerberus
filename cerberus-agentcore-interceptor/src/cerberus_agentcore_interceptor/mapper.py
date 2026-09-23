@@ -22,7 +22,7 @@ from .bounding import (
     clip_text,
     fit,
 )
-from .envelope import BODY_EMPTY, Envelope, GatewayContext, header, request_body
+from .envelope import BODY_EMPTY, BODY_NOT_OBJECT, Envelope, GatewayContext, header, request_body
 from .sanitize import DEFAULT_CAPTURE_HEADERS, capture_headers, sanitize_body, session_id
 
 INTEGRATION = "agentcore-gateway"
@@ -53,11 +53,12 @@ def source_event(
     options: MapperOptions,
     timestamp: datetime,
     chain: dict[str, Any] | None = None,
+    body_override: Any = None,
 ) -> dict[str, Any] | None:
     """Build the event for one interception. None when it could not be bounded."""
     headers = envelope.headers
     who = identity_mod.resolve(options.identity_mode, headers, options.user_id_claim)
-    body, body_note = _body(envelope, options)
+    body, body_note = _body(envelope, options, body_override)
 
     event: dict[str, Any] = {
         "event_id": clip_text(context.request_id, MAX_EVENT_ID_CHARS),
@@ -99,10 +100,16 @@ def source_event(
     return fit(event, options.max_event_bytes)
 
 
-def _body(envelope: Envelope, options: MapperOptions) -> tuple[Any, dict[str, Any]]:
+def _body(
+    envelope: Envelope, options: MapperOptions, override: Any = None
+) -> tuple[Any, dict[str, Any]]:
     if not options.capture_bodies:
         return None, {"state": STATE_DISABLED}
-    body, reason = request_body(envelope)
+    # With a chain, the transformed body is the one that reaches the target.
+    if override is not None:
+        body, reason = (override, "") if isinstance(override, dict) else (None, BODY_NOT_OBJECT)
+    else:
+        body, reason = request_body(envelope)
     if not body:
         return None, {"state": STATE_OMITTED, "reason": reason or BODY_EMPTY}
     return sanitize_body(body, options.sensitive_keys), {"state": STATE_CAPTURED}
