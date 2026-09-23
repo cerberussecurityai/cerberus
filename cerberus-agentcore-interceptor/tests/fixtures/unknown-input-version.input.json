@@ -1,0 +1,58 @@
+{
+  "name": "unknown-input-version",
+  "options": {
+    "identity_mode": "jwt"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-01",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "2.0",
+    "mcp": {
+      "gatewayRequest": {
+        "path": "/mcp",
+        "httpMethod": "POST",
+        "headers": {
+          "x-amzn-tls-version": "TLSv1.3",
+          "x-amzn-vpce-config": "",
+          "Accept": "application/json, text/event-stream",
+          "X-Forwarded-Proto": "https",
+          "User-Agent": "python-requests/2.34.2",
+          "Host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+          "x-amzn-vpc-id": "",
+          "Accept-Encoding": "gzip, deflate",
+          "x-amzn-vpce-policy-url": "",
+          "X-Forwarded-Port": "443",
+          "X-Amzn-Trace-Id": "Root=1-6aaf7c07-2d910ffa6a37a0de40f2ef0b",
+          "Authorization": "Bearer eyJraWQiOiAiRVhBTVBMRUtJRCIsICJhbGciOiAiUlMyNTYifQ.eyJzdWIiOiAiMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1IiwgImlzcyI6ICJodHRwczovL2NvZ25pdG8taWRwLnVzLXdlc3QtMi5hbWF6b25hd3MuY29tL3VzLXdlc3QtMl9FWEFNUExFUE9PTCIsICJjbGllbnRfaWQiOiAiZXhhbXBsZWNsaWVudGlkMDAwMDAwMDAwMCIsICJvcmlnaW5fanRpIjogIjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMSIsICJldmVudF9pZCI6ICIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDIiLCAidG9rZW5fdXNlIjogImFjY2VzcyIsICJzY29wZSI6ICJhd3MuY29nbml0by5zaWduaW4udXNlci5hZG1pbiIsICJhdXRoX3RpbWUiOiAxNzAwMDAwMDAwLCAiZXhwIjogMTcwMDAwMzYwMCwgImlhdCI6IDE3MDAwMDAwMDAsICJqdGkiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAzIiwgInVzZXJuYW1lIjogImV4YW1wbGUtdXNlciJ9.SIGNATURE-REMOVED",
+          "x-amzn-tls-cipher-suite": "TLS_AES_128_GCM_SHA256",
+          "X-Forwarded-For": "192.0.2.10",
+          "Content-Length": "174",
+          "x-amzn-vpce-id": "",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "echo___echo",
+            "arguments": {
+              "message": "envelope",
+              "canary": "target-01-mcptoolscallla-f4e0d13a41"
+            }
+          }
+        },
+        "context": null
+      },
+      "gatewayResponse": null,
+      "rawGatewayRequest": {
+        "body": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", \"params\": {\"name\": \"echo___echo\", \"arguments\": {\"message\": \"envelope\", \"canary\": \"target-01-mcptoolscallla-f4e0d13a41\"}}}"
+      }
+    }
+  },
+  "note": "Synthetic: interceptorInputVersion bumped to an unsupported value."
+}

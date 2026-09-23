@@ -1,0 +1,58 @@
+{
+  "name": "mcp-initialize",
+  "options": {
+    "identity_mode": "jwt"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-03",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "mcp": {
+      "gatewayRequest": {
+        "path": "/mcp",
+        "httpMethod": "POST",
+        "headers": {
+          "x-amzn-tls-version": "TLSv1.3",
+          "x-amzn-vpce-config": "",
+          "Accept": "application/json, text/event-stream",
+          "X-Forwarded-Proto": "https",
+          "User-Agent": "python-requests/2.34.2",
+          "Host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+          "x-amzn-vpc-id": "",
+          "Accept-Encoding": "gzip, deflate",
+          "x-amzn-vpce-policy-url": "",
+          "X-Forwarded-Port": "443",
+          "X-Amzn-Trace-Id": "Root=1-6aaf7c09-0fbbe8361a20d86c7e85b4c6",
+          "Authorization": "Bearer eyJraWQiOiAiRVhBTVBMRUtJRCIsICJhbGciOiAiUlMyNTYifQ.eyJzdWIiOiAiMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1IiwgImlzcyI6ICJodHRwczovL2NvZ25pdG8taWRwLnVzLXdlc3QtMi5hbWF6b25hd3MuY29tL3VzLXdlc3QtMl9FWEFNUExFUE9PTCIsICJjbGllbnRfaWQiOiAiZXhhbXBsZWNsaWVudGlkMDAwMDAwMDAwMCIsICJvcmlnaW5fanRpIjogIjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMSIsICJldmVudF9pZCI6ICIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDIiLCAidG9rZW5fdXNlIjogImFjY2VzcyIsICJzY29wZSI6ICJhd3MuY29nbml0by5zaWduaW4udXNlci5hZG1pbiIsICJhdXRoX3RpbWUiOiAxNzAwMDAwMDAwLCAiZXhwIjogMTcwMDAwMzYwMCwgImlhdCI6IDE3MDAwMDAwMDAsICJqdGkiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAzIiwgInVzZXJuYW1lIjogImV4YW1wbGUtdXNlciJ9.SIGNATURE-REMOVED",
+          "x-amzn-tls-cipher-suite": "TLS_AES_128_GCM_SHA256",
+          "X-Forwarded-For": "192.0.2.10",
+          "Content-Length": "202",
+          "x-amzn-vpce-id": "",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "method": "initialize",
+          "params": {
+            "clientInfo": {
+              "name": "cerb-target-01-mcpinitialize-6e40bcde80",
+              "version": "1.0"
+            },
+            "protocolVersion": "2025-06-18",
+            "capabilities": {}
+          }
+        },
+        "context": null
+      },
+      "gatewayResponse": null,
+      "rawGatewayRequest": {
+        "body": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2025-06-18\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"cerb-target-01-mcpinitialize-6e40bcde80\", \"version\": \"1.0\"}}}"
+      }
+    }
+  }
+}

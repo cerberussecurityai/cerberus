@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cerberus-agentcore-interceptor"
+version = "0.1.0"
+description = "AWS Bedrock AgentCore Gateway interceptor that ships gateway traffic to the Cerberus platform"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Cerberus Security AI" }
+]
+keywords = [
+    "aws",
+    "bedrock",
+    "agentcore",
+    "gateway",
+    "interceptor",
+    "lambda",
+    "mcp",
+    "llm",
+    "monitoring",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cerberus-core>=0.1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=24.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+    "boto3>=1.34",
+]
+
+[project.urls]
+Homepage = "https://github.com/cerberussecurityai/cerberus"
+Documentation = "https://github.com/cerberussecurityai/cerberus#readme"
+Repository = "https://github.com/cerberussecurityai/cerberus.git"
+Issues = "https://github.com/cerberussecurityai/cerberus/issues"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/tests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cerberus_agentcore_interceptor"]
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["src", "../cerberus-core/src"]
