@@ -39,6 +39,9 @@ LLM_KEEP_KEYS = ("model", "stream", "max_tokens")
 LLM_ROUTE_KEYS = ("messages", "input", "prompt")
 # Anthropic's top-level system prompt and its Responses API counterpart.
 LLM_SYSTEM_KEYS = ("system", "instructions")
+# Where a message keeps its content blocks: Chat and Messages content, Responses
+# API tool output.
+LLM_BLOCK_KEYS = ("content", "output")
 MCP_KEEP_KEYS = ("jsonrpc", "id", "method")
 MCP_KEEP_PARAMS = ("name", "uri")
 
@@ -171,7 +174,11 @@ def _looks_like_llm(body: dict[str, Any]) -> bool:
 
 
 def _reduce_llm(body: dict[str, Any], fits: Callable[[Any], bool]) -> tuple[Any, dict[str, Any]]:
-    """Drop the parameters first, then the oldest messages, then the system prompt."""
+    """Drop the parameters first, then the oldest messages, then the system prompt.
+
+    The newest message is never dropped: when it alone is over budget, its
+    strings are cut shorter and then its oldest content blocks go.
+    """
     base: dict[str, Any] = {key: body[key] for key in LLM_KEEP_KEYS if key in body}
     route = next((key for key in LLM_ROUTE_KEYS if key in body), None)
     prompts = [key for key in LLM_SYSTEM_KEYS if body.get(key) is not None]
@@ -181,24 +188,48 @@ def _reduce_llm(body: dict[str, Any], fits: Callable[[Any], bool]) -> tuple[Any,
     with_system = dict(base)
     for key in prompts:
         with_system[key] = cap_strings(body[key], MAX_SYSTEM_CHARS)[0]
+    starts = ((with_system, False), (base, True)) if prompts else ((base, False),)
 
     value = body.get(route) if route is not None else None
     # Every item counts, whatever its type: Responses API tool calls and their
     # outputs carry no role.
     messages = value if isinstance(value, list) else None
 
-    for start, without_system in ((with_system, False), (base, True)):
+    for start, without_system in starts:
         fitted = _llm_candidate(start, route, value, messages, fits)
-        if fitted is None:
-            continue
-        candidate, kept = fitted
-        if without_system:
-            detail.update(dict.fromkeys(prompts, "dropped"))
-        if messages is not None:
-            detail["messages_kept"] = kept
-            detail["messages_dropped"] = len(messages) - kept
-        return candidate, detail
+        if fitted is not None:
+            candidate, kept = fitted
+            return candidate, _llm_note(detail, prompts, without_system, messages, kept)
+
+    if route is not None and messages:
+        lead, _ = _split_lead(messages)
+        frames = [(with_system, lead, False)]
+        if prompts or lead:
+            frames.append((base, [], bool(prompts)))
+        shrunk = _shrink_newest(frames, route, messages[-1], fits)
+        if shrunk is not None:
+            candidate, kept, without_system, shrink = shrunk
+            return candidate, {
+                **_llm_note(detail, prompts, without_system, messages, kept),
+                **shrink,
+            }
     return None, {}
+
+
+def _llm_note(
+    detail: dict[str, Any],
+    prompts: list[str],
+    without_system: bool,
+    messages: list[Any] | None,
+    kept: int,
+) -> dict[str, Any]:
+    note = dict(detail)
+    if without_system:
+        note.update(dict.fromkeys(prompts, "dropped"))
+    if messages is not None:
+        note["messages_kept"] = kept
+        note["messages_dropped"] = len(messages) - kept
+    return note
 
 
 def _llm_candidate(
@@ -208,7 +239,7 @@ def _llm_candidate(
     messages: list[Any] | None,
     fits: Callable[[Any], bool],
 ) -> tuple[dict[str, Any], int] | None:
-    """The largest body this base still fits, or None. Never an empty body."""
+    """The largest body of whole messages this base still fits, or None. Never an empty body."""
     if route is None:
         return (base, 0) if base and fits(base) else None
 
@@ -219,13 +250,7 @@ def _llm_candidate(
     if not messages:
         return (base, 0) if base and fits(base) else None
 
-    first_system = next(
-        (item for item in messages if isinstance(item, dict) and item.get("role") == "system"),
-        None,
-    )
-    lead = [first_system] if first_system is not None else []
-    tail = [item for item in messages if item is not first_system]
-
+    lead, tail = _split_lead(messages)
     best: tuple[dict[str, Any], int] | None = None
     low, high = 1, len(tail)
     while low <= high:
@@ -236,13 +261,76 @@ def _llm_candidate(
             low = middle + 1
         else:
             high = middle - 1
-    if best is not None:
-        return best
-    if lead:
-        candidate = {**base, route: lead}
-        if fits(candidate):
-            return candidate, len(lead)
+    return best
+
+
+def _split_lead(messages: list[Any]) -> tuple[list[Any], list[Any]]:
+    """The first system message, unless it is the newest, and every other message."""
+    first = next(
+        (item for item in messages[:-1] if isinstance(item, dict) and item.get("role") == "system"),
+        None,
+    )
+    if first is None:
+        return [], messages
+    return [first], [item for item in messages if item is not first]
+
+
+def _shrink_newest(
+    frames: list[tuple[dict[str, Any], list[Any], bool]],
+    route: str,
+    newest: Any,
+    fits: Callable[[Any], bool],
+) -> tuple[dict[str, Any], int, bool, dict[str, Any]] | None:
+    """The newest message cut down until it fits: shorter strings, then fewer blocks.
+
+    Each frame is a base, the lead to keep before the message, and whether the
+    frame dropped the system prompt. Frames are tried in order at every step.
+    """
+    shrunk = newest
+    for limit in ARGUMENT_CHAR_LIMITS:
+        shrunk = cap_strings(newest, limit)[0]
+        for start, lead, without_system in frames:
+            candidate = {**start, route: [*lead, shrunk]}
+            if fits(candidate):
+                return (
+                    candidate,
+                    len(lead) + 1,
+                    without_system,
+                    {"newest": "truncated", "chars": limit},
+                )
+
+    key = _block_key(shrunk)
+    if key is None:
+        return None
+    blocks = shrunk[key]
+    for start, lead, without_system in frames:
+        best: tuple[dict[str, Any], int] | None = None
+        low, high = 0, len(blocks) - 1
+        while low <= high:
+            middle = (low + high) // 2
+            message = {**shrunk, key: blocks[len(blocks) - middle :]}
+            candidate = {**start, route: [*lead, message]}
+            if fits(candidate):
+                best = (candidate, middle)
+                low = middle + 1
+            else:
+                high = middle - 1
+        if best is not None:
+            candidate, kept_blocks = best
+            shrink = {
+                "newest": "truncated",
+                "chars": ARGUMENT_CHAR_LIMITS[-1],
+                "blocks_dropped": len(blocks) - kept_blocks,
+            }
+            return candidate, len(lead) + 1, without_system, shrink
     return None
+
+
+def _block_key(message: Any) -> str | None:
+    """The key holding a message's content blocks, if it has any."""
+    if not isinstance(message, dict):
+        return None
+    return next((key for key in LLM_BLOCK_KEYS if isinstance(message.get(key), list)), None)
 
 
 def _reduce_mcp(body: dict[str, Any], fits: Callable[[Any], bool]) -> tuple[Any, dict[str, Any]]:

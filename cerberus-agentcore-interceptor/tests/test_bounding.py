@@ -383,3 +383,67 @@ def test_instructions_go_before_the_conversation_does():
     assert "instructions" not in event["body"]
     assert event["body"]["input"] == [{"role": "user", "content": "hello"}]
     assert note(event)["instructions"] == "dropped"
+
+
+def messages_body(messages, **extra):
+    return {
+        "model": "anthropic.claude-sonnet-4-5",
+        "max_tokens": 4096,
+        "system": "You are a coding agent.",
+        "messages": messages,
+        **extra,
+    }
+
+
+def test_parallel_tool_results_are_shortened_rather_than_shed():
+    calls = [{"type": "tool_use", "id": f"t{index}", "name": "read_file"} for index in range(9)]
+    results = [
+        {"type": "tool_result", "tool_use_id": f"t{index}", "content": SOURCE_FILE}
+        for index in range(9)
+    ]
+    messages = [
+        {"role": "user", "content": "Review the job handlers for bugs."},
+        {"role": "assistant", "content": calls},
+        {"role": "user", "content": results},
+    ]
+    event = map_with_body("inference-messages", messages_body(messages))
+
+    newest = event["body"]["messages"][-1]
+    assert event["body"]["system"] == "You are a coding agent."
+    assert [block["tool_use_id"] for block in newest["content"]] == [f"t{i}" for i in range(9)]
+    assert note(event)["newest"] == "truncated"
+    assert note(event)["chars"] == bounding.ARGUMENT_CHAR_LIMITS[0]
+    assert note(event)["messages_dropped"] == 2
+    assert bounding.size(event) <= MAX
+
+
+def test_an_oversized_tool_message_is_kept_after_the_system_message():
+    parts = [{"type": "text", "text": "row data " * 900} for _ in range(8)]
+    parts.append({"type": "text", "text": MARKER})
+    messages = [
+        {"role": "system", "content": "You are a helpful agent."},
+        {"role": "user", "content": "Read the shared spreadsheet."},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "t1", "type": "function"}]},
+        {"role": "tool", "tool_call_id": "t1", "content": parts},
+    ]
+    event = map_with_body("inference-chat", chat(messages))
+
+    kept = event["body"]["messages"]
+    assert kept[0] == messages[0]
+    assert kept[-1]["role"] == "tool"
+    assert kept[-1]["content"][-1]["text"] == MARKER
+    assert note(event)["messages_kept"] == 2
+    assert bounding.size(event) <= MAX
+
+
+def test_a_dense_newest_message_keeps_its_newest_blocks():
+    blocks = [{"type": "text", "text": "a"} for _ in range(3000)]
+    blocks.append({"type": "text", "text": MARKER})
+    event = map_with_body(
+        "inference-messages", messages_body([{"role": "user", "content": blocks}])
+    )
+
+    kept = event["body"]["messages"][-1]["content"]
+    assert kept[-1]["text"] == MARKER
+    assert note(event)["blocks_dropped"] == len(blocks) - len(kept) > 0
+    assert bounding.size(event) <= MAX
