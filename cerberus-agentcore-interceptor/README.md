@@ -31,8 +31,17 @@ capture runs under its own guard, so a capture that cannot be built is dropped
 while the request goes through untouched.
 
 The interceptor is therefore part of your gateway's availability. Alarm on the
-function's `Errors` and `Throttles`, give it reserved concurrency, and move an
-alias rather than editing the gateway role in place.
+function's `Errors` and on its `Throttles`: the gateway refuses a throttled
+request, and a throttle does not show in `Errors`. Move an alias rather than
+editing the gateway role in place.
+
+Leave the function unreserved unless you size its reserved concurrency.
+Reserved concurrency is a hard ceiling shared by every gateway on the function,
+and Lambda also allows each reserved unit only 10 requests per second. Past
+either limit the gateway refuses requests. To size it:
+
+- need = max(peak RPS × p99 duration in seconds, peak RPS / 10)
+- reserve at least 2 × need
 
 ## What it captures
 
