@@ -36,6 +36,10 @@ THROTTLE_ATTEMPTS = 3
 # close to how long the gateway itself retries a throttled interceptor.
 THROTTLE_BACKOFF_SECONDS = 0.7
 
+# Lambda's network path drops an idle connection without a close the pool can
+# see, and an invoke sent on it fails with no retry.
+IDLE_CONNECTION_SECONDS = 60
+
 
 @dataclass(frozen=True)
 class ChainResult:
@@ -67,6 +71,7 @@ class ChainClient:
         self._pass_headers = pass_headers
         self._client = client
         self._sleep = sleep
+        self._used_at: float | None = None
 
     def prepare(self) -> None:
         """Build the client before the first request rather than during it."""
@@ -108,13 +113,13 @@ class ChainClient:
         forwarded = event if self._pass_headers else _without_headers(event)
         payload = _serialized(forwarded)
         client_context = _client_context(context)
+        self._drop_idle_connections()
         for attempt in range(THROTTLE_ATTEMPTS):
             try:
                 request: dict[str, Any] = {"FunctionName": self._arn, "Payload": payload}
                 if client_context:
                     request["ClientContext"] = client_context
-                response: dict[str, Any] = self._lambda().invoke(**request)
-                return response
+                return self._send(request)
             except Exception as exc:
                 if not _is_throttle(exc) or attempt == THROTTLE_ATTEMPTS - 1:
                     logger.warning("chained invoke failed: %s", type(exc).__name__)
@@ -125,6 +130,24 @@ class ChainClient:
                     return None
                 self._sleep(delay)
         return None
+
+    def _send(self, request: dict[str, Any]) -> dict[str, Any]:
+        client = self._lambda()
+        try:
+            response: dict[str, Any] = client.invoke(**request)
+            return response
+        finally:
+            self._used_at = monotonic()
+
+    def _drop_idle_connections(self) -> None:
+        """Close pooled connections idle long enough to have been dropped."""
+        if self._used_at is None or monotonic() - self._used_at < IDLE_CONNECTION_SECONDS:
+            return
+        try:
+            # The client stays usable and opens a new connection on its next call.
+            self._client.close()
+        except Exception as exc:
+            logger.warning("chain client connections not closed: %s", type(exc).__name__)
 
     def _lambda(self) -> Any:
         if self._client is None:

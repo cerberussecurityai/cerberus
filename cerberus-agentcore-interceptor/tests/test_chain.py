@@ -4,10 +4,14 @@ import base64
 import copy
 import importlib
 import json
+import socket
+import struct
+import threading
 
 import pytest
 from helpers import LambdaContext, load_case, runtime_encode
 from test_handler import RecordingSink, TimedContext, _boom
+from test_sink import _read_request
 
 from cerberus_agentcore_interceptor import chain as chain_mod
 from cerberus_agentcore_interceptor import envelope as env
@@ -201,6 +205,95 @@ def test_throttle_retries_never_wait_past_the_deadline(clock):
     assert chain.invoke({}, context(), parsed(), deadline).failed
     assert len(fake.calls) == 2
     assert clock.now <= deadline
+
+
+class ForgetfulLambda:
+    """A local Invoke endpoint that, once told to forget, resets older connections."""
+
+    def __init__(self):
+        self.answer = json.dumps(mcp_output({})).encode()
+        self.forget = threading.Event()
+        self.connections = 0
+        self.invokes = 0
+        self.sock = socket.create_server(("127.0.0.1", 0))
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.sock.getsockname()[1]}"
+
+    def _accept(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.connections += 1
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn):
+        opened_before = not self.forget.is_set()
+        reader = conn.makefile("rb")
+        while _read_request(reader):
+            if opened_before and self.forget.is_set():
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                break
+            self.invokes += 1
+            head = f"HTTP/1.1 200 OK\r\nContent-Length: {len(self.answer)}\r\n"
+            conn.sendall(head.encode() + b"Content-Type: application/json\r\n\r\n" + self.answer)
+        reader.close()
+        conn.close()
+
+
+@pytest.fixture
+def forgetful(monkeypatch, tmp_path):
+    endpoint = ForgetfulLambda()
+    env = {
+        "AWS_ENDPOINT_URL_LAMBDA": endpoint.url,
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "AWS_ACCESS_KEY_ID": "AKIDEXAMPLE",
+        "AWS_SECRET_ACCESS_KEY": "example",
+        "AWS_CONFIG_FILE": str(tmp_path / "none"),
+        "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "none"),
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "NO_PROXY": "127.0.0.1",
+    }
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    for name in ("AWS_PROFILE", "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    yield endpoint
+    endpoint.sock.close()
+
+
+def test_an_idle_connection_is_not_reused(forgetful, clock):
+    shipped = ChainClient(CHAIN_ARN, 5000)
+    assert not shipped.invoke({}, context(), parsed()).failed
+    forgetful.forget.set()
+    clock.now += chain_mod.IDLE_CONNECTION_SECONDS
+
+    assert not shipped.invoke({}, context(), parsed()).failed
+    assert forgetful.connections == 2
+    assert forgetful.invokes == 2
+
+
+def test_a_recently_used_connection_is_kept(forgetful, clock):
+    shipped = ChainClient(CHAIN_ARN, 5000)
+    shipped.invoke({}, context(), parsed())
+    clock.now += chain_mod.IDLE_CONNECTION_SECONDS - 1
+    shipped.invoke({}, context(), parsed())
+
+    assert forgetful.connections == 1
+    assert forgetful.invokes == 2
+
+
+def test_a_client_that_cannot_close_still_invokes(clock):
+    chain, fake = client(mcp_output({}))
+    chain.invoke({}, context(), parsed())
+    clock.now += chain_mod.IDLE_CONNECTION_SECONDS
+
+    assert not chain.invoke({}, context(), parsed()).failed
+    assert len(fake.calls) == 2
 
 
 def test_the_gateway_client_context_is_forwarded_unchanged():
