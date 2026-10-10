@@ -106,7 +106,12 @@ def _chain(
         # cannot serve its request without running whatever that was.
         logger.error("gateway %r is not in CERBERUS_GATEWAY_IDS", gateway.gateway_id)
         raise InterceptorError("interceptor is not configured for this gateway")
-    return CHAIN.invoke(event, context, envelope)
+    try:
+        deadline = _deadline(context)
+    except Exception:
+        logger.exception("remaining time could not be read")
+        deadline = None
+    return CHAIN.invoke(event, context, envelope, deadline)
 
 
 def _capture(

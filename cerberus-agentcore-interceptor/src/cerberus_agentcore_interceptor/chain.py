@@ -10,8 +10,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 
 from .envelope import Envelope
@@ -30,7 +32,9 @@ MAX_CLIENT_CONTEXT_BYTES = 3583
 
 THROTTLE_ERRORS = ("TooManyRequestsException", "ThrottlingException")
 THROTTLE_ATTEMPTS = 3
-THROTTLE_BACKOFF_SECONDS = 0.05
+# Retry n waits a random 50 to 100% of this times 2**n: about 1 to 2 s in all,
+# close to how long the gateway itself retries a throttled interceptor.
+THROTTLE_BACKOFF_SECONDS = 0.7
 
 
 @dataclass(frozen=True)
@@ -71,9 +75,15 @@ class ChainClient:
         except Exception as exc:
             logger.warning("chain client not ready: %s", exc)
 
-    def invoke(self, event: Any, context: Any, envelope: Envelope) -> ChainResult:
-        """Run the chained interceptor and classify what it answered."""
-        response = self._invoke_with_throttle_retries(event, context)
+    def invoke(
+        self, event: Any, context: Any, envelope: Envelope, deadline: float | None = None
+    ) -> ChainResult:
+        """Run the chained interceptor and classify what it answered.
+
+        A throttle is retried only while the wait ends before deadline, a
+        time.monotonic() value.
+        """
+        response = self._invoke_with_throttle_retries(event, context, deadline)
         if response is None:
             return ChainResult(OUTCOME_ERROR, note={"outcome": OUTCOME_ERROR})
 
@@ -92,7 +102,9 @@ class ChainClient:
 
         return _classify(output, envelope)
 
-    def _invoke_with_throttle_retries(self, event: Any, context: Any) -> dict[str, Any] | None:
+    def _invoke_with_throttle_retries(
+        self, event: Any, context: Any, deadline: float | None
+    ) -> dict[str, Any] | None:
         forwarded = event if self._pass_headers else _without_headers(event)
         payload = _serialized(forwarded)
         client_context = _client_context(context)
@@ -107,7 +119,11 @@ class ChainClient:
                 if not _is_throttle(exc) or attempt == THROTTLE_ATTEMPTS - 1:
                     logger.warning("chained invoke failed: %s", type(exc).__name__)
                     return None
-                self._sleep(THROTTLE_BACKOFF_SECONDS * (2**attempt))
+                delay = THROTTLE_BACKOFF_SECONDS * 2**attempt * random.uniform(0.5, 1.0)
+                if deadline is not None and monotonic() + delay >= deadline:
+                    logger.warning("chained invoke throttled with no time left to retry")
+                    return None
+                self._sleep(delay)
         return None
 
     def _lambda(self) -> Any:

@@ -154,6 +154,55 @@ def test_anything_but_a_throttle_is_not_retried():
     assert len(fake.calls) == 1
 
 
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class ThrottledUntil(FakeLambda):
+    def __init__(self, clock, free_at):
+        super().__init__(payload=mcp_output({}))
+        self._clock = clock
+        self._free_at = free_at
+
+    def invoke(self, **kwargs):
+        self._clock.now += 0.02
+        if self._clock.now < self._free_at:
+            self.calls.append(kwargs)
+            raise Throttled()
+        return super().invoke(**kwargs)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(chain_mod, "monotonic", clock)
+    return clock
+
+
+@pytest.mark.parametrize("seconds", [0.2, 0.5, 1.0])
+def test_a_throttle_the_gateway_would_have_outlasted_is_ridden_out(clock, seconds):
+    fake = ThrottledUntil(clock, clock.now + seconds)
+    chain = ChainClient(CHAIN_ARN, 5000, client=fake, sleep=clock.sleep)
+    assert not chain.invoke({}, context(), parsed(), clock.now + 2.5).failed
+
+
+def test_throttle_retries_never_wait_past_the_deadline(clock):
+    fake = ThrottledUntil(clock, float("inf"))
+    chain = ChainClient(CHAIN_ARN, 5000, client=fake, sleep=clock.sleep)
+    deadline = clock.now + 1.0
+
+    assert chain.invoke({}, context(), parsed(), deadline).failed
+    assert len(fake.calls) == 2
+    assert clock.now <= deadline
+
+
 def test_the_gateway_client_context_is_forwarded_unchanged():
     chain, fake = client(mcp_output({}))
     chain.invoke({}, context(), parsed())
@@ -586,6 +635,31 @@ def test_with_capture_off_the_chained_answer_still_decides(chained, monkeypatch)
     assert len(fake.calls) == 1
     assert chained.sink.events == []
     assert counts == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
+
+
+def test_a_throttled_chain_is_not_retried_past_the_functions_time(chained):
+    fake = chained(raises=Throttled())
+    case = load_case("mcp-tools-call-lambda")
+    context = TimedContext(case["client_context"], handler_mod.ANSWER_MARGIN_MS + 300)
+
+    with pytest.raises(handler_mod.InterceptorError):
+        handler_mod.handler(case["input"], context)
+    assert len(fake.calls) == 1
+
+
+class UnreadableTimeContext(LambdaContext):
+    def get_remaining_time_in_millis(self):
+        raise RuntimeError("no clock")
+
+
+def test_an_unreadable_remaining_time_still_chains(chained):
+    answer = mcp_output({"jsonrpc": "2.0", "id": 8, "method": "tools/call"})
+    fake = chained(answer)
+    case = load_case("mcp-tools-call-lambda")
+    context = UnreadableTimeContext(case["client_context"])
+
+    assert handler_mod.handler(case["input"], context) == answer
+    assert len(fake.calls) == 1
 
 
 def test_capture_after_a_slow_chain_gives_up_and_the_answer_stands(chained):

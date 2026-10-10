@@ -43,6 +43,11 @@ either limit the gateway refuses requests. To size it:
 - need = max(peak RPS × p99 duration in seconds, peak RPS / 10)
 - reserve at least 2 × need
 
+With a chain, use this function's p99 duration, which includes the chained
+call. While the chained function is throttled, each request holds this one for
+up to 2 s more, so give one of the two reserved concurrency: that wait should
+not draw on the pool the throttled function needs.
+
 ## What it captures
 
 One event per intercepted request: method, path, the gateway host, the caller's
@@ -112,9 +117,12 @@ to the ids or ARNs of the gateways this function serves, and
 `CERBERUS_CHAIN_READ_MS` to the chained function's own timeout plus a
 cold-start allowance. A gateway that is not on the list is refused, and its id
 logged, because it may have had an interceptor of its own before this one. The
-execution role needs `lambda:InvokeFunction` on the ARN, and the function's
-timeout has to cover `CERBERUS_CHAIN_READ_MS` plus the throttle retries plus
-about a second for the capture.
+execution role needs `lambda:InvokeFunction` on the ARN.
+
+A throttled invoke is retried twice, over about 1 to 2 s as the gateway itself
+would, and no retry starts within 500 ms of the function's timeout. So the
+function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus 2 s for those
+retries plus 1.5 s for the capture.
 
 Set `CERBERUS_CHAIN_PASS_HEADERS` to the replaced interceptor's
 `inputConfiguration.passRequestHeaders`. This function's own slot passes request
@@ -164,7 +172,7 @@ chained interceptor. Lambda caps all environment variables at 4 KB together.
 | Handler | `cerberus_agentcore_interceptor.handler.handler` |
 | Runtime | `python3.13`, `arm64` |
 | Memory | 512 MB to start; raise it from your own worst-case body sizes |
-| Timeout | 3 s |
+| Timeout | 3 s; longer with a chain, see Chaining |
 | Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
 | Interception points | `["REQUEST"]` only |
 
