@@ -29,9 +29,11 @@ from .bounding import (
 from .envelope import (
     BODY_EMPTY,
     BODY_NOT_OBJECT,
+    MCP,
     Envelope,
     GatewayContext,
     header,
+    http_body,
     request_body,
     request_body_size,
 )
@@ -124,7 +126,7 @@ def _body(
         return None, {"state": STATE_DISABLED}, None
     # With a chain, the transformed body is the one that reaches the target.
     if override is not None:
-        body, reason = (override, "") if isinstance(override, dict) else (None, BODY_NOT_OBJECT)
+        body, reason = _override_body(envelope, override)
     else:
         body, reason = request_body(envelope)
     if not body:
@@ -139,6 +141,15 @@ def _body(
             return None, {"state": STATE_SHED, "reason": "size"}, None
     check_deadline(deadline)
     return sanitize_body(body, options.sensitive_keys), {"state": STATE_CAPTURED}, pruned
+
+
+def _override_body(envelope: Envelope, override: Any) -> tuple[Any, str]:
+    """A transformed body as a dict, or (None, reason), read like the original."""
+    if isinstance(override, dict):
+        return override, ""
+    if envelope.kind != MCP and isinstance(override, str):
+        return http_body(override)
+    return None, BODY_NOT_OBJECT
 
 
 def _endpoint(path: str) -> str:

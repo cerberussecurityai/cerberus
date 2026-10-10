@@ -268,6 +268,46 @@ def test_the_transformed_body_is_what_gets_captured(chained):
     assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "transformed"}
 
 
+def http_output(body):
+    return {
+        "interceptorOutputVersion": "1.0",
+        "http": {"transformedGatewayRequest": {"body": body}},
+    }
+
+
+def test_a_transformed_http_body_is_decoded_and_captured(chained):
+    request = load_case("inference-chat")["input"]["http"]["gatewayRequest"]
+    transformed = dict(json.loads(base64.b64decode(request["body"])), max_tokens=64)
+    answer = http_output(base64.b64encode(json.dumps(transformed).encode()).decode())
+    chained(answer)
+
+    assert invoke("inference-chat") == answer
+    event = chained.sink.events[0]
+    assert event["body"] == transformed
+    assert event["custom_data"]["agentcore"]["body"] == {"state": "captured"}
+    assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "transformed"}
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "reason"),
+    [
+        ("inference-chat", "not base64!", "decode_error"),
+        ("inference-chat", base64.b64encode(b"[1, 2]").decode(), "not_object"),
+        ("mcp-tools-call-lambda", '{"jsonrpc": "2.0"}', "not_object"),
+    ],
+)
+def test_an_unreadable_transformed_body_is_noted(chained, name, body, reason):
+    shape = "mcp" if name.startswith("mcp") else "http"
+    chained(
+        {"interceptorOutputVersion": "1.0", shape: {"transformedGatewayRequest": {"body": body}}}
+    )
+    invoke(name)
+
+    event = chained.sink.events[0]
+    assert "body" not in event
+    assert event["custom_data"]["agentcore"]["body"] == {"state": "omitted", "reason": reason}
+
+
 def test_a_refused_request_is_still_captured_as_an_attempt(chained):
     chained(mcp_output(status=403))
     invoke()
