@@ -101,6 +101,12 @@ above, and our own failures can neither skip it nor alter what it decided. If
 we cannot get its answer, or the answer is not a JSON object, the request is
 refused rather than served without it.
 
+Only the REQUEST point chains. If your interceptor is attached at both REQUEST
+and RESPONSE in one configuration entry, split it: this function at REQUEST,
+chaining to yours, and yours alone at RESPONSE. With a chain set, this
+function refuses every RESPONSE invocation, so an attachment left there fails
+closed instead of skipping your response logic.
+
 Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
 to the gateways this function serves, and `CERBERUS_CHAIN_READ_MS` to the
 chained function's own timeout plus a cold-start allowance. A gateway that is

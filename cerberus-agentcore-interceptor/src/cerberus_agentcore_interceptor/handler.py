@@ -56,8 +56,11 @@ def handler(event: Any, context: Any = None) -> dict[str, Any]:
 
     if envelope.phase != REQUEST:
         # This version is a REQUEST interceptor. Attached at RESPONSE it captures
-        # nothing, chains nothing, and hands the response straight back.
+        # nothing and hands the response straight back, unless it chains: then
+        # the slot may have held their interceptor, which we would be skipping.
         metrics.count(metrics.UNEXPECTED_PHASE)
+        if CHAIN is not None:
+            raise InterceptorError("interceptor is not configured for the response phase")
         return _output(envelope)
 
     chain = _chain(event, context, envelope, gateway)

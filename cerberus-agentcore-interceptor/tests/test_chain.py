@@ -368,11 +368,13 @@ def test_a_raising_mapper_leaves_the_chained_answer_alone(chained, monkeypatch):
     assert invoke() == answer
 
 
-def test_the_response_phase_never_chains(chained):
+@pytest.mark.parametrize("name", ["mcp-tools-call-response-phase", "inference-chat-response-phase"])
+def test_the_response_phase_is_refused_when_chaining(chained, name):
     fake = chained(mcp_output({}))
-    result = invoke("mcp-tools-call-response-phase")
+    with pytest.raises(handler_mod.InterceptorError):
+        invoke(name)
     assert fake.calls == []
-    assert "transformedGatewayResponse" in result["mcp"]
+    assert chained.sink.events == []
 
 
 def test_an_invalid_chained_output_is_handed_back_as_it_came(chained):
