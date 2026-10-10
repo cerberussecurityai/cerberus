@@ -1,8 +1,8 @@
-"""The Firehose sink: one PutRecord per interception, one attempt.
+"""The Firehose sink: one PutRecord per interception.
 
-Capture is never worth latency on the caller's request, so the client retries
-nothing and the timeouts are short. A lost record is a lost capture, and the
-stream's own backup keeps the customer's copy.
+Capture is never worth latency on the caller's request, so the timeouts are short
+and botocore retries nothing. The one resend is for a pooled connection that was
+closed while idle: that says nothing about the stream, and costs one handshake.
 """
 
 from __future__ import annotations
@@ -56,7 +56,8 @@ class FirehoseSink:
         """Write one event. Returns '' on success, or the reason it was dropped.
 
         Skips the write unless a full connect and read would end by deadline, a
-        time.monotonic() value.
+        time.monotonic() value, and resends once, under the same condition, when
+        the connection was closed under the request.
         """
         record = serialize(event) + b"\n"
         if len(record) > MAX_RECORD_BYTES:
@@ -66,12 +67,19 @@ class FirehoseSink:
 
         stream = self.stream_for(key)
         try:
-            self._firehose().put_record(DeliveryStreamName=stream, Record={"Data": record})
+            self._send(stream, record)
         except Exception as exc:
-            reason = _reason(exc)
-            logger.warning("capture dropped: %s (%s)", reason, type(exc).__name__)
-            return reason
+            if not (_connection_closed(exc) and self._has_time(deadline)):
+                return _dropped(exc)
+            # urllib3 has discarded the dead socket, so this goes out on a new one.
+            try:
+                self._send(stream, record)
+            except Exception as again:
+                return _dropped(again)
         return ""
+
+    def _send(self, stream: str, record: bytes) -> None:
+        self._firehose().put_record(DeliveryStreamName=stream, Record={"Data": record})
 
     def _has_time(self, deadline: float | None) -> bool:
         budget = (self._connect_ms + self._read_ms) / 1000
@@ -91,6 +99,21 @@ class FirehoseSink:
                 ),
             )
         return self._client
+
+
+def _connection_closed(exc: Exception) -> bool:
+    """Whether the connection was reset or closed with the request unanswered."""
+    # urllib3 reports any socket or HTTP error on a reused connection as a
+    # ProtocolError, which botocore raises as ConnectionClosedError.
+    from botocore.exceptions import ConnectionClosedError
+
+    return isinstance(exc, ConnectionClosedError)
+
+
+def _dropped(exc: Exception) -> str:
+    reason = _reason(exc)
+    logger.warning("capture dropped: %s (%s)", reason, type(exc).__name__)
+    return reason
 
 
 def _reason(exc: Exception) -> str:

@@ -1,10 +1,18 @@
 import json
+import socket
+import struct
+import threading
 from time import monotonic
 
 import pytest
+from botocore import exceptions as botocore_errors
 
 from cerberus_agentcore_interceptor import metrics
+from cerberus_agentcore_interceptor import sink as sink_mod
 from cerberus_agentcore_interceptor.sink import MAX_RECORD_BYTES, FirehoseSink
+
+ENDPOINT = "https://firehose.us-east-1.amazonaws.com"
+OK = json.dumps({"RecordId": "r-1", "Encrypted": False}).encode()
 
 
 class FakeFirehose:
@@ -17,6 +25,93 @@ class FakeFirehose:
         if self._raises is not None:
             raise self._raises
         return {"RecordId": "r-1"}
+
+
+class FlakyFirehose(FakeFirehose):
+    """Raises each error in turn, then succeeds."""
+
+    def __init__(self, *errors):
+        super().__init__()
+        self._errors = list(errors)
+
+    def put_record(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._errors:
+            raise self._errors.pop(0)
+        return {"RecordId": "r-1"}
+
+
+class ForgetfulFirehose:
+    """A local PutRecord endpoint that, once told to forget, resets older connections."""
+
+    def __init__(self):
+        self.forget = threading.Event()
+        self.connections = 0
+        self.records = 0
+        self.sock = socket.create_server(("127.0.0.1", 0))
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.sock.getsockname()[1]}"
+
+    def _accept(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.connections += 1
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn):
+        opened_before = not self.forget.is_set()
+        reader = conn.makefile("rb")
+        while _read_request(reader):
+            if opened_before and self.forget.is_set():
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                break
+            self.records += 1
+            head = f"HTTP/1.1 200 OK\r\nContent-Length: {len(OK)}\r\n"
+            conn.sendall(head.encode() + b"Content-Type: application/x-amz-json-1.1\r\n\r\n" + OK)
+        reader.close()
+        conn.close()
+
+
+def _read_request(reader):
+    line = reader.readline()
+    length = 0
+    while line not in (b"\r\n", b""):
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            length = int(value)
+        line = reader.readline()
+    return bool(line) and len(reader.read(length)) == length
+
+
+@pytest.fixture
+def forgetful(monkeypatch, tmp_path):
+    endpoint = ForgetfulFirehose()
+    env = {
+        "AWS_ENDPOINT_URL_FIREHOSE": endpoint.url,
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ACCESS_KEY_ID": "AKIDEXAMPLE",
+        "AWS_SECRET_ACCESS_KEY": "example",
+        "AWS_CONFIG_FILE": str(tmp_path / "none"),
+        "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "none"),
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "NO_PROXY": "127.0.0.1",
+    }
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    for name in ("AWS_PROFILE", "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    yield endpoint
+    endpoint.sock.close()
+
+
+def closed():
+    return botocore_errors.ConnectionClosedError(endpoint_url=ENDPOINT)
 
 
 class ClientError(Exception):
@@ -70,6 +165,58 @@ def test_a_put_that_could_outlast_the_deadline_is_skipped():
 
     assert sink(client=client).put({"event_id": "e"}, "k", monotonic() + 1) == ""
     assert len(client.calls) == 1
+
+
+def test_a_connection_closed_under_the_request_is_resent_once():
+    client = FlakyFirehose(closed())
+    assert sink(client=client).put({"event_id": "e"}, "k") == ""
+    assert len(client.calls) == 2
+    assert client.calls[0] == client.calls[1]
+
+
+def test_a_second_closed_connection_drops_the_record():
+    client = FlakyFirehose(closed(), closed())
+    assert sink(client=client).put({"event_id": "e"}, "k") == metrics.REASON_SINK
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        botocore_errors.ReadTimeoutError(endpoint_url=ENDPOINT),
+        botocore_errors.ConnectTimeoutError(endpoint_url=ENDPOINT),
+        botocore_errors.EndpointConnectionError(endpoint_url=ENDPOINT),
+        botocore_errors.ClientError({"Error": {"Code": "ThrottlingException"}}, "PutRecord"),
+    ],
+)
+def test_other_failures_are_not_resent(error):
+    client = FlakyFirehose(error)
+    assert sink(client=client).put({"event_id": "e"}, "k") != ""
+    assert len(client.calls) == 1
+
+
+def test_a_closed_connection_is_not_resent_past_the_deadline(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(sink_mod, "monotonic", lambda: now[0])
+
+    class Slow(FlakyFirehose):
+        def put_record(self, **kwargs):
+            now[0] += 0.5
+            return super().put_record(**kwargs)
+
+    client = Slow(closed())
+    assert sink(client=client).put({"event_id": "e"}, "k", 101.0) == metrics.REASON_SINK
+    assert len(client.calls) == 1
+
+
+def test_a_connection_reset_after_an_idle_gap_is_resent_on_a_new_one(forgetful):
+    shipped = FirehoseSink(("stream-a",), 250, 500)
+    assert shipped.put({"event_id": "e-1"}, "k") == ""
+    forgetful.forget.set()
+
+    assert shipped.put({"event_id": "e-2"}, "k") == ""
+    assert forgetful.connections == 2
+    assert forgetful.records == 2
 
 
 def test_an_oversized_record_never_reaches_firehose():
