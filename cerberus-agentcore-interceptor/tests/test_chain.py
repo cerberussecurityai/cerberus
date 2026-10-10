@@ -424,6 +424,20 @@ def test_chaining_needs_an_explicit_pass_headers(raw):
         Config.from_env(chain_env(CERBERUS_CHAIN_PASS_HEADERS=raw))
 
 
+def test_chain_settings_are_ignored_without_a_chain():
+    config = Config.from_env(
+        {
+            **MINIMAL,
+            "CERBERUS_CHAIN_READ_MS": "3000ms",
+            "CERBERUS_CHAIN_PASS_HEADERS": "maybe",
+            "CERBERUS_GATEWAY_IDS": "gateway/not-an-id",
+        }
+    )
+    assert config.chain_arn == ""
+    assert config.chain_read_ms == 0
+    assert config.capturing
+
+
 def test_a_gateway_arn_is_read_as_its_id():
     config = Config.from_env(chain_env(f"{GATEWAY_ARN}, {GATEWAY_ID}, other-gateway"))
     assert config.gateway_ids == (GATEWAY_ID, "other-gateway")

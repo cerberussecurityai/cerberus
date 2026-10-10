@@ -3,8 +3,9 @@
 Lambda first runs init on a live request, and the gateway refuses every request
 while init fails. So a capture setting never raises: an out-of-range number is
 clamped, and any other value that cannot be used turns capture off and is logged.
-A chain setting that cannot be used does fail init, because no request may be
-served without the interceptor it names.
+With a chain set, a chain setting that cannot be used does fail init, because
+no request may be served without the interceptor it names. Without one, chain
+settings are not read.
 """
 
 from __future__ import annotations
@@ -106,15 +107,15 @@ class Config:
                 return fallback
 
         chain_arn = _raw(source, "CERBERUS_CHAIN_REQUEST_ARN")
-        gateway_ids = _list(source, "CERBERUS_GATEWAY_IDS")
-        chain_read_ms = _int(source, "CERBERUS_CHAIN_READ_MS", 0, 0, 300000)
+        gateway_ids: tuple[str, ...] = ()
+        chain_read_ms = 0
         chain_pass_headers = False
         if chain_arn:
             if not LAMBDA_ARN.match(chain_arn):
                 raise ConfigError(
                     f"CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN ({chain_arn!r})"
                 )
-            gateway_ids = _gateway_ids(gateway_ids)
+            gateway_ids = _gateway_ids(_list(source, "CERBERUS_GATEWAY_IDS"))
             if not gateway_ids:
                 raise ConfigError("CERBERUS_GATEWAY_IDS is required when chaining")
             if len(gateway_ids) > MAX_GATEWAY_IDS:
@@ -122,6 +123,7 @@ class Config:
                     f"CERBERUS_GATEWAY_IDS accepts at most {MAX_GATEWAY_IDS} ids "
                     f"(got {len(gateway_ids)})"
                 )
+            chain_read_ms = _int(source, "CERBERUS_CHAIN_READ_MS", 0, 0, 300000)
             if not chain_read_ms:
                 raise ConfigError("CERBERUS_CHAIN_READ_MS is required when chaining")
             # No default: either one would differ from what some chained
