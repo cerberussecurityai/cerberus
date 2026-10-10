@@ -1,26 +1,32 @@
 import copy
 import json
+from time import monotonic
 
+import pytest
 from helpers import TIMESTAMP, LambdaContext, load_case, options
 
-from cerberus_agentcore_interceptor import bounding
+from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, bounding, mapper
 from cerberus_agentcore_interceptor import envelope as envelope_mod
 from cerberus_agentcore_interceptor.mapper import source_event
 
 MAX = bounding.DEFAULT_MAX_EVENT_BYTES
 
 
-def map_with_body(case_name: str, body, **overrides):
-    """Map a fixture with its request body replaced."""
+def map_with_body(case_name: str, body, deadline=None, raw=False, **overrides):
+    """Map a fixture with its request body replaced; raw also sends it as text."""
     case = load_case(case_name)
     shape = case["input"]["mcp" if "mcp" in case["input"] else "http"]
     shape["gatewayRequest"]["body"] = body
-    shape.pop("rawGatewayRequest", None)
+    if raw:
+        shape["rawGatewayRequest"] = {"body": json.dumps(body)}
+    else:
+        shape.pop("rawGatewayRequest", None)
     return source_event(
         envelope_mod.parse(case["input"]),
         envelope_mod.gateway_context(LambdaContext(case["client_context"])),
         options(case, **overrides),
         TIMESTAMP,
+        deadline=deadline,
     )
 
 
@@ -436,8 +442,9 @@ def test_an_oversized_tool_message_is_kept_after_the_system_message():
     assert bounding.size(event) <= MAX
 
 
-def test_a_dense_newest_message_keeps_its_newest_blocks():
-    blocks = [{"type": "text", "text": "a"} for _ in range(3000)]
+@pytest.mark.parametrize("count", [3000, 30000])
+def test_a_dense_newest_message_keeps_its_newest_blocks(count):
+    blocks = [{"type": "text", "text": "a"} for _ in range(count)]
     blocks.append({"type": "text", "text": MARKER})
     event = map_with_body(
         "inference-messages", messages_body([{"role": "user", "content": blocks}])
@@ -447,3 +454,100 @@ def test_a_dense_newest_message_keeps_its_newest_blocks():
     assert kept[-1]["text"] == MARKER
     assert note(event)["blocks_dropped"] == len(blocks) - len(kept) > 0
     assert bounding.size(event) <= MAX
+
+
+def dense_tool_call(rows):
+    arguments = {"rows": [{"k": [{"a": 1}, {"b": 2}]} for _ in range(rows)]}
+    return {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "db___insert", "arguments": arguments},
+    }
+
+
+def record_serializations(monkeypatch):
+    sizes = []
+    real = bounding.serialize
+
+    def serialize(event):
+        data = real(event)
+        sizes.append(len(data))
+        return data
+
+    monkeypatch.setattr(bounding, "serialize", serialize)
+    return sizes
+
+
+def test_argument_caps_that_would_cut_nothing_are_not_tried(monkeypatch):
+    sizes = record_serializations(monkeypatch)
+    event = map_with_body("mcp-tools-call-lambda", dense_tool_call(3000), raw=True)
+
+    assert note(event) == {"state": "reduced", "kind": "mcp", "arguments": "dropped"}
+    assert len(sizes) <= 4
+
+
+def test_a_dense_body_far_over_the_cap_is_never_handled_whole(monkeypatch):
+    sanitized = []
+    real_sanitize = mapper.sanitize_body
+
+    def sanitize_body(body, extra_keys=()):
+        sanitized.append(len(json.dumps(body)))
+        return real_sanitize(body, extra_keys)
+
+    monkeypatch.setattr(mapper, "sanitize_body", sanitize_body)
+    sizes = record_serializations(monkeypatch)
+    event = map_with_body("mcp-tools-call-lambda", dense_tool_call(40000), raw=True)
+
+    assert note(event) == {"state": "reduced", "kind": "mcp", "arguments": "dropped"}
+    assert event["body"]["params"] == {"name": "db___insert"}
+    assert max(sanitized) <= MAX
+    assert max(sizes) <= MAX
+
+
+def test_a_long_string_far_over_the_cap_keeps_the_other_arguments():
+    arguments = {"path": "/etc/cron.d/job", "content": "c" * 900000}
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "w", "arguments": arguments},
+    }
+    event = map_with_body("mcp-tools-call-lambda", body, raw=True)
+
+    assert note(event) == {"state": "capped", "strings": 1}
+    assert event["body"]["params"]["arguments"]["path"] == "/etc/cron.d/job"
+
+
+def test_a_dense_body_of_no_known_shape_is_shed_and_the_headers_kept():
+    event = map_with_body("mcp-tools-call-lambda", {"data": [0] * 100000}, raw=True)
+    assert "body" not in event
+    assert note(event) == {"state": "shed", "reason": "size"}
+    assert "headers" in event
+    assert bounding.size(event) <= MAX
+
+
+def test_a_past_deadline_stops_the_capture():
+    with pytest.raises(CaptureDeadlineExceeded):
+        map_with_body("mcp-tools-call-lambda", dense_tool_call(3000), deadline=monotonic() - 1)
+
+
+def test_the_deadline_is_checked_between_serializations(monkeypatch):
+    clock = [0.0]
+    real = bounding.serialize
+
+    def serialize(event):
+        clock[0] += 1
+        return real(event)
+
+    monkeypatch.setattr(bounding, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(bounding, "serialize", serialize)
+    with pytest.raises(CaptureDeadlineExceeded):
+        map_with_body("mcp-tools-call-lambda", dense_tool_call(3000), deadline=0.5)
+    assert clock[0] == 1
+
+
+def test_a_future_deadline_changes_nothing():
+    body = dense_tool_call(3000)
+    late = map_with_body("mcp-tools-call-lambda", body, deadline=monotonic() + 60)
+    assert late == map_with_body("mcp-tools-call-lambda", body)

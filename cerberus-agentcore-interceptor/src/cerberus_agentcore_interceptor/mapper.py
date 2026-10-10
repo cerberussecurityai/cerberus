@@ -16,13 +16,24 @@ from . import __version__
 from . import identity as identity_mod
 from .bounding import (
     DEFAULT_MAX_EVENT_BYTES,
+    PRUNE_FACTOR,
     STATE_CAPTURED,
     STATE_DISABLED,
     STATE_OMITTED,
+    STATE_SHED,
+    check_deadline,
     clip_text,
     fit,
+    prune,
 )
-from .envelope import BODY_EMPTY, Envelope, GatewayContext, header, request_body
+from .envelope import (
+    BODY_EMPTY,
+    Envelope,
+    GatewayContext,
+    header,
+    request_body,
+    request_body_size,
+)
 from .sanitize import DEFAULT_CAPTURE_HEADERS, capture_headers, sanitize_body, session_id
 
 INTEGRATION = "agentcore-gateway"
@@ -53,11 +64,15 @@ def source_event(
     options: MapperOptions,
     timestamp: datetime,
     chain: dict[str, Any] | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any] | None:
-    """Build the event for one interception. None when it could not be bounded."""
+    """Build the event for one interception. None when it could not be bounded.
+
+    Raises CaptureDeadlineExceeded once time.monotonic() reaches deadline.
+    """
     headers = envelope.headers
     who = identity_mod.resolve(options.identity_mode, headers, options.user_id_claim)
-    body, body_note = _body(envelope, options)
+    body, body_note, pruned = _body(envelope, options, deadline)
 
     event: dict[str, Any] = {
         "event_id": clip_text(context.request_id, MAX_EVENT_ID_CHARS),
@@ -96,16 +111,27 @@ def source_event(
     if chain is not None:
         event["custom_data"]["agentcore"]["chain"] = chain
 
-    return fit(event, options.max_event_bytes)
+    return fit(event, options.max_event_bytes, deadline, pruned)
 
 
-def _body(envelope: Envelope, options: MapperOptions) -> tuple[Any, dict[str, Any]]:
+def _body(
+    envelope: Envelope, options: MapperOptions, deadline: float | None
+) -> tuple[Any, dict[str, Any], dict[str, Any] | None]:
+    """The sanitised body, its note, and what prune() took out of it."""
     if not options.capture_bodies:
-        return None, {"state": STATE_DISABLED}
+        return None, {"state": STATE_DISABLED}, None
     body, reason = request_body(envelope)
     if not body:
-        return None, {"state": STATE_OMITTED, "reason": reason or BODY_EMPTY}
-    return sanitize_body(body, options.sensitive_keys), {"state": STATE_CAPTURED}
+        return None, {"state": STATE_OMITTED, "reason": reason or BODY_EMPTY}, None
+
+    pruned = None
+    sent = request_body_size(envelope)
+    if sent is None or sent > PRUNE_FACTOR * options.max_event_bytes:
+        body, pruned = prune(body, options.max_event_bytes)
+        if body is None:
+            return None, {"state": STATE_SHED, "reason": "size"}, None
+    check_deadline(deadline)
+    return sanitize_body(body, options.sensitive_keys), {"state": STATE_CAPTURED}, pruned
 
 
 def _endpoint(path: str) -> str:

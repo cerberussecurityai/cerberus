@@ -132,3 +132,15 @@ def test_mcp_body_falls_back_to_the_raw_body():
 def test_response_phase_has_no_request_body():
     parsed = env.parse(load_case("mcp-tools-call-response-phase")["input"])
     assert env.request_body(parsed) == (None, env.BODY_EMPTY)
+
+
+def test_request_body_size_comes_from_the_text_as_sent():
+    mcp = env.parse(load_case("mcp-tools-call-lambda")["input"])
+    assert env.request_body_size(mcp) == len(mcp.raw_body)
+
+    http = env.parse(load_case("passthrough-echo")["input"])
+    sent = base64.b64decode(http.request["body"])
+    assert len(sent) <= env.request_body_size(http) <= len(sent) + 2
+
+    response = env.parse(load_case("mcp-tools-call-response-phase")["input"])
+    assert env.request_body_size(response) is None

@@ -150,6 +150,19 @@ def request_body(envelope: Envelope) -> tuple[Any, str]:
     return _http_body(envelope)
 
 
+def request_body_size(envelope: Envelope) -> int | None:
+    """The request body's size as sent, or None when it is not known without parsing."""
+    if envelope.phase != REQUEST:
+        return None
+    body = (envelope.request or {}).get("body")
+    if isinstance(body, str):
+        # The http shape carries the body base64-encoded.
+        return len(body) if envelope.kind == MCP else len(body) * 3 // 4
+    if envelope.kind == MCP and envelope.raw_body is not None:
+        return len(envelope.raw_body)
+    return None
+
+
 def _mcp_body(envelope: Envelope) -> tuple[Any, str]:
     body = (envelope.request or {}).get("body")
     if isinstance(body, dict):
