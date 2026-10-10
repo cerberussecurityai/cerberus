@@ -1,6 +1,7 @@
 """Chaining: the customer's interceptor decides, and our failures never skip it."""
 
 import base64
+import copy
 import importlib
 import json
 
@@ -171,6 +172,38 @@ def test_the_raw_event_is_what_the_chained_function_receives():
     chain, fake = client(mcp_output({}), pass_headers=True)
     event = load_case("mcp-tools-call-lambda")["input"]
     chain.invoke(event, context(), parsed())
+    assert json.loads(fake.calls[0]["Payload"]) == event
+
+
+def event_with_arguments(arguments):
+    event = copy.deepcopy(load_case("mcp-tools-call-lambda")["input"])
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"arguments": arguments}}
+    event["mcp"]["gatewayRequest"]["body"] = body
+    event["mcp"]["rawGatewayRequest"]["body"] = json.dumps(body, ensure_ascii=False)
+    return event
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["日本語の文書" * 1000, "😀" * 1000, "plain words " * 1000],
+    ids=["cjk", "emoji", "ascii"],
+)
+def test_the_forwarded_event_is_no_larger_than_the_gateway_sent_it(text):
+    chain, fake = client(mcp_output({}), pass_headers=True)
+    event = event_with_arguments({"document": text})
+    chain.invoke(event, context(), parsed())
+
+    sent = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    assert len(fake.calls[0]["Payload"]) <= len(sent)
+    assert json.loads(fake.calls[0]["Payload"]) == event
+
+
+def test_a_lone_surrogate_is_forwarded_escaped():
+    chain, fake = client(mcp_output({}), pass_headers=True)
+    event = event_with_arguments({"message": "Party \ud83c"})
+    assert not chain.invoke(event, context(), parsed()).failed
+
+    assert b"Party \\ud83c" in fake.calls[0]["Payload"]
     assert json.loads(fake.calls[0]["Payload"]) == event
 
 

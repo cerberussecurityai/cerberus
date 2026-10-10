@@ -94,7 +94,7 @@ class ChainClient:
 
     def _invoke_with_throttle_retries(self, event: Any, context: Any) -> dict[str, Any] | None:
         forwarded = event if self._pass_headers else _without_headers(event)
-        payload = json.dumps(forwarded).encode("utf-8")
+        payload = _serialized(forwarded)
         client_context = _client_context(context)
         for attempt in range(THROTTLE_ATTEMPTS):
             try:
@@ -164,6 +164,15 @@ def _payload(response: dict[str, Any]) -> Any:
         return None
     # JSON text can escape a lone surrogate that our runtime then cannot encode.
     return encodable(value, raw)
+
+
+def _serialized(event: Any) -> bytes:
+    """event as compact UTF-8 JSON, about the size of the invoke the gateway made."""
+    try:
+        return json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate has no UTF-8 form; escaped, it arrives as it reached us.
+        return json.dumps(event, separators=(",", ":")).encode("utf-8")
 
 
 def _without_headers(event: Any) -> Any:
