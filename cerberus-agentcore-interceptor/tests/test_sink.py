@@ -1,7 +1,9 @@
 import json
+import re
 import socket
 import struct
 import threading
+from datetime import datetime
 from time import monotonic
 
 import pytest
@@ -263,7 +265,7 @@ def test_metrics_emit_one_embedded_metric_line(capsys):
     assert record["Reason"] == metrics.REASON_THROTTLE
     assert record["request_id"] == "r-1"
     assert record["_aws"]["CloudWatchMetrics"][0]["Namespace"] == metrics.NAMESPACE
-    assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [["Reason"]]
+    assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[], ["Reason"]]
 
 
 def test_metrics_without_a_reason_have_no_dimension(capsys):
@@ -271,6 +273,30 @@ def test_metrics_without_a_reason_have_no_dimension(capsys):
     record = json.loads(capsys.readouterr().out.strip())
     assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[]]
     assert "Reason" not in record
+
+
+RFC_3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})")
+
+
+@pytest.mark.parametrize(
+    ("metric", "reason", "level"),
+    [
+        (metrics.CAPTURED, "", "INFO"),
+        (metrics.CAPTURE_DROPPED, metrics.REASON_SINK, "WARN"),
+        (metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG, "WARN"),
+        (metrics.UNKNOWN_INPUT_VERSION, "", "WARN"),
+        (metrics.UNEXPECTED_PHASE, "", "WARN"),
+        (metrics.UNKNOWN_SHAPE, "", "WARN"),
+    ],
+)
+def test_metric_lines_carry_the_level_lambda_filters_on(capsys, metric, reason, level):
+    metrics.count(metric, reason)
+    record = json.loads(capsys.readouterr().out.strip())
+
+    assert record["level"] == level
+    assert RFC_3339.fullmatch(record["timestamp"])
+    stamped = datetime.fromisoformat(record["timestamp"]).timestamp() * 1000
+    assert abs(stamped - record["_aws"]["Timestamp"]) <= 1
 
 
 def test_metrics_never_raise(monkeypatch, capsys):

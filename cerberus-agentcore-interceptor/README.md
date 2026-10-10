@@ -156,14 +156,22 @@ package raises says anything you would not show a customer's end user.
 ### Metrics
 
 The handler emits CloudWatch embedded-metric lines in namespace
-`Cerberus/AgentCoreInterceptor`: `Captured`, `CaptureDropped` (dimension
+`Cerberus/AgentCoreInterceptor`: `Captured`, `CaptureDropped`,
+`UnknownInputVersion`, `UnexpectedPhase` and `UnknownShape`. `CaptureDropped` is
+published once without a dimension, summing every reason, and once by
 `Reason`: `throttle`, `timeout`, `deadline`, `oversize`, `sink_error`,
-`handler_error`, `config_invalid`),
-`UnknownInputVersion`, `UnexpectedPhase` and `UnknownShape`.
+`handler_error`, `config_invalid`.
 
-Alarm on Lambda `Errors` first — each one is a blocked customer request — then
-on `Throttles`, `CaptureDropped` by reason, and the stream's
-`ThrottledRecords`.
+`Captured` is logged at `INFO` and every other metric at `WARN`, so a Lambda
+`ApplicationLogLevel` of `WARN` drops the per-request `Captured` line and keeps
+the rest. `ERROR` or above hides them all.
+
+Alarm on:
+
+- Lambda `Errors`, first: each one is a blocked customer request
+- Lambda `Throttles`
+- `CaptureDropped` without a dimension; its `Reason` series say why
+- the stream's `ThrottledRecords`
 
 ## Development
 

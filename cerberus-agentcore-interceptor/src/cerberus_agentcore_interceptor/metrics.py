@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
-import time
+from datetime import UTC, datetime
 from typing import Any
 
 NAMESPACE = "Cerberus/AgentCoreInterceptor"
@@ -32,17 +32,23 @@ REASON_CONFIG = "config_invalid"
 def count(metric: str, reason: str = "", **fields: Any) -> None:
     """Emit one count of a metric. Never raises; a metric is not worth a request."""
     try:
+        now = datetime.now(UTC)
         record: dict[str, Any] = {
             "_aws": {
-                "Timestamp": int(time.time() * 1000),
+                "Timestamp": int(now.timestamp() * 1000),
                 "CloudWatchMetrics": [
                     {
                         "Namespace": NAMESPACE,
-                        "Dimensions": [["Reason"]] if reason else [[]],
+                        # The dimensionless series sums every reason, so one alarm covers them.
+                        "Dimensions": [[], ["Reason"]] if reason else [[]],
                         "Metrics": [{"Name": metric, "Unit": "Count"}],
                     }
                 ],
             },
+            # Lambda's log-level filter reads a line without both of these as INFO.
+            # Every metric but the per-request Captured has to survive a WARN filter.
+            "level": "INFO" if metric == CAPTURED else "WARN",
+            "timestamp": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             metric: 1,
         }
         if reason:
