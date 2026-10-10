@@ -2,7 +2,7 @@
 
 A Lambda interceptor for [Amazon Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-interceptors.html).
 It runs in your account, turns each call the gateway handles into a Cerberus
-event, and returns the caller's request unchanged.
+event, and passes the caller's request through to its target.
 
 Everything the gateway fronts is covered: MCP targets, inference connectors and
 generic providers, AgentCore Runtime targets and HTTP passthrough targets.
@@ -88,6 +88,9 @@ answers HTTP 200, but it replaces the payload: at REQUEST the target never runs
 and the caller gets a JSON-RPC parse error. `{"http": {}}` is a true
 pass-through. This package's golden fixtures pin the echo form for exactly that
 reason.
+
+The echo changes one thing: an unpaired UTF-16 surrogate, which the Lambda
+runtime cannot encode, comes back as U+FFFD.
 
 ## Configuration
 

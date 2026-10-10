@@ -1,4 +1,4 @@
-"""Interceptor outputs that return the caller's payload unchanged.
+"""Interceptor outputs that hand the caller's payload back to the gateway.
 
 The `mcp` shape has no empty pass-through: `{"mcp": {}}` is accepted, answers
 HTTP 200 and replaces the payload. An `mcp` output has to echo the body back.
@@ -8,11 +8,18 @@ HTTP 200 and replaces the payload. An `mcp` output has to echo the body back.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .envelope import HTTP, REQUEST, RESPONSE, Envelope
 
 OUTPUT_VERSION = "1.0"
+
+# A \uXXXX surrogate escape in JSON text that is not half of an escaped pair.
+_LONE_SURROGATE_ESCAPE = re.compile(
+    r"\\u[dD](?:[89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F])"
+    r"|[c-fC-F](?<!\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F]))"
+)
 
 
 def http_passthrough() -> dict[str, Any]:
@@ -33,7 +40,7 @@ def passthrough(envelope: Envelope) -> dict[str, Any]:
         body = response.get("body")
         if body is None:
             return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
-        transformed: dict[str, Any] = {"body": body}
+        transformed: dict[str, Any] = {"body": encodable(body)}
         status = response.get("statusCode")
         if status is not None:
             transformed["statusCode"] = status
@@ -56,16 +63,37 @@ def is_valid_output(value: Any) -> bool:
     return isinstance(value, dict) and value.get("interceptorOutputVersion") == OUTPUT_VERSION
 
 
+def encodable(value: Any, source: str | None = None) -> Any:
+    """value, or a copy with each lone UTF-16 surrogate replaced by U+FFFD.
+
+    The Lambda runtime encodes the answer as UTF-8 after the handler returns, and
+    a lone surrogate there ends the process, which the gateway takes as a
+    failure. Pass source, the JSON text value was decoded from, so a text that
+    cannot hold one skips encoding value.
+    """
+    try:
+        if source is not None and not _may_hold_lone_surrogate(source):
+            return value
+        if _encodes(value):
+            return value
+        return _repaired(value)
+    except Exception:
+        # Too deep to walk: the runtime may still encode it as it is.
+        return value
+
+
 def _request_body(envelope: Envelope) -> Any:
     body = (envelope.request or {}).get("body")
+    source = envelope.raw_body
     if isinstance(body, str):
         # The gateway hands the target a parsed body; echoing the text would
         # send it a JSON string instead of the call.
+        source = body
         body = _parsed(body)
     if body is not None:
-        return body
+        return encodable(body, source)
     if envelope.phase == REQUEST and envelope.raw_body:
-        return _parsed(envelope.raw_body)
+        return encodable(_parsed(envelope.raw_body), envelope.raw_body)
     return None
 
 
@@ -74,3 +102,51 @@ def _parsed(text: str) -> Any:
         return json.loads(text)
     except (ValueError, RecursionError):
         return None
+
+
+def _may_hold_lone_surrogate(text: str) -> bool:
+    # The regex cannot tell an escaped backslash followed by u from an escape,
+    # so text holding one is left to the encoding check.
+    if "\\\\u" in text:
+        return True
+    # The substring checks cost far less than the regex on a large body.
+    if ("\\ud" in text or "\\uD" in text) and _LONE_SURROGATE_ESCAPE.search(text):
+        return True
+    return not _utf8_encodable(text)
+
+
+def _encodes(value: Any) -> bool:
+    """True when the runtime's own encoding of value succeeds."""
+    try:
+        json.dumps(value, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _repaired(value: Any) -> Any:
+    if isinstance(value, str):
+        return _repaired_text(value)
+    if isinstance(value, dict):
+        return {_repaired(key): _repaired(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_repaired(item) for item in value]
+    return value
+
+
+def _repaired_text(text: str) -> str:
+    if _utf8_encodable(text):
+        return text
+    # Joins a pair held as two code points; a lone half becomes U+FFFD.
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
+def _utf8_encodable(text: str) -> bool:
+    """False only when text holds a surrogate code point."""
+    if text.isascii():
+        return True
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True

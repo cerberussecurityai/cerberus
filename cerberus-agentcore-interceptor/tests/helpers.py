@@ -44,6 +44,11 @@ def load_expected(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / f"{name}.event.json").read_text())
 
 
+def runtime_encode(value: Any) -> bytes:
+    """What the python3.13 Lambda runtime does with a handler's answer."""
+    return json.dumps(value, ensure_ascii=False, allow_nan=True).encode("utf-8")
+
+
 def options(case: dict[str, Any], **overrides: Any) -> MapperOptions:
     base = MapperOptions(
         identity_mode=case.get("options", {}).get("identity_mode", "jwt"),

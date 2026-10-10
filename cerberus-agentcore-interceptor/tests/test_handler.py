@@ -6,7 +6,7 @@ import logging
 from time import monotonic
 
 import pytest
-from helpers import LambdaContext, case_names, load_case
+from helpers import LambdaContext, case_names, load_case, runtime_encode
 
 from cerberus_agentcore_interceptor import handler as handler_mod
 from cerberus_agentcore_interceptor import metrics, output
@@ -114,7 +114,21 @@ def test_every_fixture_returns_a_valid_output(sink, name):
 
 @pytest.mark.parametrize("name", case_names())
 def test_every_output_is_serializable(sink, name):
-    json.dumps(invoke(name))
+    runtime_encode(invoke(name))
+
+
+def test_an_echoed_lone_surrogate_survives_the_runtime_encode(sink):
+    case = load_case("mcp-tools-call-lambda")
+    mcp = case["input"]["mcp"]
+    mcp["gatewayRequest"]["body"]["params"]["arguments"]["message"] = "Party \ud83c"
+    raw = mcp["rawGatewayRequest"]["body"]
+    mcp["rawGatewayRequest"]["body"] = raw.replace('"envelope"', '"Party \\ud83c"')
+    result = handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
+
+    wire = json.loads(runtime_encode(result))
+    body = wire["mcp"]["transformedGatewayRequest"]["body"]
+    assert body["params"]["arguments"]["message"] == "Party �"
+    assert len(sink.events) == 1
 
 
 def test_response_phase_captures_nothing_and_echoes_the_response(sink, counted):

@@ -1,11 +1,40 @@
-from helpers import load_case
+import json
+from typing import Any
+
+import pytest
+from helpers import load_case, runtime_encode
 
 from cerberus_agentcore_interceptor import envelope as env
-from cerberus_agentcore_interceptor.output import OUTPUT_VERSION, is_valid_output, passthrough
+from cerberus_agentcore_interceptor.output import (
+    OUTPUT_VERSION,
+    encodable,
+    is_valid_output,
+    passthrough,
+)
+
+LONE_SURROGATE_CALL = (
+    '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "t", '
+    '"arguments": {"message": "Party \\ud83c", "emoji": "\\ud83c\\udf89"}}}'
+)
 
 
 def out(name: str) -> dict:
     return passthrough(env.parse(load_case(name)["input"]))
+
+
+def mcp_request(raw: str) -> dict:
+    return {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": {"path": "/mcp", "httpMethod": "POST", "body": json.loads(raw)},
+            "gatewayResponse": None,
+            "rawGatewayRequest": {"body": raw},
+        },
+    }
+
+
+def echoed(result: dict) -> Any:
+    return result["mcp"]["transformedGatewayRequest"]["body"]
 
 
 def test_http_passes_through_empty():
@@ -152,3 +181,101 @@ def test_a_string_body_too_deep_to_parse_echoes_like_any_unparseable_one():
         return passthrough(env.parse(envelope))
 
     assert echo("[" * 100_000 + "]" * 100_000) == echo("not json")
+
+
+def test_a_lone_surrogate_is_echoed_as_a_replacement_character():
+    result = passthrough(env.parse(mcp_request(LONE_SURROGATE_CALL)))
+
+    assert echoed(result)["params"]["arguments"] == {
+        "message": "Party \ufffd",
+        "emoji": "\U0001f389",
+    }
+    runtime_encode(result)
+
+
+def test_a_lone_surrogate_in_a_key_is_replaced_too():
+    result = passthrough(env.parse(mcp_request('{"id": 1, "params": {"\\udc00": 1}}')))
+    assert echoed(result)["params"] == {"\ufffd": 1}
+
+
+@pytest.mark.parametrize("carried", ["string body", "raw body only", "parsed body only"])
+def test_a_lone_surrogate_is_replaced_however_the_body_arrives(carried):
+    envelope = mcp_request(LONE_SURROGATE_CALL)
+    mcp = envelope["mcp"]
+    if carried == "string body":
+        mcp["gatewayRequest"]["body"] = LONE_SURROGATE_CALL
+        del mcp["rawGatewayRequest"]
+    elif carried == "raw body only":
+        mcp["gatewayRequest"]["body"] = None
+    else:
+        del mcp["rawGatewayRequest"]
+
+    result = passthrough(env.parse(envelope))
+    assert echoed(result)["params"]["arguments"]["message"] == "Party \ufffd"
+    runtime_encode(result)
+
+
+def test_a_surrogate_code_point_in_a_string_body_is_replaced():
+    envelope = {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": {"body": '{"id": 1, "note": "cut \ud83c"}'},
+            "gatewayResponse": None,
+        },
+    }
+    assert echoed(passthrough(env.parse(envelope)))["note"] == "cut \ufffd"
+
+
+def test_the_response_echo_replaces_a_lone_surrogate():
+    envelope = {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": None,
+            "gatewayResponse": {"body": {"result": {"text": "cut \ud83c"}}, "statusCode": 200},
+        },
+    }
+    result = passthrough(env.parse(envelope))
+
+    assert result["mcp"]["transformedGatewayResponse"]["body"] == {"result": {"text": "cut \ufffd"}}
+    runtime_encode(result)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"jsonrpc": "2.0", "id": 1, "method": "ping"}',
+        '{"id": 1, "params": {"emoji": "\\ud83c\\udf89", "upper": "\\uD83C\\uDF89"}}',
+        '{"id": 1, "params": {"text": "h\u00e9llo \U0001f389"}}',
+    ],
+)
+def test_a_body_its_raw_text_clears_is_echoed_without_a_copy(raw):
+    envelope = mcp_request(raw)
+    assert echoed(passthrough(env.parse(envelope))) is envelope["mcp"]["gatewayRequest"]["body"]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ('{"id": 1, "params": {"m": "\\\\ud83c\\udf89"}}', "\\ud83c\ufffd"),
+        ('{"id": 1, "params": {"m": "\\\\\\\\ud83c\\udf89"}}', "\\\\ud83c\ufffd"),
+        ('{"id": 1, "params": {"m": "x\\\\uD800\\uDC00"}}', "x\\uD800\ufffd"),
+    ],
+)
+def test_an_escaped_backslash_does_not_hide_a_lone_surrogate(raw, expected):
+    result = passthrough(env.parse(mcp_request(raw)))
+
+    assert echoed(result)["params"]["m"] == expected
+    runtime_encode(result)
+
+
+def test_text_that_only_looks_like_a_surrogate_escape_is_left_as_it_is():
+    raw = '{"path": "C:\\\\ud83c"}'
+    value = json.loads(raw)
+    assert encodable(value, raw) is value
+
+
+def test_a_value_too_deep_to_check_is_returned_as_it_is():
+    deep: Any = "cut \ud83c"
+    for _ in range(100_000):
+        deep = [deep]
+    assert encodable(deep) is deep
