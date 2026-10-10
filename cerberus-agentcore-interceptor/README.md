@@ -126,6 +126,12 @@ variables at 4 KB together.
 | Memory | 512 MB to start; raise it from your own worst-case body sizes |
 | Timeout | 3 s |
 | Permissions | `firehose:PutRecord` on each stream |
+| Interception points | `["REQUEST"]` only |
+
+Do not attach it at RESPONSE. It captures nothing there, and the attachment
+makes the gateway buffer streamed responses whole, lowers its MCP request size
+limit to about 2 MB, and adds a point that fails closed after the target has
+run.
 
 Capture gives up 500 ms before the function's timeout, and skips the Firehose
 write when the time left cannot cover `CERBERUS_FIREHOSE_CONNECT_MS` plus
@@ -156,6 +162,23 @@ Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers; inference callers still receive it, so nothing this
 package raises says anything you would not show a customer's end user.
 
+### Delivery stream
+
+Give the stream an HTTP endpoint destination, with the endpoint URL and access
+key Cerberus gives you, and these settings:
+
+| | |
+|---|---|
+| Content encoding | `GZIP` |
+| Buffer size | 2 MiB at most |
+| Retry duration | 3600 s, so a short endpoint outage is retried rather than backed up |
+| S3 backup | Failed data only |
+
+The endpoint accepts deliveries up to 4 MiB uncompressed. Firehose
+base64-encodes each record, so a delivery is about 4/3 the size of the buffer,
+and 2 MiB leaves room for the request around it. A delivery over the limit is
+refused on every retry and ends up in the backup bucket.
+
 ### Metrics
 
 The handler emits CloudWatch embedded-metric lines in namespace
@@ -174,7 +197,10 @@ Alarm on:
 - Lambda `Errors`, first: each one is a blocked customer request
 - Lambda `Throttles`
 - `CaptureDropped` without a dimension; its `Reason` series say why
+- `UnexpectedPhase` above 0: the function is attached at RESPONSE
 - the stream's `ThrottledRecords`
+- the stream's `DeliveryToHttpEndpoint.Success` below 1. A rejected access key
+  or an endpoint outage shows there, not in the function's metrics
 
 ## Development
 
