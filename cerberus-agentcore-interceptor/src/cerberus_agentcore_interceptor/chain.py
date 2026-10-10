@@ -1,8 +1,9 @@
 """Invoking the customer's own REQUEST interceptor.
 
-A gateway has one REQUEST slot. When it is already taken, their function runs
-first on the raw input and its answer is returned unchanged, so our failures can
-never skip or alter it.
+When the gateway's REQUEST slot is already taken, their function runs first and
+its answer is returned as it came, so our failures can never skip or alter it.
+Headers reach it only when CERBERUS_CHAIN_PASS_HEADERS is true, and a lone
+surrogate in its answer becomes U+FFFD.
 """
 
 from __future__ import annotations

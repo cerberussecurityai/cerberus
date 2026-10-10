@@ -128,7 +128,9 @@ Set `CERBERUS_CHAIN_PASS_HEADERS` to the replaced interceptor's
 `inputConfiguration.passRequestHeaders`. This function's own slot passes request
 headers whenever identity needs them, and with `false` they are taken out before
 the chained function is invoked, so it never receives callers' credentials it
-was not configured to see.
+was not configured to see. With `true`, set `passRequestHeaders: true` on this
+function's own interceptor entry as well, whatever the identity mode, or the
+chained function receives no headers.
 
 What their interceptor did travels with the event: `passed`, `transformed`
 (the transformed body is what gets captured, since it is what reaches the
@@ -205,7 +207,10 @@ aws lambda invoke --function-name <name>:<version> \
 ```
 
 The invoke captures nothing and counts one `UnknownInputVersion`. An `ERROR`
-line in its log means capture is off until the setting is fixed.
+line in its log means capture is off until the setting is fixed. With a chain
+set, the invoke is refused instead, as from an unlisted gateway, and its log
+names gateway `''`. That line is expected; the test invoke never reaches the
+chained function.
 
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers; inference callers still receive it, so nothing this
