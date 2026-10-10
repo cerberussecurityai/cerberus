@@ -194,7 +194,7 @@ def _load_json(text: str) -> tuple[Any, str]:
         return None, BODY_EMPTY
     try:
         value = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None, BODY_NOT_JSON
     if not isinstance(value, dict):
         return None, BODY_NOT_OBJECT

@@ -144,3 +144,14 @@ def test_request_body_size_comes_from_the_text_as_sent():
 
     response = env.parse(load_case("mcp-tools-call-response-phase")["input"])
     assert env.request_body_size(response) is None
+
+
+def test_a_body_nested_past_the_parser_is_not_json():
+    text = '{"x": ' + "[" * 100_000 + "]" * 100_000 + "}"
+    http = {
+        "interceptorInputVersion": "1.0",
+        "http": {"gatewayRequest": {"body": base64.b64encode(text.encode()).decode()}},
+    }
+    mcp = {"interceptorInputVersion": "1.0", "mcp": {"gatewayRequest": {"body": text}}}
+    assert env.request_body(env.parse(http)) == (None, env.BODY_NOT_JSON)
+    assert env.request_body(env.parse(mcp)) == (None, env.BODY_NOT_JSON)

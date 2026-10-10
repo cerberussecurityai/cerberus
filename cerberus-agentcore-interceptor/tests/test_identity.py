@@ -108,3 +108,10 @@ def test_unknown_mode_behaves_like_none():
 def test_claims_are_capped():
     who = identity.resolve(identity.JWT, headers("Bearer " + token({"sub": "s" * 900})))
     assert len(who.user_id) == identity.MAX_CLAIM_CHARS
+
+
+def test_a_token_nested_past_the_parser_is_malformed():
+    claims = base64.urlsafe_b64encode(("[" * 100_000 + "]" * 100_000).encode()).decode()
+    who = identity.resolve(identity.JWT, headers(f"Bearer h.{claims}.s"))
+    assert who.user_id == ""
+    assert who.detail == {"mode": "jwt", "status": "malformed"}

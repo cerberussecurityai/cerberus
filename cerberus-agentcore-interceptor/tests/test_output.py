@@ -141,3 +141,14 @@ def test_is_valid_output_rejects_the_wrong_version_and_shape():
     assert not is_valid_output({"http": {}})
     assert not is_valid_output("ok")
     assert not is_valid_output(None)
+
+
+def test_a_string_body_too_deep_to_parse_echoes_like_any_unparseable_one():
+    def echo(text):
+        envelope = {
+            "interceptorInputVersion": "1.0",
+            "mcp": {"gatewayRequest": {"body": text}, "gatewayResponse": None},
+        }
+        return passthrough(env.parse(envelope))
+
+    assert echo("[" * 100_000 + "]" * 100_000) == echo("not json")

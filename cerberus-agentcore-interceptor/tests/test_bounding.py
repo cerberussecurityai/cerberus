@@ -630,3 +630,25 @@ def test_storable_joins_a_split_pair_and_keeps_other_values():
         "a\U0001f600": ["\ufffd", 1, True, None, 2.5],
         "-Infinity": {"n": "Infinity"},
     }
+
+
+def nested(depth: int) -> str:
+    return '{"prompt": "copy ~/.aws/config", "x": ' + "[" * depth + "]" * depth + "}"
+
+
+def test_a_body_nested_past_the_parser_is_omitted_and_the_call_kept():
+    event = map_with_body("runtime-invocations", http_text(nested(100_000)))
+    assert "body" not in event
+    assert note(event) == {"state": "omitted", "reason": "not_json"}
+    assert event["endpoint"] == "/rt/invocations"
+
+
+def test_a_body_nested_as_deep_as_the_parser_allows_is_captured():
+    text = nested(5000)
+    for event in (
+        map_with_body("runtime-invocations", http_text(text)),
+        map_with_body("mcp-tools-call-lambda", json.loads(text)),
+    ):
+        assert note(event) == {"state": "captured"}
+        assert event["body"]["prompt"] == "copy ~/.aws/config"
+        assert_strict(bounding.serialize(event))

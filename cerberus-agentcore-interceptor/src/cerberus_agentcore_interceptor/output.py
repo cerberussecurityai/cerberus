@@ -72,5 +72,5 @@ def _request_body(envelope: Envelope) -> Any:
 def _parsed(text: str) -> Any:
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
