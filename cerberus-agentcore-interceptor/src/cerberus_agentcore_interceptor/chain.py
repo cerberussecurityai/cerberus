@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .envelope import Envelope
-from .output import is_valid_output
+from .output import encodable, is_valid_output
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +150,11 @@ def _payload(response: dict[str, Any]) -> Any:
     if not isinstance(raw, str):
         return raw
     try:
-        return json.loads(raw)
+        value = json.loads(raw)
     except ValueError:
         return None
+    # JSON text can escape a lone surrogate that our runtime then cannot encode.
+    return encodable(value, raw)
 
 
 def _client_context(context: Any) -> str:

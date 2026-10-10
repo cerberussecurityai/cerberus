@@ -5,8 +5,8 @@ import importlib
 import json
 
 import pytest
-from helpers import LambdaContext, load_case
-from test_handler import RecordingSink, _boom
+from helpers import LambdaContext, load_case, runtime_encode
+from test_handler import RecordingSink, TimedContext, _boom
 
 from cerberus_agentcore_interceptor import chain as chain_mod
 from cerberus_agentcore_interceptor import envelope as env
@@ -373,3 +373,62 @@ def test_metrics_still_count_the_capture(chained):
         metrics.count = original
         handler_mod.metrics.count = original
     assert metrics.CAPTURED in counts
+
+
+def test_a_lone_surrogate_in_the_chained_answer_survives_the_runtime_encode(chained):
+    chained(
+        mcp_output(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "a\ud83c"}}
+        )
+    )
+    wire = json.loads(runtime_encode(invoke()))
+    assert wire["mcp"]["transformedGatewayRequest"]["body"]["params"]["name"] == "a�"
+
+
+def test_with_capture_off_the_chained_answer_still_decides(chained, monkeypatch):
+    answer = mcp_output({"jsonrpc": "2.0", "id": 7, "method": "tools/call"})
+    fake = chained(answer)
+    off = Config.from_env(
+        {
+            "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN,
+            "CERBERUS_GATEWAY_IDS": GATEWAY_ID,
+            "CERBERUS_CHAIN_READ_MS": "5000",
+        }
+    )
+    monkeypatch.setattr(handler_mod, "CONFIG", off)
+    counts = []
+    monkeypatch.setattr(
+        handler_mod.metrics, "count", lambda name, reason="", **_: counts.append((name, reason))
+    )
+
+    assert invoke() == answer
+    assert len(fake.calls) == 1
+    assert chained.sink.events == []
+    assert counts == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
+
+
+def test_capture_after_a_slow_chain_gives_up_and_the_answer_stands(chained):
+    answer = mcp_output({"jsonrpc": "2.0", "id": 7, "method": "tools/call"})
+    chained(answer)
+    case = load_case("mcp-tools-call-lambda")
+    context = TimedContext(case["client_context"], handler_mod.ANSWER_MARGIN_MS)
+
+    assert handler_mod.handler(case["input"], context) == answer
+    assert chained.sink.events == []
+
+
+def test_the_chain_client_is_prepared_with_capture_off(monkeypatch):
+    prepared = []
+    monkeypatch.setattr(ChainClient, "prepare", lambda self: prepared.append(self))
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "interceptor")
+    monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "not a stream")
+    monkeypatch.setenv("CERBERUS_CHAIN_REQUEST_ARN", CHAIN_ARN)
+    monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
+    monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
+    reloaded = importlib.reload(handler_mod)
+    try:
+        assert not reloaded.CONFIG.capturing
+        assert prepared == [reloaded.CHAIN]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(handler_mod)

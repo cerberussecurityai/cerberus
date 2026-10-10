@@ -96,8 +96,8 @@ runtime cannot encode, comes back as U+FFFD.
 
 A gateway has one REQUEST interceptor slot. If yours is taken, point this
 function at the one that is already there: it runs first on the raw input, its
-answer is returned to the gateway unchanged, and our own failures can neither
-skip it nor alter what it decided. If we cannot get its answer, the request is
+answer is returned to the gateway unchanged but for the surrogate replacement
+above, and our own failures can neither skip it nor alter what it decided. If we cannot get its answer, the request is
 refused rather than served without it.
 
 Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
