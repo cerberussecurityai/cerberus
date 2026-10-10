@@ -70,6 +70,7 @@ class Config:
     chain_arn: str = ""
     gateway_ids: tuple[str, ...] = ()
     chain_read_ms: int = 0
+    chain_pass_headers: bool = False
     log_level: str = DEFAULT_LOG_LEVEL
     # The capture settings that could not be used. Capture is off while any are.
     invalid: tuple[str, ...] = ()
@@ -107,6 +108,7 @@ class Config:
         chain_arn = _raw(source, "CERBERUS_CHAIN_REQUEST_ARN")
         gateway_ids = _list(source, "CERBERUS_GATEWAY_IDS")
         chain_read_ms = _int(source, "CERBERUS_CHAIN_READ_MS", 0, 0, 300000)
+        chain_pass_headers = False
         if chain_arn:
             if not LAMBDA_ARN.match(chain_arn):
                 raise ConfigError(
@@ -122,6 +124,11 @@ class Config:
                 )
             if not chain_read_ms:
                 raise ConfigError("CERBERUS_CHAIN_READ_MS is required when chaining")
+            # No default: either one would differ from what some chained
+            # function was configured to receive.
+            if not _raw(source, "CERBERUS_CHAIN_PASS_HEADERS"):
+                raise ConfigError("CERBERUS_CHAIN_PASS_HEADERS is required when chaining")
+            chain_pass_headers = _bool(source, "CERBERUS_CHAIN_PASS_HEADERS", False)
 
         streams: tuple[str, ...] = capture("CERBERUS_FIREHOSE_STREAM", (), _streams)
         mode = capture("CERBERUS_IDENTITY", identity.NONE, _identity_mode)
@@ -164,6 +171,7 @@ class Config:
             chain_arn=chain_arn,
             gateway_ids=gateway_ids,
             chain_read_ms=chain_read_ms,
+            chain_pass_headers=chain_pass_headers,
             log_level=_log_level(source),
             invalid=tuple(invalid),
         )

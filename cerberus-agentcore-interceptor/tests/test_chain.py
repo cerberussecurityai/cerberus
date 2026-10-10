@@ -54,9 +54,12 @@ def mcp_output(body=None, status=None):
     return {"interceptorOutputVersion": "1.0", "mcp": shape}
 
 
-def client(payload=None, **kwargs):
+def client(payload=None, pass_headers=False, **kwargs):
     fake = FakeLambda(payload=payload, **kwargs)
-    return ChainClient(CHAIN_ARN, 5000, client=fake, sleep=lambda _: None), fake
+    chain = ChainClient(
+        CHAIN_ARN, 5000, pass_headers=pass_headers, client=fake, sleep=lambda _: None
+    )
+    return chain, fake
 
 
 def parsed(name="mcp-tools-call-lambda"):
@@ -165,10 +168,26 @@ def test_an_oversized_client_context_is_left_off_rather_than_failing():
 
 
 def test_the_raw_event_is_what_the_chained_function_receives():
-    chain, fake = client(mcp_output({}))
+    chain, fake = client(mcp_output({}), pass_headers=True)
     event = load_case("mcp-tools-call-lambda")["input"]
     chain.invoke(event, context(), parsed())
     assert json.loads(fake.calls[0]["Payload"]) == event
+
+
+@pytest.mark.parametrize("name", ["mcp-tools-call-lambda", "inference-chat"])
+def test_without_pass_headers_the_chained_function_gets_no_headers(name):
+    chain, fake = client(mcp_output({}))
+    event = load_case(name)["input"]
+    original = json.loads(json.dumps(event))
+    chain.invoke(event, context(name), parsed(name))
+
+    forwarded = json.loads(fake.calls[0]["Payload"])
+    shape = "mcp" if "mcp" in event else "http"
+    assert original[shape]["gatewayRequest"]["headers"]
+    assert "headers" not in forwarded[shape]["gatewayRequest"]
+    del original[shape]["gatewayRequest"]["headers"]
+    assert forwarded == original
+    assert event[shape]["gatewayRequest"]["headers"]
 
 
 # ============================================================================
@@ -176,6 +195,17 @@ def test_the_raw_event_is_what_the_chained_function_receives():
 # ============================================================================
 
 MINIMAL = {"CERBERUS_FIREHOSE_STREAM": "s"}
+
+
+def chain_env(gateway_ids=GATEWAY_ID, **overrides):
+    return {
+        **MINIMAL,
+        "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN,
+        "CERBERUS_GATEWAY_IDS": gateway_ids,
+        "CERBERUS_CHAIN_READ_MS": "5000",
+        "CERBERUS_CHAIN_PASS_HEADERS": "false",
+        **overrides,
+    }
 
 
 def test_chaining_needs_gateway_ids_and_a_read_timeout():
@@ -205,25 +235,18 @@ def test_a_chain_target_must_be_a_function_arn():
 
 def test_a_full_chain_configuration():
     config = Config.from_env(
-        {
-            **MINIMAL,
-            "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN,
-            "CERBERUS_GATEWAY_IDS": f"{GATEWAY_ID}, other-gateway",
-            "CERBERUS_CHAIN_READ_MS": "5000",
-        }
+        chain_env(f"{GATEWAY_ID}, other-gateway", CERBERUS_CHAIN_PASS_HEADERS="true")
     )
     assert config.chain_arn == CHAIN_ARN
     assert config.gateway_ids == (GATEWAY_ID, "other-gateway")
     assert config.chain_read_ms == 5000
+    assert config.chain_pass_headers is True
 
 
-def chain_env(gateway_ids):
-    return {
-        **MINIMAL,
-        "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN,
-        "CERBERUS_GATEWAY_IDS": gateway_ids,
-        "CERBERUS_CHAIN_READ_MS": "5000",
-    }
+@pytest.mark.parametrize("raw", ["", "  ", "maybe"])
+def test_chaining_needs_an_explicit_pass_headers(raw):
+    with pytest.raises(ConfigError, match="CERBERUS_CHAIN_PASS_HEADERS"):
+        Config.from_env(chain_env(CERBERUS_CHAIN_PASS_HEADERS=raw))
 
 
 def test_a_gateway_arn_is_read_as_its_id():
@@ -469,13 +492,27 @@ def test_the_module_builds_a_chain_client_from_the_environment(monkeypatch):
     monkeypatch.setenv("CERBERUS_CHAIN_REQUEST_ARN", CHAIN_ARN)
     monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
     monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
+    monkeypatch.setenv("CERBERUS_CHAIN_PASS_HEADERS", "true")
     reloaded = importlib.reload(handler_mod)
     try:
         assert reloaded.CHAIN is not None
         assert reloaded.CONFIG.gateway_ids == (GATEWAY_ID,)
+        fake = FakeLambda(payload=mcp_output({}))
+        monkeypatch.setattr(reloaded.CHAIN, "_client", fake)
+        monkeypatch.setattr(reloaded, "SINK", RecordingSink())
+        reloaded.handler(load_case("mcp-tools-call-lambda")["input"], context())
+        assert json.loads(fake.calls[0]["Payload"])["mcp"]["gatewayRequest"]["headers"]
     finally:
         monkeypatch.undo()
         importlib.reload(handler_mod)
+
+
+def test_capture_keeps_the_headers_the_chained_function_does_not_get(chained):
+    fake = chained(mcp_output({}))
+    invoke()
+
+    assert "headers" not in json.loads(fake.calls[0]["Payload"])["mcp"]["gatewayRequest"]
+    assert chained.sink.events[0]["user_agent"] == "python-requests/2.34.2"
 
 
 def test_metrics_still_count_the_capture(chained):
@@ -505,13 +542,7 @@ def test_a_lone_surrogate_in_the_chained_answer_survives_the_runtime_encode(chai
 def test_with_capture_off_the_chained_answer_still_decides(chained, monkeypatch):
     answer = mcp_output({"jsonrpc": "2.0", "id": 7, "method": "tools/call"})
     fake = chained(answer)
-    off = Config.from_env(
-        {
-            "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN,
-            "CERBERUS_GATEWAY_IDS": GATEWAY_ID,
-            "CERBERUS_CHAIN_READ_MS": "5000",
-        }
-    )
+    off = Config.from_env(chain_env(CERBERUS_FIREHOSE_STREAM=""))
     monkeypatch.setattr(handler_mod, "CONFIG", off)
     counts = []
     monkeypatch.setattr(
@@ -542,6 +573,7 @@ def test_the_chain_client_is_prepared_with_capture_off(monkeypatch):
     monkeypatch.setenv("CERBERUS_CHAIN_REQUEST_ARN", CHAIN_ARN)
     monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
     monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
+    monkeypatch.setenv("CERBERUS_CHAIN_PASS_HEADERS", "true")
     reloaded = importlib.reload(handler_mod)
     try:
         assert not reloaded.CONFIG.capturing

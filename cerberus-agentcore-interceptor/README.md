@@ -95,11 +95,11 @@ runtime cannot encode, comes back as U+FFFD.
 ## Chaining
 
 A gateway has one REQUEST interceptor slot. If yours is taken, point this
-function at the one that is already there: it runs first on the raw input, its
-answer is returned to the gateway unchanged but for the surrogate replacement
-above, and our own failures can neither skip it nor alter what it decided. If
-we cannot get its answer, or the answer is not a JSON object, the request is
-refused rather than served without it.
+function at the one that is already there: it runs first on the gateway's
+input, its answer is returned to the gateway unchanged but for the surrogate
+replacement above, and our own failures can neither skip it nor alter what it
+decided. If we cannot get its answer, or the answer is not a JSON object, the
+request is refused rather than served without it.
 
 Only the REQUEST point chains. If your interceptor is attached at both REQUEST
 and RESPONSE in one configuration entry, split it: this function at REQUEST,
@@ -112,9 +112,15 @@ to the ids or ARNs of the gateways this function serves, and
 `CERBERUS_CHAIN_READ_MS` to the chained function's own timeout plus a
 cold-start allowance. A gateway that is not on the list is refused, and its id
 logged, because it may have had an interceptor of its own before this one. The
-execution role needs `lambda:InvokeFunction` on the ARN,
-and the function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus the
-throttle retries plus about a second for the capture.
+execution role needs `lambda:InvokeFunction` on the ARN, and the function's
+timeout has to cover `CERBERUS_CHAIN_READ_MS` plus the throttle retries plus
+about a second for the capture.
+
+Set `CERBERUS_CHAIN_PASS_HEADERS` to the replaced interceptor's
+`inputConfiguration.passRequestHeaders`. This function's own slot passes request
+headers whenever identity needs them, and with `false` they are taken out before
+the chained function is invoked, so it never receives callers' credentials it
+was not configured to see.
 
 What their interceptor did travels with the event: `passed`, `transformed`
 (the transformed body is what gets captured, since it is what reaches the
@@ -135,6 +141,7 @@ captured attempt), `invalid_output`, or `error`.
 | `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
 | `CERBERUS_GATEWAY_IDS` | unset | Gateway ids or ARNs. Required when chaining; any other gateway is refused |
 | `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining |
+| `CERBERUS_CHAIN_PASS_HEADERS` | unset | `true` or `false`. Required when chaining |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | At most 750; connect plus read is capped at 1500 |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | Lowered when connect plus read exceeds 1500 |
 | `CERBERUS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `WARNING`, `ERROR`. Logs carry request ids and outcomes, never bodies or headers |

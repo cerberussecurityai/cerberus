@@ -50,9 +50,17 @@ class ChainResult:
 class ChainClient:
     """One invoke of the chained function per interception."""
 
-    def __init__(self, arn: str, read_ms: int, client: Any = None, sleep: Any = time.sleep):
+    def __init__(
+        self,
+        arn: str,
+        read_ms: int,
+        pass_headers: bool = False,
+        client: Any = None,
+        sleep: Any = time.sleep,
+    ):
         self._arn = arn
         self._read_ms = read_ms
+        self._pass_headers = pass_headers
         self._client = client
         self._sleep = sleep
 
@@ -85,7 +93,8 @@ class ChainClient:
         return _classify(output, envelope)
 
     def _invoke_with_throttle_retries(self, event: Any, context: Any) -> dict[str, Any] | None:
-        payload = json.dumps(event).encode("utf-8")
+        forwarded = event if self._pass_headers else _without_headers(event)
+        payload = json.dumps(forwarded).encode("utf-8")
         client_context = _client_context(context)
         for attempt in range(THROTTLE_ATTEMPTS):
             try:
@@ -155,6 +164,19 @@ def _payload(response: dict[str, Any]) -> Any:
         return None
     # JSON text can escape a lone surrogate that our runtime then cannot encode.
     return encodable(value, raw)
+
+
+def _without_headers(event: Any) -> Any:
+    """A copy of event with the request headers taken out of every shape."""
+    if not isinstance(event, dict):
+        return event
+    copy = dict(event)
+    for key, shape in event.items():
+        request = shape.get("gatewayRequest") if isinstance(shape, dict) else None
+        if isinstance(request, dict) and "headers" in request:
+            kept = {name: value for name, value in request.items() if name != "headers"}
+            copy[key] = {**shape, "gatewayRequest": kept}
+    return copy
 
 
 def _client_context(context: Any) -> str:

@@ -28,7 +28,11 @@ ANSWER_MARGIN_MS = 500
 CONFIG = Config.from_env()
 SINK = FirehoseSink(CONFIG.streams, CONFIG.firehose_connect_ms, CONFIG.firehose_read_ms)
 OPTIONS = CONFIG.mapper_options(__version__)
-CHAIN = ChainClient(CONFIG.chain_arn, CONFIG.chain_read_ms) if CONFIG.chain_arn else None
+CHAIN = (
+    ChainClient(CONFIG.chain_arn, CONFIG.chain_read_ms, pass_headers=CONFIG.chain_pass_headers)
+    if CONFIG.chain_arn
+    else None
+)
 
 # The Lambda runtime owns the root logger's handler and its request-id prefix.
 logger = logging.getLogger("cerberus_agentcore_interceptor")
