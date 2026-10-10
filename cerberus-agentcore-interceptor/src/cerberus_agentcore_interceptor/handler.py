@@ -26,7 +26,7 @@ OPTIONS = CONFIG.mapper_options(__version__)
 logger = logging.getLogger("cerberus_agentcore_interceptor")
 logger.setLevel(CONFIG.log_level)
 
-if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+if os.environ.get("AWS_LAMBDA_FUNCTION_NAME") and CONFIG.capturing:
     SINK.prepare()
 
 
@@ -61,6 +61,9 @@ def _parse(event: Any) -> Envelope:
 
 
 def _capture(envelope: Envelope, context: Any) -> None:
+    if not CONFIG.capturing:
+        metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)
+        return
     try:
         gateway = gateway_context(context)
         event = source_event(envelope, gateway, OPTIONS, datetime.now(UTC))

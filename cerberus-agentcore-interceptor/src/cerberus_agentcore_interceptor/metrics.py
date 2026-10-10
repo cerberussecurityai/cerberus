@@ -25,6 +25,7 @@ REASON_THROTTLE = "throttle"
 REASON_TIMEOUT = "timeout"
 REASON_OVERSIZE = "oversize"
 REASON_HANDLER = "handler_error"
+REASON_CONFIG = "config_invalid"
 
 
 def count(metric: str, reason: str = "", **fields: Any) -> None:

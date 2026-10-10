@@ -93,20 +93,23 @@ reason.
 
 | Variable | Default | |
 |---|---|---|
-| `CERBERUS_FIREHOSE_STREAM` | required | Delivery stream name, or a comma-separated list picked by gateway |
-| `CERBERUS_IDENTITY` | `jwt` | `jwt`, `sigv4` or `none` |
+| `CERBERUS_FIREHOSE_STREAM` | required | Delivery stream name or ARN, or a comma-separated list picked by gateway |
+| `CERBERUS_IDENTITY` | `jwt` | `jwt`, `sigv4` or `none`, or the authorizer type from the table above |
 | `CERBERUS_USER_ID_CLAIM` | `sub` | Which JWT claim identifies the caller |
 | `CERBERUS_CAPTURE_HEADERS` | the list above | Comma-separated |
 | `CERBERUS_CAPTURE_BODIES` | `true` | `false` captures metadata and identity only |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
-| `CERBERUS_MAX_EVENT_BYTES` | `57344` | Ceiling 63488 |
+| `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | |
-| `CERBERUS_LOG_LEVEL` | `INFO` | Logs carry request ids and outcomes, never bodies or headers |
+| `CERBERUS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `WARNING`, `ERROR`. Logs carry request ids and outcomes, never bodies or headers |
 
-A malformed value fails at init, so a broken configuration shows up when the
-function is deployed rather than as a gap in capture later. Lambda caps all
-environment variables at 4 KB together.
+A number out of range is clamped to the nearest bound, and an unknown log level
+becomes `INFO`, each with a warning in the function's log. Any other value that
+cannot be used turns capture off rather than failing the function: it logs an
+`ERROR` naming the variable, passes every request through unchanged, and counts
+`CaptureDropped` with reason `config_invalid`. Lambda caps all environment
+variables at 4 KB together.
 
 ## Deployment
 
@@ -126,6 +129,19 @@ grant on the unqualified ARN does not cover an alias, and permission edits take
 minutes to take effect in both directions, so publish a version and move an
 alias rather than editing the role in place.
 
+Test-invoke each new version before you move the alias. Lambda runs a version's
+init on the first request it receives, not when it is published, so this is
+where a configuration problem first shows:
+
+```bash
+aws lambda invoke --function-name <name>:<version> \
+  --cli-binary-format raw-in-base64-out --payload '{}' \
+  --log-type Tail --query LogResult --output text out.json | base64 --decode
+```
+
+The invoke captures nothing and counts one `UnknownInputVersion`. An `ERROR`
+line in its log means capture is off until the setting is fixed.
+
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers; inference callers still receive it, so nothing this
 package raises says anything you would not show a customer's end user.
@@ -134,7 +150,8 @@ package raises says anything you would not show a customer's end user.
 
 The handler emits CloudWatch embedded-metric lines in namespace
 `Cerberus/AgentCoreInterceptor`: `Captured`, `CaptureDropped` (dimension
-`Reason`: `throttle`, `timeout`, `oversize`, `sink_error`, `handler_error`),
+`Reason`: `throttle`, `timeout`, `oversize`, `sink_error`, `handler_error`,
+`config_invalid`),
 `UnknownInputVersion`, `UnexpectedPhase` and `UnknownShape`.
 
 Alarm on Lambda `Errors` first — each one is a blocked customer request — then

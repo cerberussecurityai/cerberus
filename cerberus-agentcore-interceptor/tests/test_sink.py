@@ -127,6 +127,7 @@ def test_metrics_never_raise(monkeypatch, capsys):
         metrics.REASON_TIMEOUT,
         metrics.REASON_OVERSIZE,
         metrics.REASON_HANDLER,
+        metrics.REASON_CONFIG,
     ],
 )
 def test_every_reason_is_a_short_label(reason):

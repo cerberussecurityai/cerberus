@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import logging
 
 import pytest
 from helpers import LambdaContext, case_names, load_case
@@ -171,6 +172,25 @@ def test_capture_bodies_off_still_returns_the_body_to_the_gateway(sink, monkeypa
     }
 
 
+@pytest.mark.parametrize("name", case_names())
+def test_capture_off_passes_every_request_through(sink, counted, monkeypatch, name):
+    off = Config.from_env({"CERBERUS_FIREHOSE_STREAM": "s", "CERBERUS_CAPTURE_BODIES": "maybe"})
+    expected = invoke(name)
+    sink.events.clear()
+    counted.clear()
+    monkeypatch.setattr(handler_mod, "CONFIG", off)
+
+    assert invoke(name) == expected
+    assert sink.events == []
+    assert (metrics.CAPTURED, "") not in counted
+
+
+def test_capture_off_is_counted(sink, counted, monkeypatch):
+    monkeypatch.setattr(handler_mod, "CONFIG", Config.from_env({}))
+    invoke("mcp-tools-call-lambda")
+    assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
+
+
 def test_the_module_reads_its_configuration_at_import(monkeypatch):
     monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "one,two")
     monkeypatch.setenv("CERBERUS_IDENTITY", "sigv4")
@@ -180,6 +200,18 @@ def test_the_module_reads_its_configuration_at_import(monkeypatch):
     assert reloaded.CONFIG.streams == ("one", "two")
     assert reloaded.OPTIONS.identity_mode == "sigv4"
     assert reloaded.OPTIONS.max_event_bytes == 4096
+
+    monkeypatch.undo()
+    importlib.reload(handler_mod)
+
+
+def test_an_unusable_setting_does_not_fail_the_import(monkeypatch):
+    monkeypatch.setenv("CERBERUS_CAPTURE_BODIES", "maybe")
+    monkeypatch.setenv("CERBERUS_LOG_LEVEL", "verbose")
+    reloaded = importlib.reload(handler_mod)
+
+    assert reloaded.CONFIG.invalid == ("CERBERUS_CAPTURE_BODIES",)
+    assert reloaded.logger.level == logging.INFO
 
     monkeypatch.undo()
     importlib.reload(handler_mod)
