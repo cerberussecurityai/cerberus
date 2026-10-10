@@ -17,6 +17,7 @@ from cerberus_agentcore_interceptor.config import Config, ConfigError
 
 CHAIN_ARN = "arn:aws:lambda:us-west-2:123456789012:function:customer-auth:live"
 GATEWAY_ID = "example-gateway-abcdefghij"
+GATEWAY_ARN = f"arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/{GATEWAY_ID}"
 
 
 class FakeLambda:
@@ -216,6 +217,34 @@ def test_a_full_chain_configuration():
     assert config.chain_read_ms == 5000
 
 
+def chain_env(gateway_ids):
+    return {
+        **MINIMAL,
+        "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN,
+        "CERBERUS_GATEWAY_IDS": gateway_ids,
+        "CERBERUS_CHAIN_READ_MS": "5000",
+    }
+
+
+def test_a_gateway_arn_is_read_as_its_id():
+    config = Config.from_env(chain_env(f"{GATEWAY_ARN}, {GATEWAY_ID}, other-gateway"))
+    assert config.gateway_ids == (GATEWAY_ID, "other-gateway")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        CHAIN_ARN,
+        "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/example-runtime",
+        f"{GATEWAY_ARN}/extra",
+        "gateway/example-gateway-abcdefghij",
+    ],
+)
+def test_a_gateway_id_that_could_never_match_fails_init(value):
+    with pytest.raises(ConfigError, match="CERBERUS_GATEWAY_IDS"):
+        Config.from_env(chain_env(f"{GATEWAY_ID},{value}"))
+
+
 # ============================================================================
 # The handler with a chain
 # ============================================================================
@@ -337,6 +366,27 @@ def test_an_unlisted_gateway_is_refused_before_the_chain_runs(chained):
         handler_mod.handler(case["input"], LambdaContext(context))
     assert fake.calls == []
     assert chained.sink.events == []
+
+
+def test_a_refused_gateway_is_named_in_the_log(chained, caplog):
+    chained(mcp_output({}))
+    case = load_case("mcp-tools-call-lambda")
+    context = dict(case["client_context"])
+    context["GATEWAY_ARN"] = context["GATEWAY_ARN"].replace(GATEWAY_ID, "unlisted-gateway")
+
+    with pytest.raises(handler_mod.InterceptorError):
+        handler_mod.handler(case["input"], LambdaContext(context))
+    assert any("unlisted-gateway" in record.getMessage() for record in caplog.records)
+
+
+def test_a_gateway_listed_by_arn_is_served(chained, monkeypatch):
+    config = Config.from_env(chain_env(GATEWAY_ARN))
+    monkeypatch.setattr(handler_mod, "CONFIG", config)
+    answer = mcp_output({"jsonrpc": "2.0", "id": 3, "method": "tools/call"})
+    fake = chained(answer)
+
+    assert invoke() == answer
+    assert len(fake.calls) == 1
 
 
 def test_the_error_text_names_nothing_a_customer_should_not_see(chained):

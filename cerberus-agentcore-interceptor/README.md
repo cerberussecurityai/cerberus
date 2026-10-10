@@ -108,10 +108,11 @@ function refuses every RESPONSE invocation, so an attachment left there fails
 closed instead of skipping your response logic.
 
 Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
-to the gateways this function serves, and `CERBERUS_CHAIN_READ_MS` to the
-chained function's own timeout plus a cold-start allowance. A gateway that is
-not on the list is refused, because it may have had an interceptor of its own
-before this one. The execution role needs `lambda:InvokeFunction` on the ARN,
+to the ids or ARNs of the gateways this function serves, and
+`CERBERUS_CHAIN_READ_MS` to the chained function's own timeout plus a
+cold-start allowance. A gateway that is not on the list is refused, and its id
+logged, because it may have had an interceptor of its own before this one. The
+execution role needs `lambda:InvokeFunction` on the ARN,
 and the function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus the
 throttle retries plus about a second for the capture.
 
@@ -132,7 +133,7 @@ captured attempt), `invalid_output`, or `error`.
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
 | `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
-| `CERBERUS_GATEWAY_IDS` | unset | Required when chaining; any other gateway is refused |
+| `CERBERUS_GATEWAY_IDS` | unset | Gateway ids or ARNs. Required when chaining; any other gateway is refused |
 | `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | At most 750; connect plus read is capped at 1500 |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | Lowered when connect plus read exceeds 1500 |

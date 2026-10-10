@@ -100,6 +100,7 @@ def _chain(
     if gateway.gateway_id not in CONFIG.gateway_ids:
         # An unlisted gateway may have had its own interceptor before us, and we
         # cannot serve its request without running whatever that was.
+        logger.error("gateway %r is not in CERBERUS_GATEWAY_IDS", gateway.gateway_id)
         raise InterceptorError("interceptor is not configured for this gateway")
     return CHAIN.invoke(event, context, envelope)
 

@@ -46,6 +46,7 @@ STREAM_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 STREAM_ARN = re.compile(r"^arn:aws[a-z-]*:firehose:[a-z0-9-]*:\d{12}:deliverystream/(?P<name>.+)$")
 
 MAX_GATEWAY_IDS = 64
+GATEWAY_ARN = re.compile(r"^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]*:\d{12}:gateway/(?P<id>.+)$")
 LAMBDA_ARN = re.compile(r"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:[^\s]+$")
 
 
@@ -111,6 +112,7 @@ class Config:
                 raise ConfigError(
                     f"CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN ({chain_arn!r})"
                 )
+            gateway_ids = _gateway_ids(gateway_ids)
             if not gateway_ids:
                 raise ConfigError("CERBERUS_GATEWAY_IDS is required when chaining")
             if len(gateway_ids) > MAX_GATEWAY_IDS:
@@ -201,6 +203,21 @@ def _streams(source: Mapping[str, str], name: str) -> tuple[str, ...]:
     if len(streams) > MAX_STREAMS:
         raise ConfigError(f"{name} accepts at most {MAX_STREAMS} streams (got {len(streams)})")
     return tuple(streams)
+
+
+def _gateway_ids(items: tuple[str, ...]) -> tuple[str, ...]:
+    """Gateway ids, each given as an id or a gateway ARN."""
+    ids: list[str] = []
+    for item in items:
+        arn = GATEWAY_ARN.match(item)
+        gateway_id = arn.group("id") if arn else item
+        # The handler compares the id after the gateway ARN's slash, so
+        # anything else here could never match.
+        if ":" in gateway_id or "/" in gateway_id:
+            raise ConfigError(f"CERBERUS_GATEWAY_IDS: {item!r} is not a gateway id or ARN")
+        if gateway_id not in ids:
+            ids.append(gateway_id)
+    return tuple(ids)
 
 
 def _identity_mode(source: Mapping[str, str], name: str) -> str:
