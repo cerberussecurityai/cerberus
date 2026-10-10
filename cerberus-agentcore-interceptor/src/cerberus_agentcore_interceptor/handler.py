@@ -147,9 +147,11 @@ def _answer(envelope: Envelope, chain: ChainResult | None) -> dict[str, Any]:
         return _output(envelope)
     if chain.failed:
         raise InterceptorError("upstream interceptor did not answer")
-    if chain.output is not None:
-        return chain.output
-    return _output(envelope)
+    if not isinstance(chain.output, dict):
+        # The gateway refuses an answer that is not an object. Our own
+        # pass-through in its place would serve what their function did not.
+        raise InterceptorError("upstream interceptor did not answer with an object")
+    return chain.output
 
 
 def _output(envelope: Envelope) -> dict[str, Any]:

@@ -20,17 +20,19 @@ GATEWAY_ID = "example-gateway-abcdefghij"
 
 
 class FakeLambda:
-    def __init__(self, payload=None, function_error=None, raises=None):
+    def __init__(self, payload=None, function_error=None, raises=None, raw=None):
         self.calls = []
         self._payload = payload
         self._function_error = function_error
         self._raises = raises
+        self._raw = raw
 
     def invoke(self, **kwargs):
         self.calls.append(kwargs)
         if self._raises is not None:
             raise self._raises
-        response = {"StatusCode": 200, "Payload": json.dumps(self._payload).encode()}
+        raw = self._raw if self._raw is not None else json.dumps(self._payload).encode()
+        response = {"StatusCode": 200, "Payload": raw}
         if self._function_error:
             response["FunctionError"] = self._function_error
         return response
@@ -336,6 +338,29 @@ def test_the_response_phase_never_chains(chained):
 def test_an_invalid_chained_output_is_handed_back_as_it_came(chained):
     chained({"interceptorOutputVersion": "9.9"})
     assert invoke() == {"interceptorOutputVersion": "9.9"}
+    assert chained.sink.events[0]["custom_data"]["agentcore"]["chain"] == {
+        "outcome": "invalid_output"
+    }
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"null",
+        b"",
+        b"not json",
+        b"\xff\xfe",
+        b"[]",
+        b'"ok"',
+        b"false",
+        pytest.param(b"[" * 100_000, id="too-deep"),
+    ],
+)
+def test_an_answer_that_is_not_an_object_refuses_the_request(chained, raw):
+    fake = chained(raw=raw)
+    with pytest.raises(handler_mod.InterceptorError):
+        invoke()
+    assert len(fake.calls) == 1
     assert chained.sink.events[0]["custom_data"]["agentcore"]["chain"] == {
         "outcome": "invalid_output"
     }

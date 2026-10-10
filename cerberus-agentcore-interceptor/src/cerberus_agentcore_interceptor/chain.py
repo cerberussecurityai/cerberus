@@ -151,7 +151,7 @@ def _payload(response: dict[str, Any]) -> Any:
         return raw
     try:
         value = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     # JSON text can escape a lone surrogate that our runtime then cannot encode.
     return encodable(value, raw)
