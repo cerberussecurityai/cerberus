@@ -8,6 +8,7 @@ headers, shed the body, drop the event.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Iterable, Iterator
 from itertools import islice
 from time import monotonic
@@ -99,13 +100,18 @@ def fit(
 ) -> dict[str, Any] | None:
     """Trim the event until it serializes under max_bytes. None means drop it.
 
-    Updates the notes in the event's gateway block as it goes, starting from
-    pruned, the note prune() returned for the body. Raises
-    CaptureDeadlineExceeded once time.monotonic() reaches deadline.
+    Makes the replacements storable() makes first. Updates the notes in the
+    event's gateway block as it goes, starting from pruned, the note prune()
+    returned for the body. Raises CaptureDeadlineExceeded once
+    time.monotonic() reaches deadline.
     """
     if pruned is not None:
         set_note(event, "body", {"state": STATE_REDUCED, **pruned})
-    if _size(event, deadline) <= max_bytes:
+    data = _serialize(event, deadline)
+    if _needs_storable(event, data):
+        event = storable(event)
+        data = _serialize(event, deadline)
+    if len(data) <= max_bytes:
         return event
 
     body = event.get("body")
@@ -172,6 +178,32 @@ def prune(
     return None, None
 
 
+def storable(value: Any) -> Any:
+    """A copy of value that strict JSON stores accept, dict keys included.
+
+    U+0000 and lone surrogates become U+FFFD, and NaN and the infinities become
+    the strings "NaN", "Infinity" and "-Infinity".
+    """
+
+    def walk(node: Any, depth: int) -> Any:
+        if isinstance(node, str):
+            return _storable_text(node)
+        if isinstance(node, float) and not math.isfinite(node):
+            if math.isnan(node):
+                return "NaN"
+            return "Infinity" if node > 0 else "-Infinity"
+        # A body reaches here through sanitize_dict, which already cut it shallower.
+        if depth > MAX_WALK_DEPTH:
+            return node
+        if isinstance(node, dict):
+            return {walk(key, depth): walk(item, depth + 1) for key, item in node.items()}
+        if isinstance(node, (list, tuple)):
+            return [walk(item, depth + 1) for item in node]
+        return node
+
+    return walk(value, 0)
+
+
 def set_note(event: dict[str, Any], key: str, note: dict[str, Any]) -> None:
     """Record what happened to a captured field, beside the gateway context."""
     agentcore = event.setdefault("custom_data", {}).setdefault("agentcore", {})
@@ -231,9 +263,41 @@ def _escaped_len(value: str) -> int:
     return len(json.dumps(value, ensure_ascii=True)) - 2
 
 
-def _size(event: dict[str, Any], deadline: float | None) -> int:
+def _storable_text(value: str) -> str:
+    if "\x00" in value:
+        value = value.replace("\x00", "\ufffd")
+    if value.isascii():
+        return value
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Joins a pair held as two code points; a lone half becomes U+FFFD.
+        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    return value
+
+
+def _needs_storable(event: dict[str, Any], data: bytes) -> bool:
+    """False only when storable() would leave the event as it is. Reads its bytes first."""
+    if b"\\u0000" in data:
+        return True
+    if b"NaN" not in data and b"Infinity" not in data and b"\\ud" not in data:
+        return False
+    # Astral characters and plain text can match those too; this raises only
+    # on a non-finite float or a surrogate code point.
+    try:
+        json.dumps(event, ensure_ascii=False, allow_nan=False, default=str).encode("utf-8")
+    except ValueError:
+        return True
+    return False
+
+
+def _serialize(event: dict[str, Any], deadline: float | None) -> bytes:
     check_deadline(deadline)
-    return size(event)
+    return serialize(event)
+
+
+def _size(event: dict[str, Any], deadline: float | None) -> int:
+    return len(_serialize(event, deadline))
 
 
 def _fits(event: dict[str, Any], candidate: Any, budget: int, deadline: float | None) -> bool:

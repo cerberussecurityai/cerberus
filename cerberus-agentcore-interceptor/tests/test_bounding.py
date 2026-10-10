@@ -1,3 +1,4 @@
+import base64
 import copy
 import json
 from time import monotonic
@@ -551,3 +552,81 @@ def test_a_future_deadline_changes_nothing():
     body = dense_tool_call(3000)
     late = map_with_body("mcp-tools-call-lambda", body, deadline=monotonic() + 60)
     assert late == map_with_body("mcp-tools-call-lambda", body)
+
+
+def assert_strict(data: bytes) -> None:
+    def refuse(token):
+        raise AssertionError(token)
+
+    text = json.dumps(json.loads(data, parse_constant=refuse), ensure_ascii=False)
+    assert "\x00" not in text
+    text.encode("utf-8")
+
+
+def http_text(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+def test_values_strict_json_stores_refuse_are_replaced():
+    text = (
+        '{"prompt": "copy ~/.aws/config\\u0000 \\ud800 \\udc00 \\ud83d\\ude00",'
+        ' "k\\u0000": [NaN, Infinity, -Infinity, 1e400, -1e400, 1.5]}'
+    )
+    event = map_with_body("passthrough-echo", http_text(text))
+
+    assert event["body"] == {
+        "prompt": "copy ~/.aws/config\ufffd \ufffd \ufffd \U0001f600",
+        "k\ufffd": ["NaN", "Infinity", "-Infinity", "Infinity", "-Infinity", 1.5],
+    }
+    assert note(event) == {"state": "captured"}
+    assert_strict(bounding.serialize(event))
+
+
+def test_a_parsed_body_and_the_headers_are_made_storable():
+    case = load_case("mcp-tools-call-lambda")
+    request = case["input"]["mcp"]["gatewayRequest"]
+    request["headers"]["User-Agent"] = "agent\x00/1"
+    request["body"] = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "shell___exec", "arguments": {"cmd": "id\udc00", "x": float("nan")}},
+    }
+    case["input"]["mcp"].pop("rawGatewayRequest", None)
+    event = source_event(
+        envelope_mod.parse(case["input"]),
+        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
+        options(case),
+        TIMESTAMP,
+    )
+
+    assert event["user_agent"] == "agent\ufffd/1"
+    assert event["headers"]["User-Agent"] == "agent\ufffd/1"
+    assert event["body"]["params"]["arguments"] == {"cmd": "id\ufffd", "x": "NaN"}
+    assert request["body"]["params"]["arguments"]["cmd"] == "id\udc00"
+    assert_strict(bounding.serialize(event))
+
+
+def test_a_body_with_unstorable_values_is_still_bounded():
+    text = '{"model": "m", "messages": [{"role": "user", "content": "\\u0000' + "x" * 90000 + '"}]'
+    event = map_with_body("inference-chat", http_text(text + ', "temperature": NaN}'))
+
+    assert note(event)["state"] == "capped"
+    assert event["body"]["temperature"] == "NaN"
+    assert event["body"]["messages"][0]["content"].startswith("\ufffdx")
+    assert bounding.size(event) <= MAX
+    assert_strict(bounding.serialize(event))
+
+
+def test_text_that_only_looks_unstorable_is_left_alone():
+    event = {"body": {"note": "NaN, Infinity, \\ud800 and \U0001f600"}}
+    assert bounding.fit(event, MAX) is event
+
+
+def test_storable_joins_a_split_pair_and_keeps_other_values():
+    high, low = chr(0xD83D), chr(0xDE00)
+    value = {"a" + high + low: (high, 1, True, None, 2.5), float("-inf"): {"n": float("inf")}}
+    assert bounding.storable(value) == {
+        "a\U0001f600": ["\ufffd", 1, True, None, 2.5],
+        "-Infinity": {"n": "Infinity"},
+    }

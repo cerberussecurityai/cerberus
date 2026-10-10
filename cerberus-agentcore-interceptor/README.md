@@ -40,7 +40,9 @@ One event per intercepted request: method, path, the gateway host, the caller's
 identity, an allowlisted set of headers, and the request body with sensitive
 keys redacted (`cerberus-core`'s `SENSITIVE_KEYS`, plus any you name). Bodies
 are bounded so a large one is trimmed toward a still-meaningful shape rather
-than dropped outright.
+than dropped outright. Every event is portable JSON: U+0000 and unpaired
+surrogates in captured text become U+FFFD, and NaN and infinite numbers become
+the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
 
 Responses are not captured in this version.
 
