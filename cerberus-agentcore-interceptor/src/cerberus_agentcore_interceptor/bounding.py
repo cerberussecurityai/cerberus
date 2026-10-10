@@ -37,6 +37,8 @@ STATE_DISABLED = "disabled"
 
 LLM_KEEP_KEYS = ("model", "stream", "max_tokens")
 LLM_ROUTE_KEYS = ("messages", "input", "prompt")
+# Anthropic's top-level system prompt and its Responses API counterpart.
+LLM_SYSTEM_KEYS = ("system", "instructions")
 MCP_KEEP_KEYS = ("jsonrpc", "id", "method")
 MCP_KEEP_PARAMS = ("name", "uri")
 
@@ -172,27 +174,26 @@ def _reduce_llm(body: dict[str, Any], fits: Callable[[Any], bool]) -> tuple[Any,
     """Drop the parameters first, then the oldest messages, then the system prompt."""
     base: dict[str, Any] = {key: body[key] for key in LLM_KEEP_KEYS if key in body}
     route = next((key for key in LLM_ROUTE_KEYS if key in body), None)
-    dropped = [key for key in body if key not in LLM_KEEP_KEYS and key not in (route, "system")]
+    prompts = [key for key in LLM_SYSTEM_KEYS if body.get(key) is not None]
+    dropped = [key for key in body if key not in base and key != route and key not in prompts]
     detail: dict[str, Any] = {"kind": "llm", "dropped_keys": len(dropped)}
 
-    system = body.get("system")
     with_system = dict(base)
-    if system is not None:
-        with_system["system"] = cap_strings(system, MAX_SYSTEM_CHARS)[0]
+    for key in prompts:
+        with_system[key] = cap_strings(body[key], MAX_SYSTEM_CHARS)[0]
 
     value = body.get(route) if route is not None else None
-    messages = (
-        [item for item in value if isinstance(item, dict) and "role" in item]
-        if isinstance(value, list)
-        else None
-    )
+    # Every item counts, whatever its type: Responses API tool calls and their
+    # outputs carry no role.
+    messages = value if isinstance(value, list) else None
 
     for start, without_system in ((with_system, False), (base, True)):
         fitted = _llm_candidate(start, route, value, messages, fits)
         if fitted is None:
             continue
         candidate, kept = fitted
-        detail = _system_note(detail, system, without_system)
+        if without_system:
+            detail.update(dict.fromkeys(prompts, "dropped"))
         if messages is not None:
             detail["messages_kept"] = kept
             detail["messages_dropped"] = len(messages) - kept
@@ -218,7 +219,10 @@ def _llm_candidate(
     if not messages:
         return (base, 0) if base and fits(base) else None
 
-    first_system = next((item for item in messages if item.get("role") == "system"), None)
+    first_system = next(
+        (item for item in messages if isinstance(item, dict) and item.get("role") == "system"),
+        None,
+    )
     lead = [first_system] if first_system is not None else []
     tail = [item for item in messages if item is not first_system]
 
@@ -239,13 +243,6 @@ def _llm_candidate(
         if fits(candidate):
             return candidate, len(lead)
     return None
-
-
-def _system_note(detail: dict[str, Any], system: Any, without_system: bool) -> dict[str, Any]:
-    detail = dict(detail)
-    if system is not None and without_system:
-        detail["system"] = "dropped"
-    return detail
 
 
 def _reduce_mcp(body: dict[str, Any], fits: Callable[[Any], bool]) -> tuple[Any, dict[str, Any]]:
