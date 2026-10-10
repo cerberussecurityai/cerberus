@@ -6,7 +6,7 @@ from cerberus_agentcore_interceptor.bounding import (
     DEFAULT_MAX_EVENT_BYTES,
     MAX_EVENT_BYTES_CEILING,
 )
-from cerberus_agentcore_interceptor.config import MAX_STREAMS, Config
+from cerberus_agentcore_interceptor.config import MAX_FIREHOSE_MS, MAX_STREAMS, Config
 from cerberus_agentcore_interceptor.sanitize import DEFAULT_CAPTURE_HEADERS
 
 MINIMAL = {"CERBERUS_FIREHOSE_STREAM": "cerberus-capture"}
@@ -132,6 +132,7 @@ def test_capture_bodies_boolean(raw, expected):
         ("CERBERUS_MAX_EVENT_BYTES", "65536", "max_event_bytes", MAX_EVENT_BYTES_CEILING),
         ("CERBERUS_MAX_EVENT_BYTES", "100", "max_event_bytes", 1024),
         ("CERBERUS_FIREHOSE_CONNECT_MS", "0", "firehose_connect_ms", 10),
+        ("CERBERUS_FIREHOSE_CONNECT_MS", "1000", "firehose_connect_ms", 750),
     ],
 )
 def test_an_out_of_range_integer_is_clamped_with_a_warning(caplog, name, raw, field, expected):
@@ -139,6 +140,18 @@ def test_an_out_of_range_integer_is_clamped_with_a_warning(caplog, name, raw, fi
     assert getattr(config, field) == expected
     assert config.capturing is True
     assert logged(caplog, logging.WARNING, name)
+
+
+@pytest.mark.parametrize(
+    "connect,read,expected",
+    [("500", "1400", (500, 1000)), ("250", "10000", (250, 1250)), ("10000", "10000", (750, 750))],
+)
+def test_connect_and_read_together_stay_within_the_budget(caplog, connect, read, expected):
+    config = build(CERBERUS_FIREHOSE_CONNECT_MS=connect, CERBERUS_FIREHOSE_READ_MS=read)
+    assert (config.firehose_connect_ms, config.firehose_read_ms) == expected
+    assert sum(expected) <= MAX_FIREHOSE_MS
+    assert config.capturing is True
+    assert logged(caplog, logging.WARNING, "CERBERUS_FIREHOSE_READ_MS")
 
 
 def test_integers_in_range_are_kept():

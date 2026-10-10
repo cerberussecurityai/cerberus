@@ -1,4 +1,5 @@
 import json
+from time import monotonic
 
 import pytest
 
@@ -58,6 +59,17 @@ def test_failures_map_to_reasons():
     assert sink(client=FakeFirehose(raises=RuntimeError("boom"))).put({}, "k") == (
         metrics.REASON_SINK
     )
+
+
+def test_a_put_that_could_outlast_the_deadline_is_skipped():
+    client = FakeFirehose()
+    assert sink(client=client).put({"event_id": "e"}, "k", monotonic() + 0.7) == (
+        metrics.REASON_DEADLINE
+    )
+    assert client.calls == []
+
+    assert sink(client=client).put({"event_id": "e"}, "k", monotonic() + 1) == ""
+    assert len(client.calls) == 1
 
 
 def test_an_oversized_record_never_reaches_firehose():
@@ -125,6 +137,7 @@ def test_metrics_never_raise(monkeypatch, capsys):
         metrics.REASON_SINK,
         metrics.REASON_THROTTLE,
         metrics.REASON_TIMEOUT,
+        metrics.REASON_DEADLINE,
         metrics.REASON_OVERSIZE,
         metrics.REASON_HANDLER,
         metrics.REASON_CONFIG,

@@ -100,8 +100,8 @@ reason.
 | `CERBERUS_CAPTURE_BODIES` | `true` | `false` captures metadata and identity only |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
-| `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | |
-| `CERBERUS_FIREHOSE_READ_MS` | `500` | |
+| `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | At most 750; connect plus read is capped at 1500 |
+| `CERBERUS_FIREHOSE_READ_MS` | `500` | Lowered when connect plus read exceeds 1500 |
 | `CERBERUS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `WARNING`, `ERROR`. Logs carry request ids and outcomes, never bodies or headers |
 
 A number out of range is clamped to the nearest bound, and an unknown log level
@@ -123,6 +123,13 @@ variables at 4 KB together.
 | Memory | 512 MB to start; raise it from your own worst-case body sizes |
 | Timeout | 3 s |
 | Permissions | `firehose:PutRecord` on each stream |
+
+Capture gives up 500 ms before the function's timeout, and skips the Firehose
+write when the time left cannot cover `CERBERUS_FIREHOSE_CONNECT_MS` plus
+`CERBERUS_FIREHOSE_READ_MS`. Either way the request goes through unchanged and
+`CaptureDropped` counts reason `deadline`. Those two timeouts add up to at most
+1.5 s, so one write stays well inside the 3 s timeout. Do not go lower: with a
+timeout under 500 ms plus the two, 1.25 s by default, every write is skipped.
 
 The gateway's role needs `lambda:InvokeFunction` on `function:<name>:*` — a
 grant on the unqualified ARN does not cover an alias, and permission edits take
@@ -150,8 +157,8 @@ package raises says anything you would not show a customer's end user.
 
 The handler emits CloudWatch embedded-metric lines in namespace
 `Cerberus/AgentCoreInterceptor`: `Captured`, `CaptureDropped` (dimension
-`Reason`: `throttle`, `timeout`, `oversize`, `sink_error`, `handler_error`,
-`config_invalid`),
+`Reason`: `throttle`, `timeout`, `deadline`, `oversize`, `sink_error`,
+`handler_error`, `config_invalid`),
 `UnknownInputVersion`, `UnexpectedPhase` and `UnknownShape`.
 
 Alarm on Lambda `Errors` first — each one is a blocked customer request — then

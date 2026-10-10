@@ -3,6 +3,7 @@
 import importlib
 import json
 import logging
+from time import monotonic
 
 import pytest
 from helpers import LambdaContext, case_names, load_case
@@ -20,19 +21,47 @@ class RecordingSink(FirehoseSink):
         super().__init__(("stream",), 250, 500, client=object())
         self.events: list[dict] = []
         self.keys: list[str] = []
+        self.deadlines: list[float | None] = []
         self._reason = reason
         self._raises = raises
 
-    def put(self, event, key):
+    def put(self, event, key, deadline=None):
         if self._raises is not None:
             raise self._raises
         self.events.append(event)
         self.keys.append(key)
+        self.deadlines.append(deadline)
         return self._reason
+
+
+class TimedContext(LambdaContext):
+    """A Lambda context that reports a fixed remaining time."""
+
+    def __init__(self, custom, remaining_ms):
+        super().__init__(custom)
+        self.remaining_ms = remaining_ms
+
+    def get_remaining_time_in_millis(self):
+        return self.remaining_ms
+
+
+class CountingFirehose:
+    def __init__(self):
+        self.calls = 0
+
+    def put_record(self, **kwargs):
+        self.calls += 1
+        return {"RecordId": "r-1"}
 
 
 def _boom(*args, **kwargs):
     raise RuntimeError("boom")
+
+
+def invoke_with(name: str, remaining_ms: int):
+    case = load_case(name)
+    context = TimedContext(case["client_context"], remaining_ms)
+    return case, handler_mod.handler(case["input"], context)
 
 
 @pytest.fixture
@@ -170,6 +199,55 @@ def test_capture_bodies_off_still_returns_the_body_to_the_gateway(sink, monkeypa
     assert result["mcp"]["transformedGatewayRequest"] == {
         "body": case["input"]["mcp"]["gatewayRequest"]["body"]
     }
+
+
+def test_capture_is_bounded_by_the_time_the_function_has_left(sink):
+    before = monotonic()
+    invoke_with("mcp-tools-call-lambda", 3000)
+    after = monotonic()
+
+    budget = 3 - handler_mod.ANSWER_MARGIN_MS / 1000
+    assert before + budget - 0.001 <= sink.deadlines[0] <= after + budget + 0.001
+
+
+def test_capture_past_its_deadline_passes_the_request_through(sink, counted):
+    case, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS)
+
+    assert result["mcp"]["transformedGatewayRequest"] == {
+        "body": case["input"]["mcp"]["gatewayRequest"]["body"]
+    }
+    assert sink.events == []
+    assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE)]
+
+
+@pytest.mark.parametrize("extra_ms", [0, 700])
+def test_a_deadline_drop_names_the_request(monkeypatch, extra_ms):
+    monkeypatch.setattr(
+        handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=CountingFirehose())
+    )
+    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
+    fields: list[dict] = []
+    monkeypatch.setattr(
+        handler_mod.metrics, "count", lambda name, reason="", **kw: fields.append(kw)
+    )
+    case, _ = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + extra_ms)
+
+    assert fields == [{"request_id": case["client_context"]["REQUEST_ID"]}]
+
+
+def test_a_put_that_could_outlast_the_deadline_is_skipped(counted, monkeypatch):
+    client = CountingFirehose()
+    monkeypatch.setattr(handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=client))
+    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
+    case, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 700)
+
+    assert output.is_valid_output(result)
+    assert client.calls == 0
+    assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE)]
+
+    invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 1000)
+    assert client.calls == 1
+    assert counted[-1] == (metrics.CAPTURED, "")
 
 
 @pytest.mark.parametrize("name", case_names())

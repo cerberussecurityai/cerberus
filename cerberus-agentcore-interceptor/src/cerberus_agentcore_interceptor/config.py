@@ -34,6 +34,10 @@ IDENTITY_ALIASES = {
 
 DEFAULT_FIREHOSE_CONNECT_MS = 250
 DEFAULT_FIREHOSE_READ_MS = 500
+# Connect plus read: one put stays at half the recommended 3 s function timeout.
+MAX_FIREHOSE_MS = 1500
+# Connect gets at most half, so the read is never lowered below the other half.
+MAX_FIREHOSE_CONNECT_MS = MAX_FIREHOSE_MS // 2
 
 MAX_STREAMS = 16
 STREAM_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
@@ -108,7 +112,7 @@ class Config:
             _int,
             DEFAULT_FIREHOSE_CONNECT_MS,
             10,
-            10000,
+            MAX_FIREHOSE_CONNECT_MS,
         )
         read_ms = capture(
             "CERBERUS_FIREHOSE_READ_MS",
@@ -116,7 +120,7 @@ class Config:
             _int,
             DEFAULT_FIREHOSE_READ_MS,
             10,
-            10000,
+            MAX_FIREHOSE_MS - 10,
         )
 
         return cls(
@@ -128,7 +132,7 @@ class Config:
             sensitive_keys=_list(source, "CERBERUS_SENSITIVE_KEYS"),
             max_event_bytes=max_event_bytes,
             firehose_connect_ms=connect_ms,
-            firehose_read_ms=read_ms,
+            firehose_read_ms=_read_budget(connect_ms, read_ms),
             log_level=_log_level(source),
             invalid=tuple(invalid),
         )
@@ -176,6 +180,21 @@ def _identity_mode(source: Mapping[str, str], name: str) -> str:
     if mode not in identity.MODES:
         raise ConfigError(f"{name} must be one of {identity.MODES} (got {raw!r})")
     return mode
+
+
+def _read_budget(connect_ms: int, read_ms: int) -> int:
+    """The read timeout, lowered so connect plus read stays within MAX_FIREHOSE_MS."""
+    if connect_ms + read_ms <= MAX_FIREHOSE_MS:
+        return read_ms
+    lowered = MAX_FIREHOSE_MS - connect_ms
+    logger.warning(
+        "CERBERUS_FIREHOSE_CONNECT_MS + CERBERUS_FIREHOSE_READ_MS must be at most %d "
+        "(got %d); using CERBERUS_FIREHOSE_READ_MS=%d",
+        MAX_FIREHOSE_MS,
+        connect_ms + read_ms,
+        lowered,
+    )
+    return lowered
 
 
 def _log_level(source: Mapping[str, str]) -> str:

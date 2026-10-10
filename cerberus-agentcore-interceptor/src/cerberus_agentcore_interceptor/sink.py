@@ -9,10 +9,17 @@ from __future__ import annotations
 
 import logging
 import zlib
+from time import monotonic
 from typing import Any
 
 from .bounding import serialize
-from .metrics import REASON_OVERSIZE, REASON_SINK, REASON_THROTTLE, REASON_TIMEOUT
+from .metrics import (
+    REASON_DEADLINE,
+    REASON_OVERSIZE,
+    REASON_SINK,
+    REASON_THROTTLE,
+    REASON_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +52,17 @@ class FirehoseSink:
         digest = zlib.crc32(key.encode("utf-8"))
         return self._streams[digest % len(self._streams)]
 
-    def put(self, event: dict[str, Any], key: str) -> str:
-        """Write one event. Returns '' on success, or the reason it was dropped."""
+    def put(self, event: dict[str, Any], key: str, deadline: float | None = None) -> str:
+        """Write one event. Returns '' on success, or the reason it was dropped.
+
+        Skips the write unless a full connect and read would end by deadline, a
+        time.monotonic() value.
+        """
         record = serialize(event) + b"\n"
         if len(record) > MAX_RECORD_BYTES:
             return REASON_OVERSIZE
+        if not self._has_time(deadline):
+            return REASON_DEADLINE
 
         stream = self.stream_for(key)
         try:
@@ -59,6 +72,10 @@ class FirehoseSink:
             logger.warning("capture dropped: %s (%s)", reason, type(exc).__name__)
             return reason
         return ""
+
+    def _has_time(self, deadline: float | None) -> bool:
+        budget = (self._connect_ms + self._read_ms) / 1000
+        return deadline is None or monotonic() + budget <= deadline
 
     def _firehose(self) -> Any:
         if self._client is None:
