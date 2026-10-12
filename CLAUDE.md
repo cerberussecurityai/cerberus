@@ -32,7 +32,7 @@ help, because the history stays public.
 
 ## Project Overview
 
-Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend. Four Python packages and one Rust crate:
+Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend. Five Python packages and one Rust crate:
 
 ```
 cerberus/
@@ -54,6 +54,11 @@ cerberus/
 │   ├── deploy/                # K8s manifests + gateway-side env block
 │   ├── playground/            # local harness (aigw standalone + docker compose)
 │   └── tests/                 # golden OTLP span fixtures
+├── cerberus-agentcore-interceptor/ # Lambda interceptor for Amazon Bedrock AgentCore Gateway
+│   ├── pyproject.toml
+│   ├── Makefile               # incl. `make zip` (Lambda deployment package)
+│   ├── src/cerberus_agentcore_interceptor/
+│   └── tests/                 # golden interceptor-input fixtures
 ├── cerberus-flex-gateway/     # Rust → WASM custom policy for MuleSoft Flex Gateway
 │   ├── Cargo.toml
 │   ├── Makefile               # incl. `make bundle` (customer tarball)
@@ -86,6 +91,8 @@ The four Python packages are published independently to PyPI:
 - `cerberus-envoy-ai-gateway` — Envoy AI Gateway OTLP bridge (depends on cerberus-core); also ships as a container image (`make image`)
 
 `cerberus-flex-gateway` is **not** published to PyPI — it's a Rust crate that compiles to a `.wasm` artifact. Because custom Flex Gateway policies can't be shared across Anypoint orgs, distribution is **customer-side**: `make bundle` builds a prebuilt tarball (CI attaches it to a `flex-gateway-v*` GitHub Release), and each customer runs the bundled `install.sh --org-id <uuid>` to publish it into *their own* org's Exchange — no Rust required (see `cerberus-flex-gateway/INSTALL.md`). `make publish` / `make release` are the **maintainer** path into *our* org only (see `cerberus-flex-gateway/DEVELOPMENT.md`). It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode). See `cerberus-flex-gateway/README.md`.
+
+`cerberus-agentcore-interceptor` is not on PyPI either. It ships as a Lambda deployment zip (`make zip`) that the customer runs in their own account.
 
 ## Packages
 
@@ -174,6 +181,26 @@ make bundle          # assemble the customer distribution tarball into dist/
 **Source IPs are not PII (flex-gateway 0.6.0+):** `remote_addr` is the resolved client IP, normalized and sent as-is; the HMAC secret only ever touches the `Authorization` header and `action: hash` rules. Do not reintroduce IP hashing here. (The Python integrations still hash IPs when a secret is configured; that is being removed under the same decision.)
 
 **Parity guarantees:** the crate duplicates `SENSITIVE_KEYS` / `SENSITIVE_HEADERS` / sanitize/hash/normalize logic from `cerberus-core` (no shared crate; would force translating Python types). Drift is caught by `tests/parity_runner.rs` which consumes the same `../parity-fixtures/*.yaml` as `cerberus-django/tests/test_parity.py`. **If you change `SENSITIVE_KEYS` in `cerberus-core/src/cerberus_core/sanitization.py`, update the matching fixture file in the same PR.**
+
+### cerberus-agentcore-interceptor
+
+Lambda REQUEST interceptor for Amazon Bedrock AgentCore Gateway. It runs in the customer's account, maps each intercepted request to a CoreData-shaped event and writes it to a Firehose delivery stream there. The stream's HTTP endpoint delivers to Cerberus, so the function holds no Cerberus credential.
+
+**Key behavior:**
+- The gateway fails closed on interceptor failure, so every capture step runs under its own guard and the caller's request comes back unchanged whatever capture does
+- An `mcp`-shape output must echo the request body, since `{"mcp": {}}` replaces the payload. `{"http": {}}` is the true pass-through
+- Events carry the gateway's raw method and path plus `custom_data.agentcore`. The interceptor builds no `mcp://` or `llm://` endpoints
+- Bodies are sanitized with `cerberus-core` and bounded to fit one Firehose record. A capture that cannot be built or written is counted as a `CaptureDropped` EMF metric, by reason
+- Logs carry request ids and outcomes, never bodies, headers or exception messages
+
+**Build/test:**
+```bash
+cd cerberus-agentcore-interceptor
+make venv && make test    # pytest (golden interceptor inputs), ruff/black/mypy via make lint/typecheck
+make zip                  # Lambda deployment package in dist/; boto3 comes from the runtime
+```
+
+Configuration, IAM and the delivery stream settings are in `cerberus-agentcore-interceptor/README.md`.
 
 ## Development
 
