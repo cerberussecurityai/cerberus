@@ -156,7 +156,7 @@ def test_a_raising_parser_leaves_the_request_alone(sink, counted, monkeypatch):
 
     assert output.is_valid_output(result)
     assert sink.events == []
-    assert (metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER) in counted
+    assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER)]
 
 
 def test_a_raising_mapper_leaves_the_request_alone(sink, counted, monkeypatch):

@@ -38,6 +38,8 @@ if os.environ.get("AWS_LAMBDA_FUNCTION_NAME") and CONFIG.capturing:
 def handler(event: Any, context: Any = None) -> dict[str, Any]:
     """Capture one interception and return the request unchanged."""
     envelope = _parse(event)
+    if envelope is None:
+        return output.http_passthrough()
 
     if envelope.phase != REQUEST:
         # This version is a REQUEST interceptor. Attached at RESPONSE it captures
@@ -56,13 +58,13 @@ def handler(event: Any, context: Any = None) -> dict[str, Any]:
     return _output(envelope)
 
 
-def _parse(event: Any) -> Envelope:
+def _parse(event: Any) -> Envelope | None:
     try:
         return parse(event)
     except Exception:
         logger.exception("interceptor input could not be read")
         metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER)
-        return Envelope()
+        return None
 
 
 def _capture(envelope: Envelope, context: Any) -> None:
