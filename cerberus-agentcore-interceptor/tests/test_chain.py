@@ -4,6 +4,7 @@ import base64
 import copy
 import importlib
 import json
+import logging
 import socket
 import struct
 import threading
@@ -607,6 +608,23 @@ def test_the_error_text_names_nothing_a_customer_should_not_see(chained):
         invoke()
     assert "arn:" not in str(raised.value)
     assert "123456789012" not in str(raised.value)
+
+
+class UnreadableStream:
+    def read(self):
+        raise RuntimeError(f"Read timeout on endpoint URL: /functions/{CHAIN_ARN}/invocations")
+
+
+def test_an_answer_that_cannot_be_read_is_refused_without_naming_the_function(chained, caplog):
+    chained(raw=UnreadableStream())
+    with caplog.at_level(logging.WARNING, logger="cerberus_agentcore_interceptor"):
+        with pytest.raises(handler_mod.InterceptorError) as raised:
+            invoke()
+
+    assert "123456789012" not in str(raised.value)
+    assert "chained interceptor failed: RuntimeError" in caplog.text
+    assert "123456789012" not in caplog.text
+    assert chained.sink.events[0]["custom_data"]["agentcore"]["chain"] == {"outcome": "error"}
 
 
 def test_a_raising_parser_still_invokes_the_chain_once(chained, monkeypatch):

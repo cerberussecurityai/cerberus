@@ -16,7 +16,7 @@ from typing import Any
 
 from . import __version__, metrics, output
 from .bounding import CaptureDeadlineExceeded
-from .chain import ChainClient, ChainResult
+from .chain import OUTCOME_ERROR, ChainClient, ChainResult
 from .config import Config
 from .envelope import REQUEST, Envelope, GatewayContext, gateway_context, parse
 from .mapper import source_event
@@ -91,8 +91,8 @@ def _parse(event: Any) -> Envelope | None:
 def _gateway(context: Any) -> GatewayContext:
     try:
         return gateway_context(context)
-    except Exception:
-        logger.exception("client context could not be read")
+    except Exception as exc:
+        _log_failure("client context could not be read", exc)
         return GatewayContext()
 
 
@@ -108,10 +108,16 @@ def _chain(
         raise InterceptorError("interceptor is not configured for this gateway")
     try:
         deadline = _deadline(context)
-    except Exception:
-        logger.exception("remaining time could not be read")
+    except Exception as exc:
+        _log_failure("remaining time could not be read", exc)
         deadline = None
-    return CHAIN.invoke(event, context, envelope, deadline)
+    try:
+        return CHAIN.invoke(event, context, envelope, deadline)
+    except Exception as exc:
+        # Botocore's message can name the function's ARN. The request is
+        # refused like any other failed invoke.
+        _log_failure("chained interceptor failed", exc)
+        return ChainResult(OUTCOME_ERROR, note={"outcome": OUTCOME_ERROR})
 
 
 def _capture(
