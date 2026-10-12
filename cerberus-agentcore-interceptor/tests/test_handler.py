@@ -159,6 +159,21 @@ def test_a_raising_parser_leaves_the_request_alone(sink, counted, monkeypatch):
     assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER)]
 
 
+def test_a_failure_is_logged_without_its_message(sink, counted, monkeypatch, caplog):
+    quoted = "Bearer " + "caller-token"
+
+    def quoting(*args, **kwargs):
+        raise ValueError(quoted)
+
+    monkeypatch.setattr(handler_mod, "source_event", quoting)
+    with caplog.at_level(logging.ERROR, logger="cerberus_agentcore_interceptor"):
+        invoke("mcp-tools-call-lambda")
+
+    assert "capture failed: ValueError" in caplog.text
+    assert "in quoting" in caplog.text
+    assert quoted not in caplog.text
+
+
 def test_a_raising_mapper_leaves_the_request_alone(sink, counted, monkeypatch):
     monkeypatch.setattr(handler_mod, "source_event", _boom)
     case = load_case("mcp-tools-call-lambda")

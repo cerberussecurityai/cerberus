@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import traceback
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
@@ -61,8 +62,8 @@ def handler(event: Any, context: Any = None) -> dict[str, Any]:
 def _parse(event: Any) -> Envelope | None:
     try:
         return parse(event)
-    except Exception:
-        logger.exception("interceptor input could not be read")
+    except Exception as exc:
+        _log_failure("interceptor input could not be read", exc)
         metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER)
         return None
 
@@ -87,8 +88,8 @@ def _capture(envelope: Envelope, context: Any) -> None:
         metrics.count(metrics.CAPTURED)
     except CaptureDeadlineExceeded:
         metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, request_id=request_id)
-    except Exception:
-        logger.exception("capture failed")
+    except Exception as exc:
+        _log_failure("capture failed", exc)
         metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER)
 
 
@@ -103,6 +104,12 @@ def _deadline(context: Any) -> float | None:
 def _output(envelope: Envelope) -> dict[str, Any]:
     try:
         return output.passthrough(envelope)
-    except Exception:
-        logger.exception("output could not be built")
+    except Exception as exc:
+        _log_failure("output could not be built", exc)
         return output.http_passthrough()
+
+
+def _log_failure(what: str, exc: Exception) -> None:
+    """Log a failure with its type and stack but not its message, which can quote the request."""
+    stack = "".join(traceback.format_tb(exc.__traceback__)).rstrip()
+    logger.error("%s: %s\n%s", what, type(exc).__name__, stack)
