@@ -1,8 +1,9 @@
 """The Firehose sink: one PutRecord per interception.
 
 Capture is never worth latency on the caller's request, so the timeouts are short
-and botocore retries nothing. The one resend is for a pooled connection that was
-closed while idle: that says nothing about the stream, and costs one handshake.
+and botocore retries nothing. The one resend is for a connection closed under the
+request, most often a pooled one closed while idle. A connection that closed after
+the record landed gets it written twice.
 """
 
 from __future__ import annotations

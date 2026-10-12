@@ -237,6 +237,15 @@ def test_several_streams_are_picked_stably_by_key():
     assert first in streams
 
 
+@pytest.mark.parametrize(
+    ("gateway", "stream"),
+    [("gw-1", "b"), ("gw-2", "c"), ("gw-4", "a")],
+)
+def test_a_key_picks_the_same_stream_in_every_release(gateway, stream):
+    key = f"arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/{gateway}"
+    assert sink(streams=("a", "b", "c")).stream_for(key) == stream
+
+
 def test_one_stream_needs_no_hashing():
     assert sink().stream_for("anything") == "stream-a"
 
