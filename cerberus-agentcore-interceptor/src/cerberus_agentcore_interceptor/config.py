@@ -5,7 +5,8 @@ while init fails. So a capture setting never raises: an out-of-range number is
 clamped, and any other value that cannot be used turns capture off and is logged.
 A chain setting that cannot be used does fail init, because no request may be
 served without the interceptor it names. So does a chain setting given without
-CERBERUS_CHAIN_REQUEST_ARN, since the ARN may be missing by mistake.
+CERBERUS_CHAIN_REQUEST_ARN, since the ARN may be missing by mistake. An init
+error's text can reach callers, so one never repeats an ARN it was given.
 """
 
 from __future__ import annotations
@@ -112,9 +113,7 @@ class Config:
         chain_pass_headers = False
         if chain_arn:
             if not LAMBDA_ARN.match(chain_arn):
-                raise ConfigError(
-                    f"CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN ({chain_arn!r})"
-                )
+                raise ConfigError("CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN")
             gateway_ids = _gateway_ids(_list(source, "CERBERUS_GATEWAY_IDS"))
             if not gateway_ids:
                 raise ConfigError("CERBERUS_GATEWAY_IDS is required when chaining")
@@ -233,13 +232,13 @@ def _streams(source: Mapping[str, str], name: str) -> tuple[str, ...]:
 def _gateway_ids(items: tuple[str, ...]) -> tuple[str, ...]:
     """Gateway ids, each given as an id or a gateway ARN."""
     ids: list[str] = []
-    for item in items:
+    for position, item in enumerate(items, 1):
         arn = GATEWAY_ARN.match(item)
         gateway_id = arn.group("id") if arn else item
         # The handler compares the id after the gateway ARN's slash, so
         # anything else here could never match.
         if ":" in gateway_id or "/" in gateway_id:
-            raise ConfigError(f"CERBERUS_GATEWAY_IDS: {item!r} is not a gateway id or ARN")
+            raise ConfigError(f"CERBERUS_GATEWAY_IDS: entry {position} is not a gateway id or ARN")
         if gateway_id not in ids:
             ids.append(gateway_id)
     return tuple(ids)

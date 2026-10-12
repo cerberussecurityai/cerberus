@@ -420,16 +420,14 @@ def test_chaining_needs_gateway_ids_and_a_read_timeout():
         )
 
 
-def test_a_chain_target_must_be_a_function_arn():
-    with pytest.raises(ConfigError, match="Lambda function ARN"):
-        Config.from_env(
-            {
-                **MINIMAL,
-                "CERBERUS_CHAIN_REQUEST_ARN": "customer-auth",
-                "CERBERUS_GATEWAY_IDS": GATEWAY_ID,
-                "CERBERUS_CHAIN_READ_MS": "5000",
-            }
-        )
+@pytest.mark.parametrize(
+    "value", ["customer-auth", "arn:aws:lambda:us-west-2:123456789012:layer:customer-auth"]
+)
+def test_a_chain_target_must_be_a_function_arn(value):
+    with pytest.raises(ConfigError, match="Lambda function ARN") as raised:
+        Config.from_env(chain_env(CERBERUS_CHAIN_REQUEST_ARN=value))
+    assert value not in str(raised.value)
+    assert "123456789012" not in str(raised.value)
 
 
 def test_a_full_chain_configuration():
@@ -491,8 +489,9 @@ def test_a_gateway_arn_is_read_as_its_id():
     ],
 )
 def test_a_gateway_id_that_could_never_match_fails_init(value):
-    with pytest.raises(ConfigError, match="CERBERUS_GATEWAY_IDS"):
+    with pytest.raises(ConfigError, match="CERBERUS_GATEWAY_IDS: entry 2 ") as raised:
         Config.from_env(chain_env(f"{GATEWAY_ID},{value}"))
+    assert "123456789012" not in str(raised.value)
 
 
 # ============================================================================
