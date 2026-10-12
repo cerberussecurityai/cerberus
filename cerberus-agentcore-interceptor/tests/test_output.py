@@ -1,4 +1,5 @@
 import json
+import random
 from typing import Any
 
 import pytest
@@ -266,6 +267,38 @@ def test_an_escaped_backslash_does_not_hide_a_lone_surrogate(raw, expected):
 
     assert echoed(result)["params"]["m"] == expected
     runtime_encode(result)
+
+
+# JSON text pieces that make and unmake surrogate escapes when run together.
+SURROGATE_PIECES = [
+    "\\ud83c",
+    "\\udf89",
+    "\\uD800",
+    "\\uDC00",
+    "\\\\",
+    "u",
+    "ud83c",
+    "d83c",
+    "x",
+    "\u00e9",
+    '\\"',
+    "\ud83c",
+]
+
+
+def test_text_the_pre_filter_clears_always_encodes():
+    pick = random.Random(0)
+    checked = 0
+    while checked < 20_000:
+        key = "".join(pick.choices(SURROGATE_PIECES, k=pick.randint(0, 3)))
+        text = "".join(pick.choices(SURROGATE_PIECES, k=pick.randint(1, 8)))
+        raw = f'{{"{key}": "{text}"}}'
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        checked += 1
+        runtime_encode(encodable(value, raw))
 
 
 def test_text_that_only_looks_like_a_surrogate_escape_is_left_as_it_is():
