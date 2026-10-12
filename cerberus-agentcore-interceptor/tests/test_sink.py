@@ -299,6 +299,23 @@ def test_metric_lines_carry_the_level_lambda_filters_on(capsys, metric, reason, 
     assert abs(stamped - record["_aws"]["Timestamp"]) <= 1
 
 
+def test_a_field_cannot_replace_what_the_metric_line_needs(capsys):
+    metrics.count(
+        metrics.CAPTURE_DROPPED,
+        metrics.REASON_SINK,
+        level="INFO",
+        Reason="other",
+        CaptureDropped=5,
+        _aws={},
+    )
+    record = json.loads(capsys.readouterr().out.strip())
+
+    assert record["level"] == "WARN"
+    assert record["Reason"] == metrics.REASON_SINK
+    assert record[metrics.CAPTURE_DROPPED] == 1
+    assert record["_aws"]["CloudWatchMetrics"][0]["Namespace"] == metrics.NAMESPACE
+
+
 def test_metrics_never_raise(monkeypatch, capsys):
     monkeypatch.setattr(json, "dumps", _boom)
     metrics.count(metrics.CAPTURED)

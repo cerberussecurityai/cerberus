@@ -34,6 +34,7 @@ def count(metric: str, reason: str = "", **fields: Any) -> None:
     try:
         now = datetime.now(UTC)
         record: dict[str, Any] = {
+            **fields,
             "_aws": {
                 "Timestamp": int(now.timestamp() * 1000),
                 "CloudWatchMetrics": [
@@ -53,7 +54,7 @@ def count(metric: str, reason: str = "", **fields: Any) -> None:
         }
         if reason:
             record["Reason"] = reason
-        record.update(fields)
-        print(json.dumps(record, default=str), file=sys.stdout, flush=False)
+        # A line still buffered when the function times out is never logged.
+        print(json.dumps(record, default=str), file=sys.stdout, flush=True)
     except Exception:
         pass
