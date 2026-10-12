@@ -160,10 +160,13 @@ A number out of range is clamped to the nearest bound, and an unknown log level
 becomes `INFO`, each with a warning in the function's log. Any other value that
 cannot be used turns capture off rather than failing the function: it logs an
 `ERROR` naming the variable, passes every request through unchanged, and counts
-`CaptureDropped` with reason `config_invalid`. With a chain set, a chaining
-setting that cannot be used does fail the function at init, since no request may
-be served without the chained interceptor; without one, chaining settings are
-ignored. Lambda caps all environment variables at 4 KB together.
+`CaptureDropped` with reason `config_invalid`. A chaining setting that cannot be
+used does fail the function at init, since no request may be served without the
+chained interceptor. So does any `CERBERUS_CHAIN_*` or `CERBERUS_GATEWAY_IDS`
+value set without `CERBERUS_CHAIN_REQUEST_ARN`: the function would otherwise hold
+the replaced interceptor's slot without running it, so the gateway refuses every
+request until the ARN is set or the other values are removed. Lambda caps all
+environment variables at 4 KB together.
 
 ## Deployment
 

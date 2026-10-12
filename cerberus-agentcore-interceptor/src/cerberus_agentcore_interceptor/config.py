@@ -3,9 +3,9 @@
 Lambda first runs init on a live request, and the gateway refuses every request
 while init fails. So a capture setting never raises: an out-of-range number is
 clamped, and any other value that cannot be used turns capture off and is logged.
-With a chain set, a chain setting that cannot be used does fail init, because
-no request may be served without the interceptor it names. Without one, chain
-settings are not read.
+A chain setting that cannot be used does fail init, because no request may be
+served without the interceptor it names. So does a chain setting given without
+CERBERUS_CHAIN_REQUEST_ARN, since the ARN may be missing by mistake.
 """
 
 from __future__ import annotations
@@ -131,6 +131,10 @@ class Config:
             if not _raw(source, "CERBERUS_CHAIN_PASS_HEADERS"):
                 raise ConfigError("CERBERUS_CHAIN_PASS_HEADERS is required when chaining")
             chain_pass_headers = _bool(source, "CERBERUS_CHAIN_PASS_HEADERS", False)
+        elif stray := _chain_settings(source):
+            # Without the chain this function would hold the replaced interceptor's
+            # slot and never run it.
+            raise ConfigError(f"{', '.join(stray)} set without CERBERUS_CHAIN_REQUEST_ARN")
 
         streams: tuple[str, ...] = capture("CERBERUS_FIREHOSE_STREAM", (), _streams)
         mode = capture("CERBERUS_IDENTITY", identity.NONE, _identity_mode)
@@ -177,6 +181,17 @@ class Config:
             log_level=_log_level(source),
             invalid=tuple(invalid),
         )
+
+
+def _chain_settings(source: Mapping[str, str]) -> list[str]:
+    """The chain settings given a value, besides CERBERUS_CHAIN_REQUEST_ARN."""
+    return sorted(
+        name
+        for name in source
+        if (name.startswith("CERBERUS_CHAIN_") or name == "CERBERUS_GATEWAY_IDS")
+        and name != "CERBERUS_CHAIN_REQUEST_ARN"
+        and _raw(source, name)
+    )
 
 
 def _raw(source: Mapping[str, str], name: str) -> str:

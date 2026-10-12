@@ -448,17 +448,31 @@ def test_chaining_needs_an_explicit_pass_headers(raw):
         Config.from_env(chain_env(CERBERUS_CHAIN_PASS_HEADERS=raw))
 
 
-def test_chain_settings_are_ignored_without_a_chain():
-    config = Config.from_env(
-        {
-            **MINIMAL,
-            "CERBERUS_CHAIN_READ_MS": "3000ms",
-            "CERBERUS_CHAIN_PASS_HEADERS": "maybe",
-            "CERBERUS_GATEWAY_IDS": "gateway/not-an-id",
-        }
-    )
+@pytest.mark.parametrize(
+    "setting",
+    [
+        {"CERBERUS_GATEWAY_IDS": GATEWAY_ID},
+        {"CERBERUS_CHAIN_READ_MS": "5000"},
+        {"CERBERUS_CHAIN_PASS_HEADERS": "false"},
+        {"CERBERUS_CHAIN_ARN": CHAIN_ARN},
+    ],
+)
+def test_a_chain_setting_without_the_chain_arn_fails_init(setting):
+    with pytest.raises(ConfigError, match="set without CERBERUS_CHAIN_REQUEST_ARN"):
+        Config.from_env({**MINIMAL, **setting})
+
+
+def test_a_misspelled_chain_arn_fails_init_without_naming_the_function():
+    env = chain_env()
+    env["CERBERUS_CHAIN_REQUST_ARN"] = env.pop("CERBERUS_CHAIN_REQUEST_ARN")
+    with pytest.raises(ConfigError) as raised:
+        Config.from_env(env)
+    assert "123456789012" not in str(raised.value)
+
+
+def test_empty_chain_settings_do_not_count_as_set():
+    config = Config.from_env({**MINIMAL, "CERBERUS_GATEWAY_IDS": " ", "CERBERUS_CHAIN_READ_MS": ""})
     assert config.chain_arn == ""
-    assert config.chain_read_ms == 0
     assert config.capturing
 
 
@@ -744,6 +758,20 @@ def test_the_module_builds_a_chain_client_from_the_environment(monkeypatch):
         monkeypatch.setattr(reloaded, "SINK", RecordingSink())
         reloaded.handler(load_case("mcp-tools-call-lambda")["input"], context())
         assert json.loads(fake.calls[0]["Payload"])["mcp"]["gatewayRequest"]["headers"]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(handler_mod)
+
+
+def test_the_module_refuses_to_load_with_a_chain_but_no_arn(monkeypatch):
+    monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "s")
+    monkeypatch.delenv("CERBERUS_CHAIN_REQUEST_ARN", raising=False)
+    monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
+    monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
+    monkeypatch.setenv("CERBERUS_CHAIN_PASS_HEADERS", "true")
+    try:
+        with pytest.raises(ConfigError):
+            importlib.reload(handler_mod)
     finally:
         monkeypatch.undo()
         importlib.reload(handler_mod)
