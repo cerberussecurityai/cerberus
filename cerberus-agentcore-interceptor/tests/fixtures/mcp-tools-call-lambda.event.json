@@ -1,0 +1,48 @@
+{
+  "body": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "arguments": {
+        "canary": "target-01-mcptoolscallla-f4e0d13a41",
+        "message": "envelope"
+      },
+      "name": "echo___echo"
+    }
+  },
+  "custom_data": {
+    "agentcore": {
+      "account_id": "123456789012",
+      "body": {
+        "state": "captured"
+      },
+      "gateway_id": "example-gateway-abcdefghij",
+      "identity": {
+        "claim": "sub",
+        "client_id": "exampleclientid0000000000",
+        "mode": "jwt",
+        "username": "example-user"
+      },
+      "kind": "mcp",
+      "region": "us-west-2",
+      "request_id": "request-id-01",
+      "version": "0.1.0"
+    },
+    "integration": "agentcore-gateway"
+  },
+  "endpoint": "/mcp",
+  "event_id": "request-id-01",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "python-requests/2.34.2",
+    "X-Amzn-Trace-Id": "Root=1-6aaf7c07-2d910ffa6a37a0de40f2ef0b"
+  },
+  "host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+  "method": "POST",
+  "remote_addr": "192.0.2.10",
+  "scheme": true,
+  "timestamp": "2026-09-20T06:24:30.123456+00:00",
+  "user_agent": "python-requests/2.34.2",
+  "user_id": "11111111-2222-3333-4444-555555555555"
+}
