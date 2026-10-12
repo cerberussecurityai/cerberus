@@ -32,7 +32,7 @@ ZIP := dist/cerberus-agentcore-interceptor.zip
 zip:
 	rm -rf build/zip dist
 	mkdir -p build/zip dist
-	uv pip install --target build/zip --no-deps . ../cerberus-core
+	uv pip install --target build/zip --no-deps ./ ../cerberus-core
 	find build/zip -name '__pycache__' -type d -prune -exec rm -rf {} +
 	find build/zip -name '*.dist-info' -type d -prune -exec rm -rf {} +
 	rm -f build/zip/.lock
