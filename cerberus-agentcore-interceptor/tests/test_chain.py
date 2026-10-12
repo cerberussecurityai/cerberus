@@ -366,6 +366,29 @@ def test_without_pass_headers_the_chained_function_gets_no_headers(name):
     assert event[shape]["gatewayRequest"]["headers"]
 
 
+def test_without_pass_headers_no_part_of_the_shape_keeps_its_headers():
+    chain, fake = client(mcp_output({}))
+    body = {"jsonrpc": "2.0", "id": 1, "params": {"arguments": {"headers": {"x-kept": "1"}}}}
+    event = {
+        "interceptorInputVersion": "2.0",
+        "mcp": {
+            "headers": {"Authorization": "Bearer shape"},
+            "gatewayRequest": {"headers": {"Authorization": "Bearer request"}, "body": body},
+            "rawGatewayRequest": {"headers": {"Cookie": "session=raw"}, "body": json.dumps(body)},
+            "gatewayResponse": None,
+        },
+    }
+    chain.invoke(event, context(), parsed())
+
+    payload = fake.calls[0]["Payload"]
+    assert b"Bearer" not in payload
+    assert b"session=raw" not in payload
+    forwarded = json.loads(payload)["mcp"]
+    assert forwarded["gatewayRequest"]["body"] == body
+    assert forwarded["rawGatewayRequest"]["body"] == json.dumps(body)
+    assert forwarded["gatewayResponse"] is None
+
+
 # ============================================================================
 # Configuration
 # ============================================================================
