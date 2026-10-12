@@ -510,6 +510,18 @@ def test_the_transformed_body_is_what_gets_captured(chained):
     assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "transformed"}
 
 
+def test_a_body_transformed_to_null_is_not_captured_as_the_original(chained):
+    chained(
+        {"interceptorOutputVersion": "1.0", "mcp": {"transformedGatewayRequest": {"body": None}}}
+    )
+    invoke()
+
+    event = chained.sink.events[0]
+    assert "body" not in event
+    assert event["custom_data"]["agentcore"]["body"] == {"state": "omitted", "reason": "not_object"}
+    assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "transformed"}
+
+
 def http_output(body):
     return {
         "interceptorOutputVersion": "1.0",

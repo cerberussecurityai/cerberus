@@ -55,6 +55,10 @@ class ChainResult:
     def failed(self) -> bool:
         return self.outcome == OUTCOME_ERROR
 
+    @property
+    def transformed(self) -> bool:
+        return self.outcome == OUTCOME_TRANSFORMED
+
 
 class ChainClient:
     """One invoke of the chained function per interception."""

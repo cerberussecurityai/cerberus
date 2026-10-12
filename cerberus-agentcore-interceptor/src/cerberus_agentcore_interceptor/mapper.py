@@ -41,6 +41,9 @@ from .sanitize import DEFAULT_CAPTURE_HEADERS, capture_headers, sanitize_body, s
 
 INTEGRATION = "agentcore-gateway"
 
+# The body_override that captures the body as the caller sent it.
+ORIGINAL_BODY: Any = object()
+
 MAX_EVENT_ID_CHARS = 255
 MAX_ENDPOINT_CHARS = 500
 MAX_USER_ID_CHARS = 255
@@ -67,7 +70,7 @@ def source_event(
     options: MapperOptions,
     timestamp: datetime,
     chain: dict[str, Any] | None = None,
-    body_override: Any = None,
+    body_override: Any = ORIGINAL_BODY,
     deadline: float | None = None,
 ) -> dict[str, Any] | None:
     """Build the event for one interception. None when it could not be bounded.
@@ -125,7 +128,8 @@ def _body(
     if not options.capture_bodies:
         return None, {"state": STATE_DISABLED}, None
     # With a chain, the transformed body is the one that reaches the target.
-    if override is not None:
+    overridden = override is not ORIGINAL_BODY
+    if overridden:
         body, reason = _override_body(envelope, override)
     else:
         body, reason = request_body(envelope)
@@ -134,7 +138,7 @@ def _body(
 
     pruned = None
     # The size as sent is the original body's, which says nothing of an override.
-    sent = None if override is not None else request_body_size(envelope)
+    sent = None if overridden else request_body_size(envelope)
     if sent is None or sent > PRUNE_FACTOR * options.max_event_bytes:
         body, pruned = prune(body, options.max_event_bytes)
         if body is None:

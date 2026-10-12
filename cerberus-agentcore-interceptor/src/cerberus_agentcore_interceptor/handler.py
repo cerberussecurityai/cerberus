@@ -19,7 +19,7 @@ from .bounding import CaptureDeadlineExceeded
 from .chain import OUTCOME_ERROR, ChainClient, ChainResult
 from .config import Config
 from .envelope import REQUEST, Envelope, GatewayContext, gateway_context, parse
-from .mapper import source_event
+from .mapper import ORIGINAL_BODY, source_event
 from .sink import FirehoseSink
 
 # What capture leaves of the function's timeout for answering the gateway.
@@ -135,7 +135,7 @@ def _capture(
             OPTIONS,
             datetime.now(UTC),
             chain=chain.note if chain is not None else None,
-            body_override=chain.body if chain is not None else None,
+            body_override=chain.body if chain is not None and chain.transformed else ORIGINAL_BODY,
             deadline=deadline,
         )
         if event is None:
