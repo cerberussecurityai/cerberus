@@ -132,10 +132,11 @@ was not configured to see. With `true`, set `passRequestHeaders: true` on this
 function's own interceptor entry as well, whatever the identity mode, or the
 chained function receives no headers.
 
-What their interceptor did travels with the event: `passed`, `transformed`
-(the transformed body is what gets captured, since it is what reaches the
-target), `short_circuit` with its status code (a refused request is still a
-captured attempt), `invalid_output`, or `error`.
+What their interceptor did travels with the event: `passed` (the body is
+unchanged; headers are not compared), `transformed` (the transformed body is
+what gets captured, since it is what reaches the target), `short_circuit` with
+its status code (a refused request is still a captured attempt),
+`invalid_output`, or `error`.
 
 ## Configuration
 

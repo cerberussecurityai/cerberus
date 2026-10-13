@@ -187,7 +187,8 @@ make bundle          # assemble the customer distribution tarball into dist/
 Lambda REQUEST interceptor for Amazon Bedrock AgentCore Gateway. It runs in the customer's account, maps each intercepted request to a CoreData-shaped event and writes it to a Firehose delivery stream there. The stream's HTTP endpoint delivers to Cerberus, so the function holds no Cerberus credential.
 
 **Key behavior:**
-- The gateway fails closed on interceptor failure, so every capture step runs under its own guard and the caller's request comes back unchanged whatever capture does
+- The gateway fails closed on interceptor failure, so every capture step runs under its own guard and nothing capture does changes what the gateway gets back
+- `CERBERUS_CHAIN_REQUEST_ARN` chains to the customer's own REQUEST interceptor, whose answer is returned as given. A request that cannot get that answer is refused, never served without it
 - An `mcp`-shape output must echo the request body, since `{"mcp": {}}` replaces the payload. `{"http": {}}` is the true pass-through
 - Events carry the gateway's raw method and path plus `custom_data.agentcore`. The interceptor builds no `mcp://` or `llm://` endpoints
 - Bodies are sanitized with `cerberus-core` and bounded to fit one Firehose record. A capture that cannot be built or written is counted as a `CaptureDropped` EMF metric, by reason
