@@ -219,27 +219,18 @@ def _serialized(event: Any) -> bytes:
         return json.dumps(event, separators=(",", ":")).encode("utf-8")
 
 
-def _without_headers(event: Any) -> Any:
-    """A copy of event with headers taken out of each shape and each object in it.
+def _without_headers(value: Any, levels: int = 3) -> Any:
+    """A copy of an event with no headers in it, its shapes, or any part of a shape.
 
     The chain also runs on input versions we do not know, which may carry headers
-    beside gatewayRequest. A body sits a level deeper and keeps its own keys.
+    beside the shapes or beside gatewayRequest. A body sits a level deeper and keeps
+    its own keys.
     """
-    if not isinstance(event, dict):
-        return event
-    copy = dict(event)
-    for key, shape in event.items():
-        if isinstance(shape, dict):
-            copy[key] = {
-                name: _headerless(part) for name, part in shape.items() if name != "headers"
-            }
-    return copy
-
-
-def _headerless(part: Any) -> Any:
-    if not isinstance(part, dict) or "headers" not in part:
-        return part
-    return {name: value for name, value in part.items() if name != "headers"}
+    if not isinstance(value, dict) or levels == 0:
+        return value
+    return {
+        key: _without_headers(part, levels - 1) for key, part in value.items() if key != "headers"
+    }
 
 
 def _client_context(context: Any) -> str:
