@@ -125,8 +125,7 @@ def test_a_function_error_is_an_error_even_behind_a_200():
 
 
 def test_an_unreadable_payload_is_an_invalid_output():
-    chain, fake = client(None)
-    fake._payload = None
+    chain, _ = client(raw=b"not json")
     result = chain.invoke({}, context(), parsed())
     assert result.outcome == chain_mod.OUTCOME_INVALID_OUTPUT
 
