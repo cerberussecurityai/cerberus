@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import socket
 import struct
@@ -256,10 +257,14 @@ def test_keys_spread_across_streams():
     assert len(picked) > 1
 
 
-def test_prepare_does_not_raise_without_credentials(monkeypatch):
+def test_prepare_does_not_raise_without_credentials(monkeypatch, caplog):
     broken = FirehoseSink(("s",), 250, 500)
     monkeypatch.setattr(broken, "_firehose", _boom)
-    broken.prepare()
+    with caplog.at_level(logging.WARNING, logger="cerberus_agentcore_interceptor"):
+        broken.prepare()
+
+    assert "firehose client not ready: RuntimeError" in caplog.text
+    assert "no credentials" not in caplog.text
 
 
 def _boom(*args, **kwargs):

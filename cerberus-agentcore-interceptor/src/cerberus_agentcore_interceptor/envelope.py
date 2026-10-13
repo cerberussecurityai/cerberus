@@ -147,7 +147,7 @@ def request_body(envelope: Envelope) -> tuple[Any, str]:
         return None, BODY_EMPTY
     if envelope.kind == MCP:
         return _mcp_body(envelope)
-    return _http_body(envelope)
+    return http_body((envelope.request or {}).get("body"))
 
 
 def request_body_size(envelope: Envelope) -> int | None:
@@ -176,8 +176,8 @@ def _mcp_body(envelope: Envelope) -> tuple[Any, str]:
     return None, BODY_NOT_OBJECT
 
 
-def _http_body(envelope: Envelope) -> tuple[Any, str]:
-    body = (envelope.request or {}).get("body")
+def http_body(body: Any) -> tuple[Any, str]:
+    """An http-shape body, base64-encoded JSON text, as a dict, or (None, reason)."""
     if isinstance(body, dict):
         return body, ""
     if not isinstance(body, str) or not body:

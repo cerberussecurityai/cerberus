@@ -1,8 +1,12 @@
 """Environment configuration, read once per execution environment.
 
 Lambda first runs init on a live request, and the gateway refuses every request
-while init fails. So reading never raises: an out-of-range number is clamped, and
-any other capture setting that cannot be used turns capture off and is logged.
+while init fails. So a capture setting never raises: an out-of-range number is
+clamped, and any other value that cannot be used turns capture off and is logged.
+A chain setting that cannot be used does fail init, because no request may be
+served without the interceptor it names. So does a chain setting given without
+CERBERUS_CHAIN_REQUEST_ARN, since the ARN may be missing by mistake. An init
+error's text can reach callers, so one never repeats an ARN it was given.
 """
 
 from __future__ import annotations
@@ -43,6 +47,10 @@ MAX_STREAMS = 16
 STREAM_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 STREAM_ARN = re.compile(r"^arn:aws[a-z-]*:firehose:[a-z0-9-]*:\d{12}:deliverystream/(?P<name>.+)$")
 
+MAX_GATEWAY_IDS = 64
+GATEWAY_ARN = re.compile(r"^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]*:\d{12}:gateway/(?P<id>.+)$")
+LAMBDA_ARN = re.compile(r"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:[^\s]+$")
+
 
 class ConfigError(ValueError):
     """Raised when a CERBERUS_* value is missing or unusable."""
@@ -61,6 +69,10 @@ class Config:
     max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES
     firehose_connect_ms: int = DEFAULT_FIREHOSE_CONNECT_MS
     firehose_read_ms: int = DEFAULT_FIREHOSE_READ_MS
+    chain_arn: str = ""
+    gateway_ids: tuple[str, ...] = ()
+    chain_read_ms: int = 0
+    chain_pass_headers: bool = False
     log_level: str = DEFAULT_LOG_LEVEL
     # The capture settings that could not be used. Capture is off while any are.
     invalid: tuple[str, ...] = ()
@@ -94,6 +106,34 @@ class Config:
                 logger.error("%s; capture is off", exc)
                 invalid.append(name)
                 return fallback
+
+        chain_arn = _raw(source, "CERBERUS_CHAIN_REQUEST_ARN")
+        gateway_ids: tuple[str, ...] = ()
+        chain_read_ms = 0
+        chain_pass_headers = False
+        if chain_arn:
+            if not LAMBDA_ARN.match(chain_arn):
+                raise ConfigError("CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN")
+            gateway_ids = _gateway_ids(_list(source, "CERBERUS_GATEWAY_IDS"))
+            if not gateway_ids:
+                raise ConfigError("CERBERUS_GATEWAY_IDS is required when chaining")
+            if len(gateway_ids) > MAX_GATEWAY_IDS:
+                raise ConfigError(
+                    f"CERBERUS_GATEWAY_IDS accepts at most {MAX_GATEWAY_IDS} ids "
+                    f"(got {len(gateway_ids)})"
+                )
+            chain_read_ms = _int(source, "CERBERUS_CHAIN_READ_MS", 0, 0, 300000)
+            if not chain_read_ms:
+                raise ConfigError("CERBERUS_CHAIN_READ_MS is required when chaining")
+            # No default: either one would differ from what some chained
+            # function was configured to receive.
+            if not _raw(source, "CERBERUS_CHAIN_PASS_HEADERS"):
+                raise ConfigError("CERBERUS_CHAIN_PASS_HEADERS is required when chaining")
+            chain_pass_headers = _bool(source, "CERBERUS_CHAIN_PASS_HEADERS", False)
+        elif stray := _chain_settings(source):
+            # Without the chain this function would hold the replaced interceptor's
+            # slot and never run it.
+            raise ConfigError(f"{', '.join(stray)} set without CERBERUS_CHAIN_REQUEST_ARN")
 
         streams: tuple[str, ...] = capture("CERBERUS_FIREHOSE_STREAM", (), _streams)
         mode = capture("CERBERUS_IDENTITY", identity.NONE, _identity_mode)
@@ -133,9 +173,24 @@ class Config:
             max_event_bytes=max_event_bytes,
             firehose_connect_ms=connect_ms,
             firehose_read_ms=_read_budget(connect_ms, read_ms),
+            chain_arn=chain_arn,
+            gateway_ids=gateway_ids,
+            chain_read_ms=chain_read_ms,
+            chain_pass_headers=chain_pass_headers,
             log_level=_log_level(source),
             invalid=tuple(invalid),
         )
+
+
+def _chain_settings(source: Mapping[str, str]) -> list[str]:
+    """The chain settings given a value, besides CERBERUS_CHAIN_REQUEST_ARN."""
+    return sorted(
+        name
+        for name in source
+        if (name.startswith("CERBERUS_CHAIN_") or name == "CERBERUS_GATEWAY_IDS")
+        and name != "CERBERUS_CHAIN_REQUEST_ARN"
+        and _raw(source, name)
+    )
 
 
 def _raw(source: Mapping[str, str], name: str) -> str:
@@ -172,6 +227,21 @@ def _streams(source: Mapping[str, str], name: str) -> tuple[str, ...]:
     if len(streams) > MAX_STREAMS:
         raise ConfigError(f"{name} accepts at most {MAX_STREAMS} streams (got {len(streams)})")
     return tuple(streams)
+
+
+def _gateway_ids(items: tuple[str, ...]) -> tuple[str, ...]:
+    """Gateway ids, each given as an id or a gateway ARN."""
+    ids: list[str] = []
+    for position, item in enumerate(items, 1):
+        arn = GATEWAY_ARN.match(item)
+        gateway_id = arn.group("id") if arn else item
+        # The handler compares the id after the gateway ARN's slash, so
+        # anything else here could never match.
+        if ":" in gateway_id or "/" in gateway_id:
+            raise ConfigError(f"CERBERUS_GATEWAY_IDS: entry {position} is not a gateway id or ARN")
+        if gateway_id not in ids:
+            ids.append(gateway_id)
+    return tuple(ids)
 
 
 def _identity_mode(source: Mapping[str, str], name: str) -> str:

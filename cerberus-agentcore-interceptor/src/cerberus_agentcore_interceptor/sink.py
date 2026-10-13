@@ -44,7 +44,7 @@ class FirehoseSink:
         try:
             self._firehose()
         except Exception as exc:
-            logger.warning("firehose client not ready: %s", exc)
+            logger.warning("firehose client not ready: %s", type(exc).__name__)
 
     def stream_for(self, key: str) -> str:
         """Pick a stream by key, stably across processes."""

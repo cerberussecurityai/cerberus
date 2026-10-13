@@ -16,9 +16,10 @@ from typing import Any
 
 from . import __version__, metrics, output
 from .bounding import CaptureDeadlineExceeded
+from .chain import OUTCOME_ERROR, ChainClient, ChainResult
 from .config import Config
-from .envelope import REQUEST, Envelope, gateway_context, parse
-from .mapper import source_event
+from .envelope import REQUEST, Envelope, GatewayContext, gateway_context, parse
+from .mapper import ORIGINAL_BODY, source_event
 from .sink import FirehoseSink
 
 # What capture leaves of the function's timeout for answering the gateway.
@@ -27,36 +28,55 @@ ANSWER_MARGIN_MS = 500
 CONFIG = Config.from_env()
 SINK = FirehoseSink(CONFIG.streams, CONFIG.firehose_connect_ms, CONFIG.firehose_read_ms)
 OPTIONS = CONFIG.mapper_options(__version__)
+CHAIN = (
+    ChainClient(CONFIG.chain_arn, CONFIG.chain_read_ms, pass_headers=CONFIG.chain_pass_headers)
+    if CONFIG.chain_arn
+    else None
+)
 
 # The Lambda runtime owns the root logger's handler and its request-id prefix.
 logger = logging.getLogger("cerberus_agentcore_interceptor")
 logger.setLevel(CONFIG.log_level)
 
-if os.environ.get("AWS_LAMBDA_FUNCTION_NAME") and CONFIG.capturing:
-    SINK.prepare()
+if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    if CONFIG.capturing:
+        SINK.prepare()
+    if CHAIN is not None:
+        CHAIN.prepare()
+
+
+class InterceptorError(RuntimeError):
+    """Raised when the request must not be served. Its text can reach callers."""
 
 
 def handler(event: Any, context: Any = None) -> dict[str, Any]:
-    """Capture one interception and return the request unchanged."""
+    """Capture one interception and return the caller's payload unchanged."""
     envelope = _parse(event)
+    gateway = _gateway(context)
     if envelope is None:
-        return output.http_passthrough()
+        # Nothing to capture, but a chained interceptor still has to run.
+        unread = Envelope()
+        return _answer(unread, _chain(event, context, unread, gateway))
 
     if envelope.phase != REQUEST:
         # This version is a REQUEST interceptor. Attached at RESPONSE it captures
-        # nothing and hands the response straight back.
+        # nothing and hands the response straight back, unless it chains: then
+        # the slot may have held their interceptor, which we would be skipping.
         metrics.count(metrics.UNEXPECTED_PHASE)
+        if CHAIN is not None:
+            raise InterceptorError("interceptor is not configured for the response phase")
         return _output(envelope)
 
-    if not envelope.supported_version:
+    chain = _chain(event, context, envelope, gateway)
+
+    if envelope.supported_version:
+        if not envelope.kind:
+            metrics.count(metrics.UNKNOWN_SHAPE, shape=envelope.shape_key)
+        _capture(envelope, gateway, chain, context)
+    else:
         metrics.count(metrics.UNKNOWN_INPUT_VERSION, version=envelope.version)
-        return _output(envelope)
 
-    if not envelope.kind:
-        metrics.count(metrics.UNKNOWN_SHAPE, shape=envelope.shape_key)
-
-    _capture(envelope, context)
-    return _output(envelope)
+    return _answer(envelope, chain)
 
 
 def _parse(event: Any) -> Envelope | None:
@@ -68,16 +88,56 @@ def _parse(event: Any) -> Envelope | None:
         return None
 
 
-def _capture(envelope: Envelope, context: Any) -> None:
+def _gateway(context: Any) -> GatewayContext:
+    try:
+        return gateway_context(context)
+    except Exception as exc:
+        _log_failure("client context could not be read", exc)
+        return GatewayContext()
+
+
+def _chain(
+    event: Any, context: Any, envelope: Envelope, gateway: GatewayContext
+) -> ChainResult | None:
+    if CHAIN is None:
+        return None
+    if gateway.gateway_id not in CONFIG.gateway_ids:
+        # An unlisted gateway may have had its own interceptor before us, and we
+        # cannot serve its request without running whatever that was.
+        logger.error("gateway %r is not in CERBERUS_GATEWAY_IDS", gateway.gateway_id)
+        raise InterceptorError("interceptor is not configured for this gateway")
+    try:
+        deadline = _deadline(context)
+    except Exception as exc:
+        _log_failure("remaining time could not be read", exc)
+        deadline = None
+    try:
+        return CHAIN.invoke(event, context, envelope, deadline)
+    except Exception as exc:
+        # Botocore's message can name the function's ARN. The request is
+        # refused like any other failed invoke.
+        _log_failure("chained interceptor failed", exc)
+        return ChainResult(OUTCOME_ERROR, note={"outcome": OUTCOME_ERROR})
+
+
+def _capture(
+    envelope: Envelope, gateway: GatewayContext, chain: ChainResult | None, context: Any
+) -> None:
     if not CONFIG.capturing:
         metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)
         return
-    request_id = ""
+    request_id = gateway.request_id
     try:
         deadline = _deadline(context)
-        gateway = gateway_context(context)
-        request_id = gateway.request_id
-        event = source_event(envelope, gateway, OPTIONS, datetime.now(UTC), deadline=deadline)
+        event = source_event(
+            envelope,
+            gateway,
+            OPTIONS,
+            datetime.now(UTC),
+            chain=chain.note if chain is not None else None,
+            body_override=chain.body if chain is not None and chain.transformed else ORIGINAL_BODY,
+            deadline=deadline,
+        )
         if event is None:
             metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_OVERSIZE)
             return
@@ -99,6 +159,18 @@ def _deadline(context: Any) -> float | None:
     if remaining is None:
         return None
     return monotonic() + (float(remaining()) - ANSWER_MARGIN_MS) / 1000
+
+
+def _answer(envelope: Envelope, chain: ChainResult | None) -> dict[str, Any]:
+    if chain is None:
+        return _output(envelope)
+    if chain.failed:
+        raise InterceptorError("upstream interceptor did not answer")
+    if not isinstance(chain.output, dict):
+        # The gateway refuses an answer that is not an object. Our own
+        # pass-through in its place would serve what their function did not.
+        raise InterceptorError("upstream interceptor did not answer with an object")
+    return chain.output
 
 
 def _output(envelope: Envelope) -> dict[str, Any]:

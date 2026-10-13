@@ -28,15 +28,21 @@ from .bounding import (
 )
 from .envelope import (
     BODY_EMPTY,
+    BODY_NOT_OBJECT,
+    MCP,
     Envelope,
     GatewayContext,
     header,
+    http_body,
     request_body,
     request_body_size,
 )
 from .sanitize import DEFAULT_CAPTURE_HEADERS, capture_headers, sanitize_body, session_id
 
 INTEGRATION = "agentcore-gateway"
+
+# The body_override that captures the body as the caller sent it.
+ORIGINAL_BODY: Any = object()
 
 MAX_EVENT_ID_CHARS = 255
 MAX_ENDPOINT_CHARS = 500
@@ -64,6 +70,7 @@ def source_event(
     options: MapperOptions,
     timestamp: datetime,
     chain: dict[str, Any] | None = None,
+    body_override: Any = ORIGINAL_BODY,
     deadline: float | None = None,
 ) -> dict[str, Any] | None:
     """Build the event for one interception. None when it could not be bounded.
@@ -72,7 +79,7 @@ def source_event(
     """
     headers = envelope.headers
     who = identity_mod.resolve(options.identity_mode, headers, options.user_id_claim)
-    body, body_note, pruned = _body(envelope, options, deadline)
+    body, body_note, pruned = _body(envelope, options, body_override, deadline)
 
     event: dict[str, Any] = {
         "event_id": clip_text(context.request_id, MAX_EVENT_ID_CHARS),
@@ -115,23 +122,38 @@ def source_event(
 
 
 def _body(
-    envelope: Envelope, options: MapperOptions, deadline: float | None
+    envelope: Envelope, options: MapperOptions, override: Any, deadline: float | None
 ) -> tuple[Any, dict[str, Any], dict[str, Any] | None]:
     """The sanitised body, its note, and what prune() took out of it."""
     if not options.capture_bodies:
         return None, {"state": STATE_DISABLED}, None
-    body, reason = request_body(envelope)
+    # With a chain, the transformed body is the one that reaches the target.
+    overridden = override is not ORIGINAL_BODY
+    if overridden:
+        body, reason = _override_body(envelope, override)
+    else:
+        body, reason = request_body(envelope)
     if not body:
         return None, {"state": STATE_OMITTED, "reason": reason or BODY_EMPTY}, None
 
     pruned = None
-    sent = request_body_size(envelope)
+    # The size as sent is the original body's, which says nothing of an override.
+    sent = None if overridden else request_body_size(envelope)
     if sent is None or sent > PRUNE_FACTOR * options.max_event_bytes:
         body, pruned = prune(body, options.max_event_bytes)
         if body is None:
             return None, {"state": STATE_SHED, "reason": "size"}, None
     check_deadline(deadline)
     return sanitize_body(body, options.sensitive_keys), {"state": STATE_CAPTURED}, pruned
+
+
+def _override_body(envelope: Envelope, override: Any) -> tuple[Any, str]:
+    """A transformed body as a dict, or (None, reason), read like the original."""
+    if isinstance(override, dict):
+        return override, ""
+    if envelope.kind != MCP and isinstance(override, str):
+        return http_body(override)
+    return None, BODY_NOT_OBJECT
 
 
 def _endpoint(path: str) -> str:

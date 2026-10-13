@@ -43,6 +43,11 @@ either limit the gateway refuses requests. To size it:
 - need = max(peak RPS × p99 duration in seconds, peak RPS / 10)
 - reserve at least 2 × need
 
+With a chain, use this function's p99 duration, which includes the chained
+call. While the chained function is throttled, each request holds this one for
+up to 2 s more, so give one of the two reserved concurrency: that wait should
+not draw on the pool the throttled function needs.
+
 ## What it captures
 
 One event per intercepted request: method, path, the gateway host, the caller's
@@ -92,6 +97,47 @@ reason.
 The echo changes one thing: an unpaired UTF-16 surrogate, which the Lambda
 runtime cannot encode, comes back as U+FFFD.
 
+## Chaining
+
+A gateway has one REQUEST interceptor slot. If yours is taken, point this
+function at the one that is already there: it runs first on the gateway's
+input, its answer is returned to the gateway unchanged but for the surrogate
+replacement above, and our own failures can neither skip it nor alter what it
+decided. If we cannot get its answer, or the answer is not a JSON object, the
+request is refused rather than served without it.
+
+Only the REQUEST point chains. If your interceptor is attached at both REQUEST
+and RESPONSE in one configuration entry, split it: this function at REQUEST,
+chaining to yours, and yours alone at RESPONSE. With a chain set, this
+function refuses every RESPONSE invocation, so an attachment left there fails
+closed instead of skipping your response logic.
+
+Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
+to the ids or ARNs of the gateways this function serves, and
+`CERBERUS_CHAIN_READ_MS` to the chained function's own timeout plus a
+cold-start allowance. A gateway that is not on the list is refused, and its id
+logged, because it may have had an interceptor of its own before this one. The
+execution role needs `lambda:InvokeFunction` on the ARN.
+
+A throttled invoke is retried twice, over about 1 to 2 s as the gateway itself
+would, and no retry starts within 500 ms of the function's timeout. So the
+function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus 2 s for those
+retries plus 1.5 s for the capture.
+
+Set `CERBERUS_CHAIN_PASS_HEADERS` to the replaced interceptor's
+`inputConfiguration.passRequestHeaders`. This function's own slot passes request
+headers whenever identity needs them, and with `false` they are taken out before
+the chained function is invoked, so it never receives callers' credentials it
+was not configured to see. With `true`, set `passRequestHeaders: true` on this
+function's own interceptor entry as well, whatever the identity mode, or the
+chained function receives no headers.
+
+What their interceptor did travels with the event: `passed` (the body is
+unchanged; headers are not compared), `transformed` (the transformed body is
+what gets captured, since it is what reaches the target), `short_circuit` with
+its status code (a refused request is still a captured attempt),
+`invalid_output`, or `error`.
+
 ## Configuration
 
 | Variable | Default | |
@@ -103,6 +149,10 @@ runtime cannot encode, comes back as U+FFFD.
 | `CERBERUS_CAPTURE_BODIES` | `true` | `false` captures metadata and identity only |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
+| `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
+| `CERBERUS_GATEWAY_IDS` | unset | Gateway ids or ARNs. Required when chaining; any other gateway is refused |
+| `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining |
+| `CERBERUS_CHAIN_PASS_HEADERS` | unset | `true` or `false`. Required when chaining |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | At most 750; connect plus read is capped at 1500 |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | Lowered when connect plus read exceeds 1500 |
 | `CERBERUS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `WARNING`, `ERROR`. Logs carry request ids and outcomes, never bodies or headers |
@@ -111,8 +161,13 @@ A number out of range is clamped to the nearest bound, and an unknown log level
 becomes `INFO`, each with a warning in the function's log. Any other value that
 cannot be used turns capture off rather than failing the function: it logs an
 `ERROR` naming the variable, passes every request through unchanged, and counts
-`CaptureDropped` with reason `config_invalid`. Lambda caps all environment
-variables at 4 KB together.
+`CaptureDropped` with reason `config_invalid`. A chaining setting that cannot be
+used does fail the function at init, since no request may be served without the
+chained interceptor. So does any `CERBERUS_CHAIN_*` or `CERBERUS_GATEWAY_IDS`
+value set without `CERBERUS_CHAIN_REQUEST_ARN`: the function would otherwise hold
+the replaced interceptor's slot without running it, so the gateway refuses every
+request until the ARN is set or the other values are removed. Lambda caps all
+environment variables at 4 KB together.
 
 ## Deployment
 
@@ -124,8 +179,8 @@ variables at 4 KB together.
 | Handler | `cerberus_agentcore_interceptor.handler.handler` |
 | Runtime | `python3.13`, `arm64` |
 | Memory | 512 MB to start; raise it from your own worst-case body sizes |
-| Timeout | 3 s |
-| Permissions | `firehose:PutRecord` on each stream |
+| Timeout | 3 s; longer with a chain, see Chaining |
+| Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
 | Interception points | `["REQUEST"]` only |
 
 Do not attach it at RESPONSE. It captures nothing there, and the attachment
@@ -156,7 +211,10 @@ aws lambda invoke --function-name <name>:<version> \
 ```
 
 The invoke captures nothing and counts one `UnknownInputVersion`. An `ERROR`
-line in its log means capture is off until the setting is fixed.
+line in its log means capture is off until the setting is fixed. With a chain
+set, the invoke is refused instead, as from an unlisted gateway, and its log
+names gateway `''`. That line is expected; the test invoke never reaches the
+chained function.
 
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers; inference callers still receive it, so nothing this
