@@ -83,7 +83,7 @@ class ChainClient:
         try:
             self._lambda()
         except Exception as exc:
-            logger.warning("chain client not ready: %s", exc)
+            logger.warning("chain client not ready: %s", type(exc).__name__)
 
     def invoke(
         self, event: Any, context: Any, envelope: Envelope, deadline: float | None = None

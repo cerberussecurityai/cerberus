@@ -877,3 +877,17 @@ def test_the_chain_client_is_prepared_with_capture_off(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(handler_mod)
+
+
+def test_a_client_that_cannot_be_built_is_logged_by_error_type(monkeypatch, caplog):
+    chain = ChainClient(CHAIN_ARN, 5000)
+
+    def unbuildable():
+        raise RuntimeError(f"no client for {CHAIN_ARN}")
+
+    monkeypatch.setattr(chain, "_lambda", unbuildable)
+    with caplog.at_level(logging.WARNING, logger="cerberus_agentcore_interceptor"):
+        chain.prepare()
+
+    assert "chain client not ready: RuntimeError" in caplog.text
+    assert "123456789012" not in caplog.text
