@@ -1,0 +1,85 @@
+# Expected map_llm_event output for fixtures/litellm/chat.json (raw,
+# pre-sanitization). Values come straight from that capture's
+# standard_logging_object.
+remote_addr: "203.0.113.7"
+endpoint: "llm://openai/mock-gpt"
+scheme: "llm"
+method: "llm_chat_completion"
+timestamp: "2026-10-16T00:04:52.666121+00:00"
+session_id: "spike-session-0001"
+headers: null
+query_params: null
+body:
+  input:
+    messages:
+      - role: "user"
+        content: "hello, my password is hunter2"
+  output:
+    id: "chatcmpl-mock-1"
+    object: "chat.completion"
+    created: 1792109092
+    model: "mock-gpt"
+    service_tier: null
+    system_fingerprint: null
+    choices:
+      - finish_reason: "stop"
+        index: 0
+        message:
+          content: "echo: hello, my password is hunter2"
+          function_call: null
+          provider_specific_fields:
+            refusal: null
+          role: "assistant"
+          tool_calls: null
+        provider_specific_fields: {}
+    usage:
+      completion_tokens: 8
+      completion_tokens_details: null
+      prompt_tokens: 15
+      prompt_tokens_details: null
+      total_tokens: 23
+user_agent: "spike-agent/0.1"
+user_id: "end-user-42"
+custom_data:
+  integration: "litellm"
+  event_type: "chat_completion"
+  provider: "openai"
+  model: "mock-gpt"
+  litellm_model: "openai/mock-gpt"
+  model_group: "mock-gpt"
+  model_id: "ff053a7d48c3300d13ec500b0693811ecc2269669be16e1b940e5d2ef5028558"
+  response_model: "mock-gpt"
+  api_base_host: "mock-llm"
+  duration_ms: 297.889
+  ttft_ms: 297.889
+  status: "ok"
+  error: null
+  error_class: null
+  error_code: null
+  error_normalized: null
+  llm_api_status: "success"
+  guardrail_status: "not_run"
+  guardrails_applied: []
+  streaming: false
+  cache_hit: null
+  cost_usd: 0.0
+  cost_input_usd: 0.0
+  cost_output_usd: 0.0
+  tokens_prompt: 15
+  tokens_completion: 8
+  tokens_total: 23
+  route_path: "/v1/chat/completions"
+  trace_id: null
+  litellm_trace_id: "spike-session-0001"
+  litellm_call_id: "9520b183-5ac3-4d75-9e48-d995e2726d87"
+  request_tags:
+    - "User-Agent: spike-agent"
+    - "User-Agent: spike-agent/0.1"
+  turn_id: "turn-1"
+  litellm_key_hash: "c140336c8926d6d5b9624d1f2b736c431fd9fc9afc644e56a961a90d40809ace"
+  litellm_key_alias: "spike-key"
+  litellm_team_id: "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+  litellm_team_alias: "spike-team"
+  litellm_org_id: null
+  litellm_user_id: "spike-user"
+  litellm_end_user_id: "end-user-42"
