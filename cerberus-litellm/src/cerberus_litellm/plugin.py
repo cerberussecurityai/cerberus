@@ -169,12 +169,18 @@ class CerberusLogger(CustomLogger):
             if dedupe_key is not None and dedupe_key in self._seen:
                 self._counts["deduplicated"] += 1
                 return
-            # Tool catalogues are exempt from sampling: they are rare, already
-            # de-duplicated per server, and losing one can hide a server's tools
-            # for a whole report interval.
+            # Tool catalogues and failures are exempt from sampling. Catalogues
+            # are rare, already de-duplicated per server, and losing one can hide
+            # a server's tools for a whole report interval; failures (a failed
+            # call, or an MCP tool result flagged as an error) are the events
+            # most worth keeping and are rarer than successes.
+            is_failure = (
+                payload.status(slo) == "error" or payload.get(slo, "response", "is_error") is True
+            )
             sampled = (
                 self.config.sample_rate < 1.0
                 and payload.call_type(slo) != "list_mcp_tools"
+                and not is_failure
                 and random.random() >= self.config.sample_rate
             )
             if sampled:

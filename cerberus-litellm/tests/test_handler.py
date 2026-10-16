@@ -272,6 +272,32 @@ async def test_sampling(plugin, monkeypatch):
     assert sampled.stats()["sampled_out"] == 1
 
 
+async def test_sampling_never_hides_failures(plugin):
+    sampled = CerberusLogger(replace(plugin.config, sample_rate=0.0, flush_interval_ms=60000))
+    await sampled.async_log_failure_event(_kwargs("failure_500"), None, 0, 1)  # an LLM failure
+    await sampled.async_log_failure_event(_kwargs("failure_429"), None, 0, 1)
+    await sampled.async_log_failure_event(_kwargs("mcp_tool_call_error"), None, 0, 1)  # isError
+    await sampled.async_log_success_event(_kwargs("chat"), None, 0, 1)  # a success: sampled out
+    await sampled.async_log_success_event(_kwargs("mcp_tool_call"), None, 0, 1)
+    events = await _drain(sampled)
+    assert [e["custom_data"].get("status") for e in events[:2]] == ["error", "error"]
+    assert events[2]["custom_data"]["result_is_error"] is True
+    assert [e["method"] for e in events] == [
+        "llm_chat_completion",
+        "llm_chat_completion",
+        "mcp_tool_call",
+    ]
+    assert sampled.stats()["sampled_out"] == 2  # only the two successes
+
+
+async def test_sampling_also_keeps_an_mcp_error_result_delivered_as_a_success(plugin):
+    sampled = CerberusLogger(replace(plugin.config, sample_rate=0.0, flush_interval_ms=60000))
+    slo = dict(_kwargs("mcp_tool_call")["standard_logging_object"])
+    slo["response"] = dict(slo["response"], is_error=True)  # flagged as an error result
+    await sampled.async_log_success_event({"standard_logging_object": slo}, None, 0, 1)
+    assert [e["method"] for e in await _drain(sampled)] == ["mcp_tool_call"]
+
+
 async def test_sampling_never_hides_tool_catalogues(plugin):
     sampled = CerberusLogger(replace(plugin.config, sample_rate=0.0, flush_interval_ms=60000))
     capture = load_capture("mcp_list_tools")

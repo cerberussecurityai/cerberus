@@ -119,7 +119,7 @@ Endpoint `mcp://{server}/{tool}`, scheme `mcp`, method `mcp_tool_call`. Body is 
 
 `custom_data` keys: `mcp_server`, `handler_name`, `event_type`, `duration_ms`, `arguments`,
 `error`, `result_summary`, `result_is_error`, `result_type`, `session_id`, `litellm_session_id`,
-`client_name`, `client_version`, `request_id`, `namespaced_tool_name`, `mcp_server_host`,
+`client_name`, `client_version`, `request_id` (these three are always null), `namespaced_tool_name`, `mcp_server_host`,
 `route_path`, `trace_id`, `litellm_trace_id`, `litellm_call_id`, `turn_id`.
 
 ### MCP tools/list
@@ -180,8 +180,8 @@ tool name.
 - **Concurrency.** The queue assumes all access happens on the proxy's single event loop. Do not
   run the callback under a threaded executor.
 - **Sampling.** `CERBERUS_SAMPLE_RATE` applies per event. Keep the default of 1.0 for complete
-  capture, and lower it only to trade completeness for volume. Tool catalogues are never
-  sampled out.
+  capture, and lower it only to trade completeness for volume. Failures and tool catalogues are
+  never sampled out.
 - **Workers.** Under `uvicorn --reload` or with several workers, each worker process holds its
   own queue, sink and exit flush.
 - **Duplicate suppression.** LiteLLM can fire a logging hook more than once for one call, and
@@ -191,7 +191,7 @@ tool name.
 ## Known gaps
 
 - `requester_ip_address` is the TCP peer unless `use_x_forwarded_for` is on.
-- MCP events carry no client name or version.
+- MCP events carry no client name, client version or request id (those keys are always null).
 - The MCP route exposes no custom headers, so the turn id is unavailable there.
 - No delivery retry; a failed batch is dropped.
 - At exit the plugin makes one best-effort synchronous flush (at most two batches and two
@@ -202,7 +202,7 @@ tool name.
 
 ## Troubleshooting
 
-- **Nothing arrives.** Look for the "cerberus-litellm 0.1.0 loaded" line and the periodic stats
+- **Nothing arrives.** Look for the "cerberus-litellm <version> loaded" line and the periodic stats
   line in the proxy log. A "disabled" error line names the configuration problem. When the proxy
   attaches no log handler for the plugin, its lines go to stderr. The plugin adds that stderr
   handler to its own logger only when no handler exists anywhere in its chain, so attaching a
