@@ -300,6 +300,41 @@ def test_oversize_warnings_are_throttled(config, caplog):
     assert len([r for r in caplog.records if "oversized" in r.getMessage()]) == 1
 
 
+@pytest.mark.parametrize(
+    "secret,fragment",
+    [
+        ("sk-abcdef0123456789", "sk-abc"),
+        ("Bearer abcdef0123456789", "Bearer a"),
+        ("api_key=abcdef0123456789", "api_key=a"),
+        ("AKIAABCDEFGHIJKLMNOP", "AKIAA"),
+    ],
+)
+def test_credential_straddling_the_result_cut_leaves_no_prefix(config, secret, fragment):
+    import copy
+
+    limit = 256
+    cfg = replace(config, mcp_result_max_chars=limit)
+    # The cut lands inside the credential, leaving at least the fragment visible.
+    for pad in (limit - len(fragment) - 1, limit - len(fragment) - 2):
+        slo = copy.deepcopy(load_capture("mcp_tool_call")["standard_logging_object"])
+        slo["response"]["content"] = [{"type": "text", "text": "x" * pad + " " + secret}]
+        out = Pipeline(cfg).finalize(map_mcp_event(slo, cfg), "mcp")
+        summary = out["custom_data"]["result_summary"]
+        assert fragment not in summary, (pad, summary[-30:])
+        assert secret not in json.dumps(out)
+
+
+def test_credential_straddling_the_error_cut_leaves_no_prefix(config):
+    import copy
+
+    cfg = replace(config, mcp_result_max_chars=256)
+    slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_message"] = "x" * 249 + " sk-abcdef0123456789"
+    out = Pipeline(cfg).finalize(map_mcp_event(slo, cfg), "mcp")
+    assert "sk-abc" not in out["custom_data"]["error"]
+    assert "sk-abc" not in out["custom_data"]["result_summary"]
+
+
 def test_finalize_redacts_error_and_result_summary(config):
     event = _llm("chat", config)
     event["custom_data"]["error"] = "failed at https://h.example/v1?key=SECRET1 sk-abcdef123456"

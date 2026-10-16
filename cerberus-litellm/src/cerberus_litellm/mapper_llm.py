@@ -29,8 +29,7 @@ _CALL_TYPE_METHODS = {
     "aresponses": "llm_responses",
 }
 
-# Last-path-segment names the ingest API treats as health probes and silently
-# drops. Mirrors the ingest filter; keep in sync.
+# Path segments that get the suffix in endpoint_segment().
 HEALTH_SEGMENTS = frozenset(
     {
         "health",
@@ -67,16 +66,13 @@ def clean_label(value: str) -> str:
 
 
 def endpoint_segment(label: str, suffix: str = "_model") -> str:
-    """Make an endpoint label safe from the ingest health filter.
+    """Normalise a label for use as an endpoint path segment.
 
-    The label can be client-influenced (wildcard model routing), so a name
-    like ``anything/health`` would make its events vanish. The ingest takes
-    ``endpoint.rstrip("/").rsplit("/", 1)[-1].lower()``, so normalise the same
-    way: strip whitespace and trailing slashes (``health/`` is dropped there),
-    and guard every ``/``-separated piece, appending ``suffix`` to health names.
-    An empty label becomes ``unknown`` so the provider can never be the last
-    segment. The ingest filter does not parse ``?`` or ``#``, so ``health?x``
-    is not a health name and passes unchanged.
+    Labels can be client-influenced (wildcard model routing, tool names).
+    Whitespace and trailing slashes are trimmed, control characters are
+    removed, and every ``/``-separated piece that is one of HEALTH_SEGMENTS
+    gets ``suffix`` appended. An empty label becomes ``unknown`` so the
+    provider is never the last segment. ``?`` and ``#`` are not special.
     """
     core = clean_label(label).rstrip("/")
     if not core:

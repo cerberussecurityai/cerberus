@@ -19,8 +19,7 @@ def load_expected(name: str) -> dict[str, Any]:
     return yaml.safe_load((FIXTURES / "expected" / f"{name}.yaml").read_text())
 
 
-# Path segments event ingest treats as health checks: events whose endpoint's
-# last segment is one of these are skipped server-side. Used by the sink test's
+# Path segments that endpoint labels must not end in. Used by the sink test's
 # ingest stub; playground/stub_ingest.py keeps an identical standalone copy.
 HEALTH_SEGMENTS = frozenset(
     {

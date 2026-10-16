@@ -51,7 +51,7 @@ class Sink:
         self.posted = 0
         self.post_failures = 0
         # Server-side filtering visibility: the ingest endpoint may skip
-        # events (e.g. its health-endpoint filter) while returning 200.
+        # events while returning 200.
         self.server_accepted = 0
         self.server_skipped = 0
         self._client = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)

@@ -16,6 +16,7 @@ from fastapi import FastAPI, Header, HTTPException
 API_KEY = "sk_test_playground"
 SECRET_KEY = "playground-hmac-secret"
 CAPTURE_DIR = os.environ.get("CAPTURE_DIR", "/captures")
+# Path segments the stub skips (same list as tests/helpers.py).
 HEALTH_SEGMENTS = {
     "health", "healthz", "healthcheck", "health_check", "health-check",
     "ready", "readyz", "readiness", "live", "livez", "liveness",

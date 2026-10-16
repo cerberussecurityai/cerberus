@@ -161,10 +161,20 @@ class CerberusLogger(CustomLogger):
             if not isinstance(slo, Mapping):
                 self._counts["skipped_no_payload"] += 1
                 return
+            # Dedupe marks a call as seen before the sample check on purpose: a
+            # sampled-out call is not sent, so a repeat firing must not be either.
             if self._is_duplicate(slo):
                 self._counts["deduplicated"] += 1
                 return
-            if self.config.sample_rate < 1.0 and random.random() >= self.config.sample_rate:
+            # Tool catalogues are exempt from sampling: they are rare, already
+            # de-duplicated per server, and losing one can hide a server's tools
+            # for a whole report interval.
+            sampled = (
+                self.config.sample_rate < 1.0
+                and payload.call_type(slo) != "list_mcp_tools"
+                and random.random() >= self.config.sample_rate
+            )
+            if sampled:
                 self._counts["sampled_out"] += 1
                 return
             self._ensure_sink()
@@ -175,6 +185,12 @@ class CerberusLogger(CustomLogger):
                 # Drops are counted by the queue itself (by count or by bytes).
                 if self.queue.append(finalized, self.pipeline.last_size):
                     self._counts[f"events_{kind}"] += 1
+                    # A catalogue counts as reported only if it was queued with
+                    # its tools intact; a shed or dropped report is retried.
+                    if kind == "schema" and not finalized["custom_data"].get(
+                        "content_dropped_oversize"
+                    ):
+                        self._schema.commit(finalized)
         except Exception:
             self._counts["errors"] += 1
             self._warn_throttled("cerberus-litellm: failed to map an event")

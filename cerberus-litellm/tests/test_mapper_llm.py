@@ -176,7 +176,7 @@ def test_endpoint_segment_normalises_like_the_ingest_filter():
     assert endpoint_segment("") == "unknown"
     assert endpoint_segment("/") == "unknown"
     assert endpoint_segment(" readyz ") == "readyz_model"
-    # The ingest filter does not parse ? or #, so these are not health names.
+    # ? and # are not special, so these are not reserved names.
     assert endpoint_segment("health?x") == "health?x"
     assert endpoint_segment("health#x") == "health#x"
     assert endpoint_segment("gpt-4o") == "gpt-4o"

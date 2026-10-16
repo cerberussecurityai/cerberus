@@ -24,6 +24,7 @@ class SchemaReporter:
         self.config = config
         self._clock = clock
         self._last: OrderedDict[str, tuple[str, float]] = OrderedDict()
+        self._pending: dict[str, tuple[str, float]] = {}
         self.suppressed = 0
 
     @staticmethod
@@ -32,6 +33,7 @@ class SchemaReporter:
 
     def events(self, slo: Any, response_obj: Any) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+        self._pending.clear()
         now = self._clock()
         for event in map_schema_reports(slo, response_obj, self.config):
             server = event["custom_data"]["mcp_server"]
@@ -43,9 +45,22 @@ class SchemaReporter:
                 if last_digest == digest and now - last_at < interval:
                     self.suppressed += 1
                     continue
-            self._last[server] = (digest, now)
-            self._last.move_to_end(server)
-            while len(self._last) > MAX_TRACKED_SERVERS:
-                self._last.popitem(last=False)
+            # Not recorded yet: the caller calls commit() once the report is
+            # actually queued, so a dropped or truncated report is retried.
+            self._pending[server] = (digest, now)
             out.append(event)
         return out
+
+    def commit(self, event: dict[str, Any]) -> None:
+        """Record that ``event`` (a report from the last events() call) was queued."""
+        custom_data = event.get("custom_data")
+        server = custom_data.get("mcp_server") if isinstance(custom_data, dict) else None
+        if not isinstance(server, str):
+            return
+        pending = self._pending.pop(server, None)
+        if pending is None:
+            return
+        self._last[server] = pending
+        self._last.move_to_end(server)
+        while len(self._last) > MAX_TRACKED_SERVERS:
+            self._last.popitem(last=False)

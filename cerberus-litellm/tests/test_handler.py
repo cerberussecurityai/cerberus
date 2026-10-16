@@ -84,6 +84,38 @@ async def test_schema_report_dispatch_and_dedupe(plugin):
     assert plugin.stats()["events_schema"] == 1
 
 
+async def test_dropped_or_shed_schema_report_does_not_suppress_the_next(config):
+    capture = load_capture("mcp_list_tools")
+    slo = capture["standard_logging_object"]
+    tools = capture["response_obj"]
+
+    def kwargs(call_id):
+        return {"standard_logging_object": dict(slo, litellm_call_id=call_id)}
+
+    # 1. The report is shed to a skeleton by the size cap: not committed, offered again.
+    tight = CerberusLogger(replace(config, flush_interval_ms=60000, max_event_bytes=1100))
+    await tight.async_log_success_event(kwargs("a"), tools, 0, 1)
+    await tight.async_log_success_event(kwargs("b"), tools, 0, 1)
+    events = await _drain(tight)
+    assert [e["custom_data"].get("content_dropped_oversize") for e in events] == [True, True]
+    assert tight.stats()["schema_reports_suppressed"] == 0
+
+    # 2. The queue is full: the report is not committed either.
+    full = CerberusLogger(replace(config, flush_interval_ms=60000, queue_max_bytes=100))
+    await full.async_log_success_event(kwargs("a"), tools, 0, 1)
+    assert full.stats()["queue_dropped_bytes"] == 1
+    full.queue._max_bytes = None  # room again
+    await full.async_log_success_event(kwargs("b"), tools, 0, 1)
+    assert [e["method"] for e in await _drain(full)] == ["mcp_schema_report"]
+
+    # 3. Queued intact: the next identical list is suppressed.
+    ok = CerberusLogger(replace(config, flush_interval_ms=60000))
+    await ok.async_log_success_event(kwargs("a"), tools, 0, 1)
+    await ok.async_log_success_event(kwargs("b"), tools, 0, 1)
+    assert len(await _drain(ok)) == 1
+    assert ok.stats()["schema_reports_suppressed"] == 1
+
+
 async def test_missing_payload_is_skipped(plugin):
     await plugin.async_log_success_event({}, None, 0, 1)
     await plugin.async_log_success_event({"standard_logging_object": "nope"}, None, 0, 1)
@@ -194,6 +226,16 @@ async def test_sampling(plugin, monkeypatch):
     await sampled.async_log_success_event(_kwargs("chat"), None, 0, 1)
     assert await _drain(sampled) == []
     assert sampled.stats()["sampled_out"] == 1
+
+
+async def test_sampling_never_hides_tool_catalogues(plugin):
+    sampled = CerberusLogger(replace(plugin.config, sample_rate=0.0, flush_interval_ms=60000))
+    capture = load_capture("mcp_list_tools")
+    kwargs = {"standard_logging_object": capture["standard_logging_object"]}
+    await sampled.async_log_success_event(kwargs, capture["response_obj"], 0, 1)
+    await sampled.async_log_success_event(_kwargs("chat"), None, 0, 1)
+    assert [e["method"] for e in await _drain(sampled)] == ["mcp_schema_report"]
+    assert sampled.stats()["sampled_out"] == 1  # the chat call, not the catalogue
 
 
 async def test_sink_starts_lazily_on_running_loop(plugin):
@@ -335,8 +377,12 @@ def test_plain_http_to_a_remote_host_warns_once(config, caplog, url, warns):
 def test_plain_http_warning_names_the_host_only(config, caplog):
     caplog.set_level(logging.WARNING, logger="cerberus_litellm")
     CerberusLogger(replace(config, ingest_service="http://user:pw@ingest.example.com:81/path?k=v"))
-    text = " ".join(r.getMessage() for r in caplog.records if "plain http" in r.getMessage())
-    assert "ingest.example.com" in text
+    records = [r for r in caplog.records if "plain http" in r.getMessage()]
+    assert len(records) == 1
+    # The record's only argument is the host: compare it exactly rather than
+    # searching the message for a hostname substring.
+    assert records[0].args == ("ingest.example.com",)
+    text = records[0].getMessage()
     assert "pw" not in text and "path" not in text and "k=v" not in text
 
 

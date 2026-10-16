@@ -134,8 +134,9 @@ tool name.
 ## Security
 
 - **Content redaction is by key name.** Values under sensitive keys (for example `api_key`,
-  `password`) are replaced with `[REDACTED]`. Secrets inside free text, such as a prompt, are not
-  scrubbed. Where that matters, set `CERBERUS_CAPTURE_LLM_CONTENT=false`. Error and MCP result
+  `password`) are replaced with `[REDACTED]`. Prompts and completions receive key-name-based
+  sanitisation only, the same as the Envoy AI Gateway bridge: message content is not scanned for
+  secrets in free text. Where that matters, set `CERBERUS_CAPTURE_LLM_CONTENT=false`. Error and MCP result
   text is additionally masked for common credential shapes (bearer and basic credentials,
   provider-style API tokens, URL userinfo, `key=` style parameters).
 - **The plugin reads only the logging payload.** It never reads or serialises the proxy's
@@ -155,6 +156,11 @@ tool name.
   unserialisable drops, schema reports suppressed, and POST outcomes.
 - **Memory ceiling.** The queue holds at most `CERBERUS_QUEUE_MAX_BYTES` of encoded events (64 MiB
   by default) in the proxy process, plus the batch being posted.
+- **Delivery guarantee.** Delivery is at-most-once. The flush at exit is best-effort: a batch the
+  background task has already taken off the queue but not yet had acknowledged is not covered by
+  it.
+- **Concurrency.** The queue assumes all access happens on the proxy's single event loop. Do not
+  run the callback under a threaded executor.
 
 ## Known gaps
 
