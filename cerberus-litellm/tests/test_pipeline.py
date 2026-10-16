@@ -148,6 +148,95 @@ def test_schema_catalogue_ships_parameter_definitions_intact(config):
     assert out["method"] == "mcp_schema_report"
 
 
+def _schema_event(config, input_schema, description="Looks something up"):
+    capture = load_capture("mcp_list_tools")
+    event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[
+        0
+    ]
+    event["custom_data"]["tools"][0]["input_schema"] = input_schema
+    event["custom_data"]["tools"][0]["description"] = description
+    return event
+
+
+def test_schema_values_under_a_sensitive_property_are_redacted_but_definitions_kept(config):
+    schema = {
+        "type": "object",
+        "required": ["password"],
+        "properties": {
+            "password": {
+                "type": "string",
+                "description": "the user's password",
+                "default": "hunter2",
+                "examples": ["correct-horse", "battery-staple"],
+            },
+            "token": {"type": "string", "const": "fixed-token", "enum": ["a", "b"]},
+            "city": {"type": "string", "default": "Reykjavik", "enum": ["Reykjavik", "Oslo"]},
+        },
+    }
+    event = _schema_event(config, schema)
+    props = finalized(Pipeline(config), event, "schema")["custom_data"]["tools"][0]["input_schema"][
+        "properties"
+    ]
+    assert props["password"] == {
+        "type": "string",
+        "description": "the user's password",
+        "default": "[REDACTED]",
+        "examples": "[REDACTED]",
+    }
+    assert props["token"] == {"type": "string", "const": "[REDACTED]", "enum": "[REDACTED]"}
+    assert props["city"] == schema["properties"]["city"]  # not a sensitive name: untouched
+
+
+def test_schema_values_are_redacted_through_nested_structures(config):
+    schema = {
+        "type": "object",
+        "properties": {
+            "creds": {
+                "type": "object",
+                "properties": {
+                    "api_key": {
+                        "anyOf": [{"type": "string", "default": "k1"}, {"type": "null"}],
+                        "items": {"type": "string", "example": "k2"},
+                    },
+                },
+            }
+        },
+        "$defs": {"secret": {"type": "string", "default": "not-sensitive-name-in-defs"}},
+    }
+    out = finalized(Pipeline(config), _schema_event(config, schema), "schema")
+    schema_out = out["custom_data"]["tools"][0]["input_schema"]
+    api_key = schema_out["properties"]["creds"]["properties"]["api_key"]
+    assert api_key["anyOf"][0] == {"type": "string", "default": "[REDACTED]"}
+    assert api_key["anyOf"][1] == {"type": "null"}
+    assert api_key["items"] == {"type": "string", "example": "[REDACTED]"}
+    # "secret" is in SENSITIVE_KEYS, so a $defs entry of that name is masked too.
+    assert schema_out["$defs"]["secret"]["default"] == "[REDACTED]"
+
+
+def test_secret_shaped_values_anywhere_in_a_catalogue_are_masked(config):
+    schema = {
+        "type": "object",
+        "properties": {
+            "q": {"type": "string", "description": "use key sk-live-abcdef0123456789 here"},
+            "mode": {"type": "string", "enum": ["fast", "Bearer abcdef0123456789"]},
+        },
+    }
+    event = _schema_event(config, schema, description="auth with AKIAABCDEFGHIJKLMNOP only")
+    out = finalized(Pipeline(config), event, "schema")
+    tool = out["custom_data"]["tools"][0]
+    dumped = json.dumps(tool)
+    for raw in ("sk-live-abcdef0123456789", "abcdef0123456789", "AKIAABCDEFGHIJKLMNOP"):
+        assert raw not in dumped
+    assert tool["input_schema"]["properties"]["mode"]["enum"][0] == "fast"
+    assert tool["input_schema"]["properties"]["q"]["type"] == "string"
+
+
+def test_catalogue_secret_straddling_the_truncation_cut_is_still_masked(config):
+    description = "x" * (MAX_VALUE_CHARS - 5) + " sk-live-abcdef0123456789"
+    out = finalized(Pipeline(config), _schema_event(config, {}, description), "schema")
+    assert "sk-li" not in out["custom_data"]["tools"][0]["description"]
+
+
 def test_schema_catalogue_strings_are_still_truncated(config):
     capture = load_capture("mcp_list_tools")
     event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[

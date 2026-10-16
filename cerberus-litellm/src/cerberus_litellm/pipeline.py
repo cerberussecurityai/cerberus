@@ -19,7 +19,7 @@ import logging
 import math
 from typing import Any
 
-from cerberus_core import normalize_ip, sanitize_dict
+from cerberus_core import REDACTED, SENSITIVE_KEYS, normalize_ip, sanitize_dict
 
 from .config import SENSITIVE_HEADER_NAMES, Config
 from .logthrottle import LogThrottle
@@ -70,6 +70,67 @@ def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
     return data
 
 
+# JSON-schema keywords that carry example or default VALUES.
+_SCHEMA_VALUE_KEYWORDS = ("default", "const", "enum", "examples", "example")
+# Keywords whose value maps names to sub-schemas, or holds sub-schemas.
+_SCHEMA_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+_SCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
+_SCHEMA_SINGLE = ("items", "additionalProperties", "not", "if", "then", "else")
+_MAX_SCHEMA_DEPTH = 20
+
+
+def _mask_declared_values(schema: Any, depth: int = 0) -> Any:
+    """Redact default/const/enum/examples under a schema that describes a secret."""
+    if depth > _MAX_SCHEMA_DEPTH:
+        return REDACTED
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _SCHEMA_VALUE_KEYWORDS:
+            out[key] = REDACTED
+        elif key in _SCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {n: _mask_declared_values(s, depth + 1) for n, s in value.items()}
+        elif key in _SCHEMA_LISTS and isinstance(value, list):
+            out[key] = [_mask_declared_values(s, depth + 1) for s in value]
+        elif key in _SCHEMA_SINGLE and isinstance(value, dict):
+            out[key] = _mask_declared_values(value, depth + 1)
+        else:
+            out[key] = value
+    return out
+
+
+def _scrub_schema(node: Any, depth: int = 0) -> Any:
+    """Scrub values inside a catalogue entry while keeping its definitions.
+
+    Every string leaf goes through ``redact_secrets`` (secret-shaped values are
+    masked wherever they sit). A property whose name is in cerberus-core's
+    SENSITIVE_KEYS keeps its name, type and description, but its default,
+    const, enum and examples are replaced with the redaction marker.
+    """
+    if depth > _MAX_SCHEMA_DEPTH:
+        return REDACTED
+    if isinstance(node, str):
+        return redact_secrets(node)
+    if isinstance(node, list):
+        return [_scrub_schema(item, depth + 1) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _SCHEMA_MAPS and isinstance(value, dict):
+            scrubbed: dict[str, Any] = {}
+            for name, sub in value.items():
+                sub = _scrub_schema(sub, depth + 2)
+                if isinstance(name, str) and name.lower() in SENSITIVE_KEYS:
+                    sub = _mask_declared_values(sub)
+                scrubbed[name] = sub
+            out[key] = scrubbed
+        else:
+            out[key] = _scrub_schema(value, depth + 1)
+    return out
+
+
 def client_ip(raw: Any) -> str:
     """Normalized, raw (never hashed) client IP; malformed values are capped."""
     if not isinstance(raw, str) or not raw:
@@ -116,6 +177,14 @@ class Pipeline:
             if isinstance(summary, str):
                 summary = redact_secrets(summary)
             custom_data["result_summary"] = truncate_values(summary)
+        if kind == "schema":
+            # Catalogues are declarations: keep the definitions (names, types,
+            # descriptions, required, nested properties), scrub the values.
+            # Done before the truncation below so a token is never cut in half.
+            for key in _CATALOGUE_KEYS:
+                items = custom_data.get(key)
+                if isinstance(items, list):
+                    custom_data[key] = [_scrub_schema(item) for item in items]
         # Everything else in custom_data can carry caller-supplied text (tags,
         # the request's ``user`` field, headers): bound every string, and the
         # identity-like ones tighter, so caller input cannot push an event
@@ -137,11 +206,10 @@ class Pipeline:
         if kind == "schema":
             # Tool/resource/prompt catalogues are declarations, not values: a
             # parameter named ``password`` or ``api_key`` is a definition, and
-            # key-name redaction would blank exactly the sensitive-looking
-            # parameters from the inventory. cerberus-mcp and the Envoy bridge
-            # ship catalogues unsanitised too. They are still truncated (the
-            # generic pass over custom_data above) and still subject to the
-            # size cap below.
+            # blanket key-name redaction (sanitize_dict) would blank exactly the
+            # sensitive-looking parameters from the inventory, so it is not run
+            # here. Values are scrubbed instead (_scrub_schema, above); the
+            # strings are truncated by the generic pass and the size cap applies.
             pass
         elif kind == "mcp":
             if self.config.capture_mcp_arguments:
