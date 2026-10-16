@@ -35,6 +35,10 @@ echo "    team_id=$TEAM_ID"
 KEY=$(curl -sS "$LITELLM/key/generate" -H "Authorization: Bearer $MASTER" -H 'Content-Type: application/json' \
   -d "{\"key_alias\": \"playground-key\", \"team_id\": \"$TEAM_ID\", \"user_id\": \"playground-user\", \"metadata\": {\"purpose\": \"playground\"}, \"object_permission\": {\"mcp_servers\": [\"mockmcp\"]}}" | json key)
 echo "    key=${KEY:0:12}..."
+if [ -z "$KEY" ]; then
+  echo "S0 produced no key — is the stack fresh? (docker compose down -v)" >&2
+  exit 1
+fi
 
 set +e  # scenarios may legitimately fail; keep going
 COMMON=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
