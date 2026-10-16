@@ -32,7 +32,7 @@ help, because the history stays public.
 
 ## Project Overview
 
-Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend. Five Python packages and one Rust crate:
+Cerberus is a monorepo of client-side instrumentation packages that ship request/event metadata to the Cerberus backend. Six Python packages and one Rust crate:
 
 ```
 cerberus/
@@ -54,6 +54,12 @@ cerberus/
 │   ├── deploy/                # K8s manifests + gateway-side env block
 │   ├── playground/            # local harness (aigw standalone + docker compose)
 │   └── tests/                 # golden OTLP span fixtures
+├── cerberus-litellm/          # LiteLLM proxy CustomLogger plugin (LLM + MCP)
+│   ├── pyproject.toml
+│   ├── Makefile
+│   ├── src/cerberus_litellm/
+│   ├── playground/            # LiteLLM image with the plugin + mocks + stub ingest
+│   └── tests/                 # fixtures captured from a real proxy (CER-346 spike)
 ├── cerberus-agentcore-interceptor/ # Lambda interceptor for Amazon Bedrock AgentCore Gateway
 │   ├── pyproject.toml
 │   ├── Makefile               # incl. `make zip` (Lambda deployment package)
@@ -84,11 +90,12 @@ cerberus/
 └── publish_package.sh
 ```
 
-The four Python packages are published independently to PyPI:
+The five Python packages below are published independently to PyPI:
 - `cerberus-core` — shared sanitization logic and sensitive key definitions
 - `cerberus-django` — Django middleware (depends on cerberus-core)
 - `cerberus-mcp` — MCP server wrapper (depends on cerberus-core)
 - `cerberus-envoy-ai-gateway` — Envoy AI Gateway OTLP bridge (depends on cerberus-core); also ships as a container image (`make image`)
+- `cerberus-litellm` — LiteLLM proxy callback plugin (depends on cerberus-core)
 
 `cerberus-flex-gateway` is **not** published to PyPI — it's a Rust crate that compiles to a `.wasm` artifact. Because custom Flex Gateway policies can't be shared across Anypoint orgs, distribution is **customer-side**: `make bundle` builds a prebuilt tarball (CI attaches it to a `flex-gateway-v*` GitHub Release), and each customer runs the bundled `install.sh --org-id <uuid>` to publish it into *their own* org's Exchange — no Rust required (see `cerberus-flex-gateway/INSTALL.md`). `make publish` / `make release` are the **maintainer** path into *our* org only (see `cerberus-flex-gateway/DEVELOPMENT.md`). It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode). See `cerberus-flex-gateway/README.md`.
 
@@ -160,6 +167,14 @@ make run                  # playground: docker compose + standalone `aigw run`
 
 **Key files:** `app.py` (OTLP receiver), `classify.py`, `mapper_llm.py`, `mapper_mcp.py`, `pipeline.py` (sanitize/hash/caps), `sink.py` (batch POST), `deploy/` (operator artifacts).
 
+### cerberus-litellm
+
+LiteLLM proxy callback plugin. Registered via `litellm_settings.callbacks: ["cerberus_litellm.handler"]`; reads `kwargs["standard_logging_object"]` + `response_obj` in the two terminal logging hooks and nothing else (the proxy's provider keys live in `kwargs` and must never be serialised). Maps LLM calls to `llm://{provider}/{model}` events and MCP tool calls / tools/list to `mcp://{server}/{tool}` events and `mcp_schema_report`, sanitizes and caps them with the same numbers as the Envoy bridge (copied, not shared — owner decision), and posts batches from a bounded queue on the proxy's event loop.
+
+**Build/test:** `cd cerberus-litellm && make venv && make test` (fixtures are real captures; regenerate with `make fixtures CAPTURES=<dir>`), `make run` for the playground.
+
+**Key files:** `plugin.py` (hooks, dedupe, lazy sink; the `cerberus_litellm.handler` attribute LiteLLM loads is built lazily in `__init__.py`), `payload.py` (the only reader of the LiteLLM payload), `mapper_llm.py`, `mapper_mcp.py`, `schema_reporter.py`, `pipeline.py`, `sink.py`.
+
 ### cerberus-flex-gateway
 
 Rust → WASM custom policy for MuleSoft Flex Gateway. Captures HTTP request metadata, sanitizes PII, batches events, and POSTs them to the Cerberus backend's batch ingest endpoint.
@@ -216,6 +231,7 @@ cd cerberus-core && uv build    # or cerberus-django / cerberus-mcp
 ./publish_package.sh cerberus-django
 ./publish_package.sh cerberus-mcp
 ./publish_package.sh cerberus-envoy-ai-gateway
+./publish_package.sh cerberus-litellm
 ```
 
 ### Running tests
