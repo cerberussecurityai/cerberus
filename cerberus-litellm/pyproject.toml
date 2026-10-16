@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cerberus-litellm"
+version = "0.1.0"
+description = "LiteLLM proxy callback plugin that ships LLM and MCP traffic to the Cerberus platform"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Griffin Potrock" }]
+keywords = ["litellm", "ai-gateway", "llm", "mcp", "monitoring", "analytics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "cerberus-core>=0.1.1",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pyyaml>=6.0",
+    "fastapi>=0.110",   # the copied sink tests stub the ingest API with FastAPI + httpx ASGI transport
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cerberussecurityai/cerberus"
+Repository = "https://github.com/cerberussecurityai/cerberus.git"
+Issues = "https://github.com/cerberussecurityai/cerberus/issues"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/tests", "/playground", "CLAUDE.md"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cerberus_litellm"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+pythonpath = ["src", "../cerberus-core/src"]

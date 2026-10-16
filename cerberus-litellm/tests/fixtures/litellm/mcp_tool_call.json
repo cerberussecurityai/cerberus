@@ -1,0 +1,192 @@
+{
+  "end_time": "2026-10-16T00:04:54.430633",
+  "response_obj": {
+    "__type__": "CallToolResult",
+    "content": [
+      {
+        "annotations": null,
+        "meta": null,
+        "text": "echo: hi mcp",
+        "type": "text"
+      }
+    ],
+    "is_error": false,
+    "meta": null,
+    "result_type": "complete",
+    "structured_content": null
+  },
+  "standard_logging_object": {
+    "api_base": "",
+    "autorouter_baseline_observation": null,
+    "autorouter_savings": null,
+    "autorouter_savings_estimate": null,
+    "cache_hit": null,
+    "cache_key": null,
+    "call_type": "call_mcp_tool",
+    "completionStartTime": 1792109094.430633,
+    "completion_tokens": 0,
+    "cost_breakdown": null,
+    "custom_llm_provider": null,
+    "endTime": 1792109094.430633,
+    "end_user": null,
+    "error_information": {
+      "error_budget_entity_id": null,
+      "error_budget_entity_type": null,
+      "error_budget_limit": null,
+      "error_budget_spend": null,
+      "error_class": "",
+      "error_code": "",
+      "error_message": "",
+      "error_provider_request_id": null,
+      "error_rate_limit_category": null,
+      "error_rate_limit_type": null,
+      "llm_provider": "",
+      "normalized_error": null,
+      "traceback": ""
+    },
+    "error_str": null,
+    "guardrail_information": null,
+    "hidden_params": {
+      "additional_headers": null,
+      "api_base": null,
+      "batch_failed_requests": null,
+      "batch_models": null,
+      "batch_successful_requests": null,
+      "cache_key": null,
+      "litellm_model_name": null,
+      "litellm_overhead_time_ms": null,
+      "model_id": null,
+      "response_cost": 0.0,
+      "usage_object": null
+    },
+    "id": "8596cf91-ec5e-42f0-8895-db9fcbb84ccf",
+    "litellm_call_id": "8596cf91-ec5e-42f0-8895-db9fcbb84ccf",
+    "messages": [
+      {
+        "content": "default-message-value",
+        "role": "user"
+      }
+    ],
+    "metadata": {
+      "applied_guardrails": [],
+      "cold_storage_object_key": null,
+      "mcp_tool_call_metadata": {
+        "arguments": {
+          "api_key": "should-be-redacted",
+          "message": "hi mcp"
+        },
+        "mcp_auth_mode": null,
+        "mcp_server_cost_info": null,
+        "mcp_server_logo_url": null,
+        "mcp_server_name": "mockmcp",
+        "mcp_server_resource": "http://mock-mcp:9082",
+        "mcp_session_id": "d7f673b3f9df4bc8b5aab20ca9349a91",
+        "name": "echo",
+        "namespaced_tool_name": "mockmcp/echo"
+      },
+      "prompt_management_metadata": null,
+      "requester_custom_headers": {
+        "x-litellm-session-id": "spike-session-0001"
+      },
+      "requester_ip_address": "",
+      "requester_metadata": {
+        "headers": {
+          "accept": "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "d7f673b3f9df4bc8b5aab20ca9349a91",
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          "user-agent": "spike-mcp-client/0.1",
+          "x-litellm-session-id": "spike-session-0001"
+        },
+        "session_id": "spike-session-0001",
+        "trace_id": "spike-session-0001",
+        "used_client_oauth_token": false
+      },
+      "routing_decision": null,
+      "spend_logs_metadata": null,
+      "team_alias": null,
+      "team_id": null,
+      "usage_object": {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0
+      },
+      "used_client_oauth_token": false,
+      "user_agent": "spike-mcp-client/0.1",
+      "user_api_key_alias": "spike-key",
+      "user_api_key_auth_metadata": {
+        "org": "spike-org",
+        "purpose": "cer-346"
+      },
+      "user_api_key_budget_reset_at": null,
+      "user_api_key_end_user_id": null,
+      "user_api_key_hash": "c140336c8926d6d5b9624d1f2b736c431fd9fc9afc644e56a961a90d40809ace",
+      "user_api_key_max_budget": null,
+      "user_api_key_org_alias": null,
+      "user_api_key_org_id": null,
+      "user_api_key_project_alias": null,
+      "user_api_key_project_id": null,
+      "user_api_key_request_route": "/mcp",
+      "user_api_key_spend": 0.0,
+      "user_api_key_team_alias": "spike-team",
+      "user_api_key_team_id": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2",
+      "user_api_key_team_max_budget": null,
+      "user_api_key_team_spend": 0.0,
+      "user_api_key_user_email": null,
+      "user_api_key_user_id": "spike-user",
+      "user_api_key_user_max_budget": null,
+      "user_api_key_user_spend": null,
+      "vector_store_request_metadata": null
+    },
+    "model": "MCP: mockmcp-echo",
+    "model_group": "",
+    "model_id": "",
+    "model_map_information": {
+      "model_map_key": "",
+      "model_map_value": null
+    },
+    "model_parameters": {},
+    "prompt_tokens": 0,
+    "request_model_access_groups": [],
+    "request_tags": [
+      "User-Agent: spike-mcp-client",
+      "User-Agent: spike-mcp-client/0.1"
+    ],
+    "requester_ip_address": "",
+    "response": {
+      "content": [
+        {
+          "annotations": null,
+          "meta": null,
+          "text": "echo: hi mcp",
+          "type": "text"
+        }
+      ],
+      "is_error": false,
+      "meta": null,
+      "result_type": "complete",
+      "structured_content": null
+    },
+    "response_cost": 0.0,
+    "response_cost_failure_debug_info": null,
+    "response_time": 0.018043041229248047,
+    "saved_cache_cost": 0.0,
+    "session_id": "spike-session-0001",
+    "standard_built_in_tools_params": {
+      "file_search": null,
+      "web_search_options": null
+    },
+    "startTime": 1792109094.41259,
+    "status": "success",
+    "status_fields": {
+      "guardrail_status": "not_run",
+      "llm_api_status": "success"
+    },
+    "stream": null,
+    "total_tokens": 0,
+    "trace_id": "spike-session-0001",
+    "user_agent": "spike-mcp-client/0.1",
+    "zero_cost_diagnostic": null
+  },
+  "start_time": "2026-10-16T00:04:54.412590"
+}

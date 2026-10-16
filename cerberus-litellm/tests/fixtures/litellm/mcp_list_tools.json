@@ -1,0 +1,274 @@
+{
+  "end_time": "2026-10-16T00:04:54.349713",
+  "response_obj": [
+    {
+      "annotations": null,
+      "description": "Echo a message back",
+      "execution": null,
+      "icons": null,
+      "input_schema": {
+        "properties": {
+          "api_key": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "mockmcp-echo",
+      "output_schema": null,
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Return a large document",
+      "execution": null,
+      "icons": null,
+      "input_schema": {
+        "properties": {
+          "doc_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "mockmcp-lookup_big",
+      "output_schema": null,
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Always returns a tool error",
+      "execution": null,
+      "icons": null,
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "meta": null,
+      "name": "mockmcp-fail",
+      "output_schema": null,
+      "title": null
+    }
+  ],
+  "standard_logging_object": {
+    "api_base": "",
+    "autorouter_baseline_observation": null,
+    "autorouter_savings": null,
+    "autorouter_savings_estimate": null,
+    "cache_hit": null,
+    "cache_key": null,
+    "call_type": "list_mcp_tools",
+    "completionStartTime": 1792109094.349713,
+    "completion_tokens": 0,
+    "cost_breakdown": null,
+    "custom_llm_provider": null,
+    "endTime": 1792109094.349713,
+    "end_user": null,
+    "error_information": {
+      "error_budget_entity_id": null,
+      "error_budget_entity_type": null,
+      "error_budget_limit": null,
+      "error_budget_spend": null,
+      "error_class": "",
+      "error_code": "",
+      "error_message": "",
+      "error_provider_request_id": null,
+      "error_rate_limit_category": null,
+      "error_rate_limit_type": null,
+      "llm_provider": "",
+      "normalized_error": null,
+      "traceback": ""
+    },
+    "error_str": null,
+    "guardrail_information": null,
+    "hidden_params": {
+      "additional_headers": null,
+      "api_base": null,
+      "batch_failed_requests": null,
+      "batch_models": null,
+      "batch_successful_requests": null,
+      "cache_key": null,
+      "litellm_model_name": null,
+      "litellm_overhead_time_ms": null,
+      "model_id": null,
+      "response_cost": null,
+      "usage_object": null
+    },
+    "id": "a9b6f1f2-989e-43d8-817a-a6be5ed14c01",
+    "litellm_call_id": "a9b6f1f2-989e-43d8-817a-a6be5ed14c01",
+    "messages": [
+      {
+        "content": "default-message-value",
+        "role": "user"
+      }
+    ],
+    "metadata": {
+      "applied_guardrails": [],
+      "cold_storage_object_key": null,
+      "mcp_tool_call_metadata": null,
+      "prompt_management_metadata": null,
+      "requester_custom_headers": null,
+      "requester_ip_address": null,
+      "requester_metadata": null,
+      "routing_decision": null,
+      "spend_logs_metadata": {
+        "mcp_operation": "list_tools",
+        "source": "mcp_protocol"
+      },
+      "team_alias": null,
+      "team_id": null,
+      "usage_object": {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0
+      },
+      "used_client_oauth_token": null,
+      "user_agent": null,
+      "user_api_key_alias": "spike-key",
+      "user_api_key_auth_metadata": {
+        "purpose": "cer-346"
+      },
+      "user_api_key_budget_reset_at": null,
+      "user_api_key_end_user_id": null,
+      "user_api_key_hash": "c140336c8926d6d5b9624d1f2b736c431fd9fc9afc644e56a961a90d40809ace",
+      "user_api_key_max_budget": null,
+      "user_api_key_org_alias": null,
+      "user_api_key_org_id": null,
+      "user_api_key_project_alias": null,
+      "user_api_key_project_id": null,
+      "user_api_key_request_route": "/mcp",
+      "user_api_key_spend": 0.0,
+      "user_api_key_team_alias": "spike-team",
+      "user_api_key_team_id": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2",
+      "user_api_key_team_max_budget": null,
+      "user_api_key_team_spend": 0.0,
+      "user_api_key_user_email": null,
+      "user_api_key_user_id": "spike-user",
+      "user_api_key_user_max_budget": null,
+      "user_api_key_user_spend": null,
+      "vector_store_request_metadata": null
+    },
+    "model": "MCP: list_tools",
+    "model_group": "",
+    "model_id": "",
+    "model_map_information": {
+      "model_map_key": "",
+      "model_map_value": null
+    },
+    "model_parameters": {},
+    "prompt_tokens": 0,
+    "request_model_access_groups": [],
+    "request_tags": [],
+    "requester_ip_address": null,
+    "response": [
+      {
+        "annotations": null,
+        "description": "Echo a message back",
+        "execution": null,
+        "icons": null,
+        "input_schema": {
+          "properties": {
+            "api_key": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "type": "object"
+        },
+        "meta": null,
+        "name": "mockmcp-echo",
+        "output_schema": null,
+        "title": null
+      },
+      {
+        "annotations": null,
+        "description": "Return a large document",
+        "execution": null,
+        "icons": null,
+        "input_schema": {
+          "properties": {
+            "doc_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "doc_id"
+          ],
+          "type": "object"
+        },
+        "meta": null,
+        "name": "mockmcp-lookup_big",
+        "output_schema": null,
+        "title": null
+      },
+      {
+        "annotations": null,
+        "description": "Always returns a tool error",
+        "execution": null,
+        "icons": null,
+        "input_schema": {
+          "properties": {
+            "reason": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": null,
+        "name": "mockmcp-fail",
+        "output_schema": null,
+        "title": null
+      }
+    ],
+    "response_cost": 0.0,
+    "response_cost_failure_debug_info": {
+      "base_model": null,
+      "cache_hit": null,
+      "call_type": "list_mcp_tools",
+      "custom_llm_provider": null,
+      "custom_pricing": false,
+      "error_str": "litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=MCP: list_tools\n Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers",
+      "model": "MCP: list_tools",
+      "traceback_str": "Traceback (most recent call last):\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/litellm_logging.py\", line 1924, in _response_cost_calculator\n    response_cost: Final = litellm.response_cost_calculator(**response_cost_calculator_kwargs)\n                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/cost_calculator.py\", line 2072, in response_cost_calculator\n    raise e\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/cost_calculator.py\", line 2052, in response_cost_calculator\n    response_cost = completion_cost(\n        completion_response=response_object,\n    ...<14 lines>...\n        region_name=region_name,\n    )\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/cost_calculator.py\", line 1959, in completion_cost\n    raise e\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/cost_calculator.py\", line 1956, in completion_cost\n    raise e\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/cost_calculator.py\", line 1813, in completion_cost\n    ) = cost_per_token(\n        ~~~~~~~~~~~~~~^\n        model=model,\n        ^^^^^^^^^^^^\n    ...<19 lines>...\n        custom_model_info=_ocr_model_info(litellm_logging_obj, custom_pricing, router_model_id),\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/cost_calculator.py\", line 542, in cost_per_token\n    _, custom_llm_provider, _, _ = litellm.get_llm_provider(model=model)\n                                   ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/get_llm_provider_logic.py\", line 554, in get_llm_provider\n    raise e\n  File \"/app/.venv/lib/python3.13/site-packages/litellm/litellm_core_utils/get_llm_provider_logic.py\", line 541, in get_llm_provider\n    raise litellm.exceptions.BadRequestError(\n    ...<4 lines>...\n    )\nlitellm.exceptions.BadRequestError: litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=MCP: list_tools\n Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers\n"
+    },
+    "response_time": 0.01680612564086914,
+    "saved_cache_cost": 0.0,
+    "session_id": "",
+    "standard_built_in_tools_params": {
+      "file_search": null,
+      "web_search_options": null
+    },
+    "startTime": 1792109094.332907,
+    "status": "success",
+    "status_fields": {
+      "guardrail_status": "not_run",
+      "llm_api_status": "success"
+    },
+    "stream": null,
+    "total_tokens": 0,
+    "trace_id": "spike-session-0001",
+    "user_agent": null,
+    "zero_cost_diagnostic": null
+  },
+  "start_time": "2026-10-16T00:04:54.332907"
+}
