@@ -356,6 +356,21 @@ def test_redact_secrets_masks_patterns_and_keeps_surroundings(text, expected):
     assert redact_secrets(text) == expected
 
 
+@pytest.mark.parametrize(
+    "prose,masked",
+    [
+        ("retry the token: 5 times", "retry the token: [REDACTED] times"),
+        ("monkey=happy today", "monkey=[REDACTED] today"),
+        ("the secret = banana", "the secret = [REDACTED]"),
+        ("Basic authentication works", "Basic [REDACTED] works"),
+    ],
+)
+def test_prose_that_looks_like_a_secret_is_over_redacted_by_design(prose, masked):
+    # Shape-based masking cannot tell prose from a credential, so it errs on
+    # the safe side. Pinned so a change to that direction is a deliberate one.
+    assert redact_secrets(prose) == masked
+
+
 def test_redact_secrets_leaves_plain_messages_alone():
     for text in (
         "mock upstream exploded",

@@ -207,15 +207,14 @@ class Pipeline:
         else:
             event["headers"] = None
 
-        if kind == "schema":
-            # Tool/resource/prompt catalogues are declarations, not values: a
-            # parameter named ``password`` or ``api_key`` is a definition, and
-            # blanket key-name redaction (sanitize_dict) would blank exactly the
-            # sensitive-looking parameters from the inventory, so it is not run
-            # here. Values are scrubbed instead (_scrub_schema, above); the
-            # strings are truncated by the generic pass and the size cap applies.
-            pass
-        elif kind == "mcp":
+        # kind == "schema" is deliberately absent below. Tool/resource/prompt
+        # catalogues are declarations, not values: a parameter named
+        # ``password`` or ``api_key`` is a definition, and blanket key-name
+        # redaction (sanitize_dict) would blank exactly the sensitive-looking
+        # parameters from the inventory. Their values were scrubbed instead
+        # (_scrub_schema, above); the strings are truncated by the generic
+        # pass and the size cap applies.
+        if kind == "mcp":
             if self.config.capture_mcp_arguments:
                 arguments = truncate_values(sanitize_dict(custom_data.get("arguments") or {}))
                 custom_data["arguments"] = arguments
@@ -223,7 +222,7 @@ class Pipeline:
             else:
                 custom_data["arguments"] = {}
                 event["body"] = None
-        elif event.get("body") is not None:
+        elif kind != "schema" and event.get("body") is not None:
             event["body"] = truncate_values(sanitize_dict(event["body"]))
 
         return self._enforce_size(event)

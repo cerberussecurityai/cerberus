@@ -14,6 +14,7 @@ at module level and touches no environment until ``CerberusLogger()`` runs.)
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import logging
 import random
@@ -119,6 +120,7 @@ class CerberusLogger(CustomLogger):
             if captured:
                 logger.info("cerberus-litellm captures content: %s", ", ".join(captured))
         self.sink: Sink | None = None
+        self._exit_hook_registered = False
         self._client: httpx.AsyncClient | None = None  # tests inject a mock transport
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._counts: dict[str, int] = {
@@ -237,15 +239,30 @@ class CerberusLogger(CustomLogger):
             self._seen.popitem(last=False)
 
     def _ensure_sink(self) -> None:
+        loop = asyncio.get_running_loop()
         if self.sink is not None:
-            return
+            if self.sink.runs_on(loop):
+                return
+            # The event loop was replaced (a reload, a test harness): the old
+            # flush task died with its loop. Keep the queued events and hand the
+            # same queue to a new sink on the current loop.
+            logger.warning(
+                "cerberus-litellm: event loop changed; restarting the delivery task "
+                "(%d queued events kept)",
+                len(self.queue),
+            )
+            self.sink.abandon()
+            self.sink = None
         client = self._client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         self.sink = Sink(self.config, self.queue, client=client, on_tick=self._log_stats_if_due)
         self.sink.start()
         # LiteLLM v1.105.1 gives a callback no shutdown hook, so events still
         # queued when the process exits would be lost; register a best-effort
-        # flush. Registered once, when events first flow (not at import).
-        atexit.register(self._shutdown_flush)
+        # flush. Registered once, when events first flow (not at import), and
+        # not again if the sink is later restarted on a new loop.
+        if not self._exit_hook_registered:
+            self._exit_hook_registered = True
+            atexit.register(self._shutdown_flush)
 
     def _shutdown_flush(self, client: httpx.Client | None = None) -> None:
         """Best-effort synchronous flush at interpreter exit. Never raises.

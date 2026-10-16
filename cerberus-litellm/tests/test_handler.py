@@ -282,6 +282,70 @@ async def test_sampling_never_hides_tool_catalogues(plugin):
     assert sampled.stats()["sampled_out"] == 1  # the chat call, not the catalogue
 
 
+def test_a_new_event_loop_gets_a_fresh_sink_and_keeps_the_queue(config, caplog, exit_hooks):
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm")
+    plugin = CerberusLogger(replace(config, flush_interval_ms=60000))
+
+    async def first():
+        await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)
+        return plugin.sink
+
+    async def second():
+        await plugin.async_log_failure_event(_kwargs("failure_500"), None, 0, 1)
+        stats = plugin.stats()
+        assert plugin.sink.loop_is_running()
+        await plugin.sink.close()
+        return plugin.sink, stats
+
+    sink_one = asyncio.run(first())  # asyncio.run closes its loop on return
+    assert len(plugin.queue) == 1
+    sink_two, stats = asyncio.run(second())
+    assert sink_two is not sink_one
+    assert sink_one._task.done()  # the old flush task is not left behind
+    assert stats["queued"] == 2  # the first loop's event was kept, plus the new one
+    warnings = [r.getMessage() for r in caplog.records if "event loop changed" in r.getMessage()]
+    assert len(warnings) == 1 and "1 queued events kept" in warnings[0]
+    assert exit_hooks == [plugin._shutdown_flush]  # the exit hook is not registered twice
+
+
+async def test_the_same_loop_keeps_the_existing_sink(plugin):
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)
+    sink = plugin.sink
+    await plugin.async_log_failure_event(_kwargs("failure_500"), None, 0, 1)
+    assert plugin.sink is sink
+    await sink.close()
+
+
+def test_two_threads_racing_the_first_handler_access_build_one_logger(monkeypatch):
+    import threading
+    import time
+
+    package = importlib.import_module("cerberus_litellm")
+    built = []
+
+    class SlowLogger:
+        def __init__(self):
+            time.sleep(0.2)  # wide enough for the other thread to arrive
+            built.append(self)
+
+    monkeypatch.setattr("cerberus_litellm.plugin.CerberusLogger", SlowLogger)
+    monkeypatch.setattr(package, "_handler", None)
+    results = []
+    barrier = threading.Barrier(2)
+
+    def grab():
+        barrier.wait()
+        results.append(package.handler)
+
+    threads = [threading.Thread(target=grab) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(built) == 1
+    assert results[0] is results[1] is built[0]
+
+
 async def test_sink_starts_lazily_on_running_loop(plugin):
     assert plugin.sink is None
     await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)

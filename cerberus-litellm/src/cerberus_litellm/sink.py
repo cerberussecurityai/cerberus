@@ -67,6 +67,24 @@ class Sink:
         self._loop = asyncio.get_running_loop()
         self._task = self._loop.create_task(self._flush_loop())
 
+    def runs_on(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """True when this sink's flush task was started on ``loop``."""
+        return self._loop is loop
+
+    def abandon(self) -> None:
+        """Stop using this sink without awaiting anything (its loop may be gone).
+
+        The queue is left untouched so a replacement sink can take over its
+        events. Cancelling a task whose loop is closed can raise; that is fine.
+        """
+        self._stop.set()
+        task = self._task
+        if task is not None and not task.done():
+            try:
+                task.cancel()
+            except RuntimeError:  # the task's loop is already closed
+                pass
+
     def loop_is_running(self) -> bool:
         """True while the event loop this sink started on is still running."""
         return self._loop is not None and self._loop.is_running()
