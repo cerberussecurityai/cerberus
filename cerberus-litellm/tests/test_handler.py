@@ -164,6 +164,35 @@ async def test_same_call_success_and_failure_are_both_kept(plugin):
     assert len(await _drain(plugin)) == 2
 
 
+async def test_a_failed_first_firing_leaves_the_call_unmarked_so_the_duplicate_delivers(plugin):
+    real = plugin.pipeline.finalize
+    calls = []
+
+    def flaky(event, kind):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("finalize bug")
+        return real(event, kind)
+
+    plugin.pipeline.finalize = flaky
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)  # raises inside, absorbed
+    assert plugin.stats()["errors"] == 1
+    assert await _drain(plugin) == []
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)  # the duplicate firing
+    assert [e["method"] for e in await _drain(plugin)] == ["llm_chat_completion"]
+    assert plugin.stats()["deduplicated"] == 0
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)  # now it is a repeat
+    assert plugin.stats()["deduplicated"] == 1
+
+
+async def test_a_sampled_out_call_is_marked_so_its_repeat_is_dropped_too(plugin):
+    sampled = CerberusLogger(replace(plugin.config, sample_rate=0.0, flush_interval_ms=60000))
+    await sampled.async_log_success_event(_kwargs("chat"), None, 0, 1)
+    await sampled.async_log_success_event(_kwargs("chat"), None, 0, 1)
+    assert sampled.stats()["sampled_out"] == 1
+    assert sampled.stats()["deduplicated"] == 1
+
+
 async def test_malformed_payload_is_absorbed(plugin, caplog):
     caplog.set_level(logging.WARNING)
     junk = {

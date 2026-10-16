@@ -36,3 +36,9 @@ HEALTH_SEGMENTS = frozenset(
         "liveness",
     }
 )
+
+
+def finalized(pipeline, event, kind):
+    """The finalized event only (``Pipeline.finalize`` returns ``(event, size)`` or None)."""
+    result = pipeline.finalize(event, kind)
+    return None if result is None else result[0]

@@ -1,10 +1,12 @@
+import pytest
+
 from cerberus_litellm.queue import BoundedQueue
 
 
 def test_append_and_drain_fifo():
     queue = BoundedQueue(10)
     for i in range(5):
-        assert queue.append({"i": i})
+        assert queue.append({"i": i}, 0)
     assert len(queue) == 5
     assert [e["i"] for e in queue.drain(3)] == [0, 1, 2]
     assert [e["i"] for e in queue.drain(10)] == [3, 4]
@@ -13,9 +15,9 @@ def test_append_and_drain_fifo():
 
 def test_drop_on_full():
     queue = BoundedQueue(2)
-    assert queue.append({"i": 0})
-    assert queue.append({"i": 1})
-    assert not queue.append({"i": 2})
+    assert queue.append({"i": 0}, 0)
+    assert queue.append({"i": 1}, 0)
+    assert not queue.append({"i": 2}, 0)
     assert queue.dropped_full == 1
     # Existing events are never evicted.
     assert [e["i"] for e in queue.drain(10)] == [0, 1]
@@ -48,6 +50,13 @@ def test_count_bound_is_unchanged_by_the_byte_budget():
     assert not queue.append({"i": 2}, 1)
     assert queue.dropped_full == 1
     assert queue.dropped_bytes == 0
+
+
+def test_a_size_is_required_so_the_byte_budget_cannot_be_bypassed():
+    queue = BoundedQueue(10, max_bytes=100)
+    with pytest.raises(TypeError):
+        queue.append({"i": 0})  # type: ignore[call-arg]
+    assert len(queue) == 0
 
 
 def test_no_byte_budget_means_count_bound_only():

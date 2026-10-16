@@ -90,7 +90,7 @@ cerberus/
 └── publish_package.sh
 ```
 
-The five Python packages below are published independently to PyPI:
+Five of the six Python packages are published independently to PyPI (`cerberus-agentcore-interceptor` ships as a Lambda zip instead):
 - `cerberus-core` — shared sanitization logic and sensitive key definitions
 - `cerberus-django` — Django middleware (depends on cerberus-core)
 - `cerberus-mcp` — MCP server wrapper (depends on cerberus-core)

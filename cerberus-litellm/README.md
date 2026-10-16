@@ -150,7 +150,8 @@ tool name.
 - **Content redaction is by key name.** Values under sensitive keys (for example `api_key`,
   `password`) are replaced with `[REDACTED]`. Prompts and completions receive key-name-based
   sanitisation only, the same as the Envoy AI Gateway bridge: message content is not scanned for
-  secrets in free text. Where that matters, set `CERBERUS_CAPTURE_LLM_CONTENT=false`. Error and MCP result
+  secrets in free text, so an API key pasted into a user message is not redacted.
+  `CERBERUS_CAPTURE_LLM_CONTENT=false` is the control where that matters. Error and MCP result
   text is additionally masked for common credential shapes (bearer and basic credentials,
   provider-style API tokens, URL userinfo, `key=` style parameters).
 - **The plugin reads only the logging payload.** It never reads or serialises the proxy's
@@ -178,6 +179,11 @@ tool name.
   it.
 - **Concurrency.** The queue assumes all access happens on the proxy's single event loop. Do not
   run the callback under a threaded executor.
+- **Sampling is per call.** With `CERBERUS_SAMPLE_RATE` below 1, an MCP tool call and the LLM
+  turn around it are sampled independently, so one can be reported without the other. Tool
+  catalogues are never sampled out.
+- **Workers.** Under `uvicorn --reload` or with several workers, each worker process holds its
+  own queue, sink and exit flush.
 - **Duplicate suppression is bounded.** LiteLLM can fire a logging hook more than once for one
   call; the plugin suppresses the repeats using a window of the last 4096 call identifiers. A
   flood of unique call ids evicts older entries, which only affects duplicate suppression, never

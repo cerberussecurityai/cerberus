@@ -62,7 +62,7 @@ async def test_flush_posts_batches_and_counts(config, queue):
     received: list = []
     sink = make_sink(config, queue, make_stub_ingest(received))
     for i in range(120):
-        queue.append({"endpoint": f"llm://openai/gpt-{i}", "method": "llm_chat_completion"})
+        queue.append({"endpoint": f"llm://openai/gpt-{i}", "method": "llm_chat_completion"}, 0)
     await sink.flush_once()
     assert len(received) == 120
     assert sink.posted == 120
@@ -77,7 +77,7 @@ async def test_invalid_key_drops_batch(config, queue):
     received: list = []
     bad_config = replace(config, token="sk_test_wrong")
     sink = make_sink(bad_config, queue, make_stub_ingest(received))
-    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    queue.append({"endpoint": "llm://openai/gpt-4o"}, 0)
     await sink.flush_once()
     assert received == []
     assert sink.post_failures == 1
@@ -88,7 +88,7 @@ async def test_invalid_key_drops_batch(config, queue):
 async def test_ingest_error_body_is_logged_only_at_debug(config, queue, caplog):
     caplog.set_level(logging.DEBUG, logger="cerberus_litellm.sink")
     sink = make_sink(replace(config, token="sk_test_wrong"), queue, make_stub_ingest([]))
-    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    queue.append({"endpoint": "llm://openai/gpt-4o"}, 0)
     await sink.flush_once()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
@@ -103,7 +103,7 @@ async def test_connection_error_drops_batch(config, queue):
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(raise_connect_error))
     sink = Sink(config, queue, client=client)
-    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    queue.append({"endpoint": "llm://openai/gpt-4o"}, 0)
     await sink.flush_once()
     assert sink.post_failures == 1
     assert len(queue) == 0
@@ -118,7 +118,7 @@ async def test_redirect_not_counted_as_delivered(config, queue):
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(redirect))
     sink = Sink(config, queue, client=client)
-    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    queue.append({"endpoint": "llm://openai/gpt-4o"}, 0)
     await sink.flush_once()
     assert sink.post_failures == 1
     assert sink.posted == 0
@@ -128,8 +128,8 @@ async def test_redirect_not_counted_as_delivered(config, queue):
 async def test_health_endpoints_skipped_server_side(config, queue):
     received: list = []
     sink = make_sink(config, queue, make_stub_ingest(received))
-    queue.append({"endpoint": "https://api.example.com/health"})
-    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    queue.append({"endpoint": "https://api.example.com/health"}, 0)
+    queue.append({"endpoint": "llm://openai/gpt-4o"}, 0)
     await sink.flush_once()
     assert len(received) == 1
     assert received[0]["endpoint"] == "llm://openai/gpt-4o"
@@ -141,7 +141,7 @@ async def test_health_endpoints_skipped_server_side(config, queue):
 async def test_close_flushes_remaining(config, queue):
     received: list = []
     sink = make_sink(config, queue, make_stub_ingest(received))
-    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    queue.append({"endpoint": "llm://openai/gpt-4o"}, 0)
     await sink.close()
     assert len(received) == 1
 
@@ -172,7 +172,7 @@ async def test_close_does_not_drop_in_flight_batch(config, queue):
     client = _GatedClient()
     sink = Sink(replace(config, flush_interval_ms=10), queue, client=client)
     for i in range(3):
-        queue.append({"endpoint": f"llm://openai/gpt-{i}", "method": "llm_chat_completion"})
+        queue.append({"endpoint": f"llm://openai/gpt-{i}", "method": "llm_chat_completion"}, 0)
     sink.start()
     await asyncio.wait_for(client.started.wait(), timeout=2)
     close_task = asyncio.create_task(sink.close())
@@ -195,9 +195,9 @@ async def test_nan_batch_is_dropped_and_counted_without_ending_the_loop(config, 
     cfg = replace(config, flush_interval_ms=100, batch_size=1)
     sink = Sink(cfg, queue, client=httpx.AsyncClient(transport=transport))
     sink.start()
-    queue.append({"endpoint": "llm://openai/bad", "x": float("nan")})
+    queue.append({"endpoint": "llm://openai/bad", "x": float("nan")}, 0)
     await asyncio.sleep(0.3)
-    queue.append(_events()[0])
+    queue.append(_events()[0], 0)
     await asyncio.sleep(0.35)
     task_alive = sink._task is not None and not sink._task.done()
     await sink.close()
@@ -219,15 +219,33 @@ async def test_post_raising_value_error_does_not_end_the_sink_task(config, queue
     cfg = replace(config, flush_interval_ms=100, batch_size=1)
     sink = Sink(cfg, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     sink.start()
-    queue.append(_events()[0])
+    queue.append(_events()[0], 0)
     await asyncio.sleep(0.3)
-    queue.append(_events()[0])
+    queue.append(_events()[0], 0)
     await asyncio.sleep(0.35)
     alive = not sink._task.done()
     await sink.close()
     assert alive
     assert sink.post_failures == 1
     assert sink.posted == 1
+
+
+async def test_persistent_rejection_logs_a_bounded_number_of_warnings(config, queue, caplog):
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm.sink")
+    sink = Sink(
+        replace(config, batch_size=1),
+        queue,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(403))),
+    )
+    for event in _events(40):
+        queue.append(event, 0)
+    await sink.flush_once()  # up to MAX_BATCHES_PER_FLUSH posts
+    await sink.flush_once()
+    assert sink.post_failures == 40
+    warnings = [r for r in caplog.records if "ingest returned 403" in r.getMessage()]
+    assert len(warnings) == 1  # throttled; the rest are counted, not logged
+    assert sink._throttle.suppressed == 39
+    await sink.close()
 
 
 async def test_non_http_errors_are_logged_by_type_only(config, queue, caplog):
@@ -237,7 +255,7 @@ async def test_non_http_errors_are_logged_by_type_only(config, queue, caplog):
         raise ValueError("secret-looking-detail")
 
     sink = Sink(config, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    queue.append(_events()[0])
+    queue.append(_events()[0], 0)
     await sink.flush_once()
     assert sink.post_failures == 1
     assert "ValueError" in caplog.text
@@ -254,7 +272,7 @@ async def test_batch_is_posted_as_strict_json_with_content_type(config, queue):
         return httpx.Response(200, json={"accepted": 1, "skipped": 0})
 
     sink = Sink(config, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    queue.append(_events()[0])
+    queue.append(_events()[0], 0)
     await sink.flush_once()
     assert captured["type"] == "application/json"
     assert json.loads(captured["body"])["events"][0]["method"] == "llm_chat_completion"
@@ -277,7 +295,7 @@ def test_flush_blocking_sends_at_most_two_batches(config, queue):
 
     sink, client = _blocking_sink(config, queue, handler)
     for event in _events(5):
-        queue.append(event)
+        queue.append(event, 0)
     sent, left = sink.flush_blocking(2.0, client=client)
     assert (sent, left) == (2, 3)
     assert len(posts) == 2
@@ -293,13 +311,13 @@ def test_flush_blocking_respects_the_time_budget(config, queue):
 
     sink, client = _blocking_sink(config, queue, handler)
     for event in _events(2):
-        queue.append(event)
+        queue.append(event, 0)
     sink.flush_blocking(1.5, client=client)
     assert seen_timeouts and all(0 < t <= 1.5 for t in seen_timeouts)
 
     # A spent budget sends nothing and leaves the events queued.
     for event in _events(2):
-        queue.append(event)
+        queue.append(event, 0)
     assert sink.flush_blocking(0.0, client=client) == (0, 2)
 
 
@@ -308,7 +326,7 @@ def test_flush_blocking_counts_failures_and_never_raises(config, queue):
         raise httpx.ConnectError("nope")
 
     sink, client = _blocking_sink(config, queue, handler)
-    queue.append(_events()[0])
+    queue.append(_events()[0], 0)
     sent, left = sink.flush_blocking(2.0, client=client)  # must not raise
     assert (sent, left) == (0, 0)  # attempted, but a failed POST is not counted as sent
     assert sink.post_failures == 1

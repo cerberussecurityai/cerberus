@@ -29,7 +29,7 @@ class BoundedQueue:
         """Sum of the encoded sizes of the queued events."""
         return self._bytes
 
-    def append(self, event: dict[str, Any], size: int = 0) -> bool:
+    def append(self, event: dict[str, Any], size: int) -> bool:
         """Queue an event of ``size`` encoded bytes.
 
         Returns False (and counts the drop) when the queue is at capacity or

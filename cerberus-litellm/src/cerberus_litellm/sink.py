@@ -182,7 +182,8 @@ class Sink:
         # README troubleshooting section.
         if not (200 <= response.status_code < 300):
             self.post_failures += 1
-            logger.warning(
+            self._throttle.warn(
+                logger,
                 "Dropping batch of %d events: ingest returned %d",
                 len(batch),
                 response.status_code,

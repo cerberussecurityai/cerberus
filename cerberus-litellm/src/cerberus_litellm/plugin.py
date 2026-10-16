@@ -149,9 +149,13 @@ class CerberusLogger(CustomLogger):
             if not isinstance(slo, Mapping):
                 self._counts["skipped_no_payload"] += 1
                 return
-            # Dedupe marks a call as seen before the sample check on purpose: a
-            # sampled-out call is not sent, so a repeat firing must not be either.
-            if self._is_duplicate(slo):
+            # A call is marked seen only once it has been handled (mapped and
+            # finalized, or sampled out on purpose: a sampled-out call is not
+            # sent, so its repeat firing must not be either). If mapping or
+            # finalizing raises, the id stays unmarked so a duplicate firing of
+            # the same call gets another chance to deliver.
+            dedupe_key = self._dedupe_key(slo)
+            if dedupe_key is not None and dedupe_key in self._seen:
                 self._counts["deduplicated"] += 1
                 return
             # Tool catalogues are exempt from sampling: they are rare, already
@@ -163,15 +167,19 @@ class CerberusLogger(CustomLogger):
                 and random.random() >= self.config.sample_rate
             )
             if sampled:
+                self._mark_seen(dedupe_key)
                 self._counts["sampled_out"] += 1
                 return
             self._ensure_sink()
+            ready: list[tuple[str, dict[str, Any], int]] = []
             for kind, event in self._map(slo, response_obj, kwargs):
-                finalized = self.pipeline.finalize(event, kind)
-                if finalized is None:
-                    continue
+                result = self.pipeline.finalize(event, kind)
+                if result is not None:
+                    ready.append((kind, result[0], result[1]))
+            self._mark_seen(dedupe_key)  # mapping and finalizing succeeded
+            for kind, finalized, size in ready:
                 # Drops are counted by the queue itself (by count or by bytes).
-                if self.queue.append(finalized, self.pipeline.last_size):
+                if self.queue.append(finalized, size):
                     self._counts[f"events_{kind}"] += 1
                     # A catalogue counts as reported only if it was queued with
                     # its tools intact; a shed or dropped report is retried.
@@ -194,23 +202,25 @@ class CerberusLogger(CustomLogger):
             return [("schema", event) for event in self._schema.events(slo, response_obj)]
         return [("llm", map_llm_event(slo, self.config, _request_headers(kwargs)))]
 
-    def _is_duplicate(self, slo: Mapping[str, Any]) -> bool:
+    @staticmethod
+    def _dedupe_key(slo: Mapping[str, Any]) -> str | None:
         call_id = payload.get(slo, "litellm_call_id")
         if not isinstance(call_id, str) or not call_id:
-            return False
+            return None
         # The call id can be chosen by the caller (x-litellm-call-id), so it is not
         # enough on its own: a caller that reuses one id must not silence its own
         # later calls. LiteLLM's duplicate firings of one call share timestamps.
-        key = (
+        return (
             f"{call_id}:{payload.status(slo)}:"
             f"{payload.get(slo, 'startTime')}:{payload.get(slo, 'endTime')}"
         )
-        if key in self._seen:
-            return True
+
+    def _mark_seen(self, key: str | None) -> None:
+        if key is None:
+            return
         self._seen[key] = None
         while len(self._seen) > DEDUPE_WINDOW:
             self._seen.popitem(last=False)
-        return False
 
     def _ensure_sink(self) -> None:
         if self.sink is not None:

@@ -89,13 +89,13 @@ class Pipeline:
         self.config = config
         self.dropped_oversize = 0
         self.dropped_unserializable = 0
-        # Encoded size of the event most recently returned by finalize(), so the
-        # queue can account bytes without serialising the event a second time.
-        self.last_size = 0
         self._throttle = LogThrottle()
 
-    def finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
-        """Sanitize captured content, bound scalar fields, enforce the byte cap."""
+    def finalize(self, event: dict[str, Any], kind: str) -> tuple[dict[str, Any], int] | None:
+        """Sanitize captured content, bound scalar fields, enforce the byte cap.
+
+        Returns ``(event, encoded_size)``, or None when the event is dropped.
+        """
         event["remote_addr"] = client_ip(event.get("remote_addr"))
         event["user_agent"] = truncate_values(event.get("user_agent"), MAX_USER_AGENT_CHARS)
         for field in ("user_id", "session_id"):
@@ -153,16 +153,25 @@ class Pipeline:
 
         return self._enforce_size(event)
 
-    def _enforce_size(self, event: dict[str, Any]) -> dict[str, Any] | None:
-        """Shed captured content, then drop the whole event, to stay under the cap."""
+    def _measure(self, event: dict[str, Any]) -> int | None:
+        """Encoded size of ``event``, or None (counted and logged) if it cannot be encoded."""
         try:
-            size = _encoded_size(event)
+            return _encoded_size(event)
         except (TypeError, ValueError):
             self._drop_unserializable(event)
             return None
+
+    def _enforce_size(self, event: dict[str, Any]) -> tuple[dict[str, Any], int] | None:
+        """Shed captured content, then drop the whole event, to stay under the cap.
+
+        Returns the event with its encoded size (carried to the queue so the
+        byte budget needs no second serialisation), or None when it is dropped.
+        """
+        size = self._measure(event)
+        if size is None:
+            return None
         if size <= self.config.max_event_bytes:
-            self.last_size = size
-            return event
+            return event, size
 
         event = {**event, "body": None}
         custom_data = dict(event.get("custom_data") or {})
@@ -176,10 +185,11 @@ class Pipeline:
         custom_data["content_dropped_oversize"] = True
         event["custom_data"] = custom_data
 
-        size = _encoded_size(event)
+        size = self._measure(event)
+        if size is None:
+            return None
         if size <= self.config.max_event_bytes:
-            self.last_size = size
-            return event
+            return event, size
 
         # Second stage: shed the enrichment too (headers, tags, guardrails,
         # error text). Losing enrichment beats losing the event.
@@ -193,10 +203,11 @@ class Pipeline:
         custom_data["metadata_dropped_oversize"] = True
         event["custom_data"] = custom_data
 
-        size = _encoded_size(event)
+        size = self._measure(event)
+        if size is None:
+            return None
         if size <= self.config.max_event_bytes:
-            self.last_size = size
-            return event
+            return event, size
 
         self._throttle.warn(
             logger,

@@ -1,5 +1,5 @@
 import pytest
-from helpers import load_capture
+from helpers import finalized, load_capture
 from shape import detection_shape, shape_problem
 
 from cerberus_litellm.mapper_llm import map_llm_event
@@ -22,7 +22,7 @@ MCP = ("mcp_tool_call", "mcp_tool_call_big", "mcp_tool_call_error")
 
 def _llm_event(name, config):
     slo = load_capture(name)["standard_logging_object"]
-    return Pipeline(config).finalize(map_llm_event(slo, config), "llm")
+    return finalized(Pipeline(config), map_llm_event(slo, config), "llm")
 
 
 @pytest.mark.parametrize("name", LLM)
@@ -62,7 +62,7 @@ def test_failures_and_embeddings_carry_input_but_no_output(config):
 @pytest.mark.parametrize("name", MCP)
 def test_mcp_events_meet_the_ingest_contract(name, config):
     slo = load_capture(name)["standard_logging_object"]
-    event = Pipeline(config).finalize(map_mcp_event(slo, config), "mcp")
+    event = finalized(Pipeline(config), map_mcp_event(slo, config), "mcp")
     assert shape_problem(event, config.max_event_bytes) is None
     assert event["method"].startswith("mcp_")
 
@@ -72,5 +72,5 @@ def test_schema_report_meets_the_ingest_contract(config):
     events = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)
     assert events
     for event in events:
-        finalized = Pipeline(config).finalize(event, "schema")
-        assert shape_problem(finalized, config.max_event_bytes) is None
+        out = finalized(Pipeline(config), event, "schema")
+        assert shape_problem(out, config.max_event_bytes) is None
