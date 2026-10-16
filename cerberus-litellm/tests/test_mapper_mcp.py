@@ -1,4 +1,5 @@
 import copy
+import json
 from dataclasses import replace
 
 from helpers import HEALTH_SEGMENTS, load_capture, load_expected
@@ -125,3 +126,26 @@ def test_health_named_server_is_guarded_in_endpoint_only(config):
     event = map_schema_reports(slo, tools, config)[0]
     assert event["endpoint"] == "mcp://readyz_tool/__schema__"
     assert event["custom_data"]["mcp_server"] == "readyz"
+
+
+def test_tool_error_text_is_withheld_when_results_capture_is_off(config):
+    event = _map("mcp_tool_call_error", replace(config, capture_mcp_results=False))
+    assert event["custom_data"]["error"] == "[tool error: result capture disabled]"
+    assert event["custom_data"]["result_is_error"] is True
+    assert event["custom_data"]["result_summary"] is None
+    assert "tool failed: spike" not in json.dumps(event)
+
+
+def test_transport_error_keeps_message_when_results_capture_is_off(config):
+    slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_class"] = "ConnectError"
+    slo["error_information"]["error_message"] = "connection refused"
+    event = map_mcp_event(slo, replace(config, capture_mcp_results=False))
+    assert event["custom_data"]["error"] == "connection refused"
+
+
+def test_error_text_obeys_result_cap_when_capture_is_on(config):
+    slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_message"] = "x" * 1000
+    event = map_mcp_event(slo, replace(config, mcp_result_max_chars=64))
+    assert event["custom_data"]["error"] == "x" * 64 + "...[TRUNCATED]"

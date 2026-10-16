@@ -25,6 +25,10 @@ from .mapper_llm import endpoint_segment
 
 MAX_LABEL_CHARS = 256
 TRUNCATION_MARKER = "...[TRUNCATED]"
+# An isError tool result arrives as a failure whose error message IS the result
+# text, so it is subject to the result-capture flag like a success result.
+TOOL_RESULT_ERROR_CLASS = "MCPToolResultError"
+RESULT_CAPTURE_OFF_MARKER = "[tool error: result capture disabled]"
 
 
 def split_namespaced(name: str, fallback: str) -> tuple[str, str]:
@@ -133,6 +137,12 @@ def map_mcp_event(slo: Mapping[str, Any], config: Config) -> dict[str, Any] | No
         else:
             summary = result_text(response.get("content"), config.mcp_result_max_chars)
 
+    error: str | None = errors["error_message"]
+    if config.capture_mcp_results:
+        error = result_text(error, config.mcp_result_max_chars)
+    elif error is not None and errors["error_class"] == TOOL_RESULT_ERROR_CLASS:
+        error = RESULT_CAPTURE_OFF_MARKER
+
     custom_data: dict[str, Any] = {
         "integration": "litellm",
         "mcp_server": server,
@@ -140,7 +150,7 @@ def map_mcp_event(slo: Mapping[str, Any], config: Config) -> dict[str, Any] | No
         "event_type": "tool_call",
         "duration_ms": payload.duration_ms(slo),
         "arguments": arguments,
-        "error": errors["error_message"],
+        "error": error,
         "result_summary": summary,
         "result_is_error": is_error,
         "result_type": _str_or_none(response.get("result_type")),
