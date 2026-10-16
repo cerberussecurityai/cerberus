@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import importlib
 import json
 import logging
@@ -19,12 +20,12 @@ def test_callback_path_resolves_like_litellm_loader(monkeypatch):
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
     monkeypatch.setenv("CERBERUS_TOKEN", "sk_test_0123456789")
     package = importlib.import_module("cerberus_litellm")
-    package._handler = None  # fresh singleton for this test
+    # monkeypatch restores the singleton even if an assert below fails.
+    monkeypatch.setattr(package, "_handler", None)
     instance = package.handler
     assert isinstance(instance, CerberusLogger)
     assert instance.disabled_reason is None
     assert package.handler is instance  # stable across lookups
-    package._handler = None
 
 
 def _kwargs(name: str) -> dict:
@@ -131,11 +132,27 @@ async def test_exception_in_mapper_is_counted_not_raised(plugin, monkeypatch):
 
 
 async def test_no_secrets_in_emitted_events(plugin):
-    kwargs = _full_kwargs()
-    assert "dummy-upstream-key" in json.dumps(kwargs)  # the fixture really carries it
+    needles = ("dummy-upstream-key", "sk-REDACTED-virtual-key", "should-not-leak", "Bearer ")
+    # The capture is real, so it has no authorization header (LiteLLM strips it
+    # before the logging hook). Plant the credential where a leak would
+    # plausibly surface, so every needle is genuinely present in the input.
+    kwargs = copy.deepcopy(_full_kwargs())
+    params = kwargs.setdefault("litellm_params", {})
+    for holder in (
+        params.setdefault("proxy_server_request", {}).setdefault("headers", {}),
+        params.setdefault("metadata", {}).setdefault("headers", {}),
+    ):
+        holder["authorization"] = "Bearer sk-REDACTED-virtual-key"
+    kwargs["api_key"] = "sk-REDACTED-virtual-key"
+    before = json.dumps(kwargs)
+    for needle in needles:
+        assert needle in before, f"input must carry {needle!r}"
+
     await plugin.async_log_success_event(kwargs, None, 0, 1)
-    serialized = json.dumps(await _drain(plugin))
-    for needle in ("dummy-upstream-key", "sk-REDACTED-virtual-key", "should-not-leak", "Bearer "):
+    events = await _drain(plugin)
+    assert events  # the event was produced; the needles are absent from it
+    serialized = json.dumps(events)
+    for needle in needles:
         assert needle not in serialized, needle
 
 
