@@ -74,30 +74,33 @@ def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
 _SCHEMA_VALUE_KEYWORDS = ("default", "const", "enum", "examples", "example")
 # Keywords whose value maps names to sub-schemas, or holds sub-schemas.
 _SCHEMA_MAPS = ("properties", "$defs", "definitions", "patternProperties")
-_SCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
-_SCHEMA_SINGLE = ("items", "additionalProperties", "not", "if", "then", "else")
 _MAX_SCHEMA_DEPTH = 20
 
 
-def _mask_declared_values(schema: Any, depth: int = 0) -> Any:
-    """Redact default/const/enum/examples under a schema that describes a secret."""
+def _mask_declared_values(node: Any, depth: int = 0) -> Any:
+    """Redact every declared value under a schema that describes a secret.
+
+    Fails closed: it does not rely on a list of sub-schema keywords, so it
+    walks EVERY dict and list value (prefixItems, contains, dependentSchemas,
+    list-valued items, anything a newer draft adds) and redacts the value
+    keywords (default, const, enum, examples, example) and vendor extensions
+    (keys starting ``x-``) at any depth. The price is that a nested property
+    that is itself called ``default`` or ``example`` is masked too.
+    """
     if depth > _MAX_SCHEMA_DEPTH:
         return REDACTED
-    if not isinstance(schema, dict):
-        return schema
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key in _SCHEMA_VALUE_KEYWORDS:
-            out[key] = REDACTED
-        elif key in _SCHEMA_MAPS and isinstance(value, dict):
-            out[key] = {n: _mask_declared_values(s, depth + 1) for n, s in value.items()}
-        elif key in _SCHEMA_LISTS and isinstance(value, list):
-            out[key] = [_mask_declared_values(s, depth + 1) for s in value]
-        elif key in _SCHEMA_SINGLE and isinstance(value, dict):
-            out[key] = _mask_declared_values(value, depth + 1)
-        else:
-            out[key] = value
-    return out
+    if isinstance(node, dict):
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            lowered = key.lower() if isinstance(key, str) else ""
+            if lowered in _SCHEMA_VALUE_KEYWORDS or lowered.startswith("x-"):
+                out[key] = REDACTED
+            else:
+                out[key] = _mask_declared_values(value, depth + 1)
+        return out
+    if isinstance(node, list):
+        return [_mask_declared_values(item, depth + 1) for item in node]
+    return node
 
 
 def _scrub_schema(node: Any, depth: int = 0) -> Any:

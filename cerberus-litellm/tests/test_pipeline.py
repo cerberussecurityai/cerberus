@@ -213,6 +213,44 @@ def test_schema_values_are_redacted_through_nested_structures(config):
     assert schema_out["$defs"]["secret"]["default"] == "[REDACTED]"
 
 
+def test_value_masking_inside_a_sensitive_property_fails_closed(config):
+    risky = {
+        "type": "array",
+        "description": "tokens to try",
+        "prefixItems": [{"type": "string", "default": "abc"}],
+        "items": [{"type": "string", "enum": ["sk-live-abcdef0123456789", "plain"]}],
+        "contains": {"const": "needle"},
+        "dependentSchemas": {"other": {"properties": {"x": {"default": "nested"}}}},
+        "then": {"else": {"examples": ["deep"]}},
+        "x-examples": ["vendor-extension-value"],
+        "X-Other": {"anything": "else"},
+    }
+    schema = {"type": "object", "properties": {"token": risky, "sibling": risky}}
+    out = finalized(Pipeline(config), _schema_event(config, schema), "schema")
+    props = out["custom_data"]["tools"][0]["input_schema"]["properties"]
+
+    token = props["token"]
+    assert token["type"] == "array" and token["description"] == "tokens to try"
+    assert token["prefixItems"] == [{"type": "string", "default": "[REDACTED]"}]
+    assert token["items"] == [{"type": "string", "enum": "[REDACTED]"}]
+    assert token["contains"] == {"const": "[REDACTED]"}
+    assert token["dependentSchemas"]["other"]["properties"]["x"] == {"default": "[REDACTED]"}
+    assert token["then"]["else"] == {"examples": "[REDACTED]"}
+    assert token["x-examples"] == "[REDACTED]"
+    assert token["X-Other"] == "[REDACTED]"
+    for raw in ("abc", "needle", "nested", "deep", "vendor-extension-value", "sk-live-"):
+        assert raw not in json.dumps(token)
+
+    # A non-sensitive sibling with the same shapes keeps its values (apart from
+    # secret-shaped strings, which are masked everywhere).
+    sibling = props["sibling"]
+    assert sibling["prefixItems"] == [{"type": "string", "default": "abc"}]
+    assert sibling["contains"] == {"const": "needle"}
+    assert sibling["x-examples"] == ["vendor-extension-value"]
+    assert sibling["items"][0]["enum"][1] == "plain"
+    assert "sk-live-abcdef0123456789" not in json.dumps(sibling)
+
+
 def test_secret_shaped_values_anywhere_in_a_catalogue_are_masked(config):
     schema = {
         "type": "object",
