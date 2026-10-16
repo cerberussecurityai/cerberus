@@ -21,7 +21,7 @@ from typing import Any
 
 from . import __version__, payload
 from .config import Config
-from .mapper_llm import endpoint_segment
+from .mapper_llm import clean_label, endpoint_segment
 
 MAX_LABEL_CHARS = 256
 TRUNCATION_MARKER = "...[TRUNCATED]"
@@ -69,8 +69,10 @@ def result_text(content: Any, limit: int) -> str | None:
 
 
 def _label(value: Any, fallback: str) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()[:MAX_LABEL_CHARS]
+    if isinstance(value, str):
+        cleaned = clean_label(value)[:MAX_LABEL_CHARS]
+        if cleaned:
+            return cleaned
     return fallback
 
 

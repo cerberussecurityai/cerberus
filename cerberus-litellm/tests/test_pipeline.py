@@ -111,7 +111,7 @@ def test_dropped_oversize_is_counted(config):
     cfg = replace(config, max_event_bytes=1024)
     pipeline = Pipeline(cfg)
     event = _llm("chat", cfg)
-    event["custom_data"]["request_tags"] = ["t" * 2000]  # unsheddable
+    event["custom_data"]["extra_field"] = ["t" * 2000]  # not content, tags or headers: unsheddable
     assert pipeline.finalize(event, "llm") is None
     assert pipeline.dropped_oversize == 1
 
@@ -230,7 +230,74 @@ def test_finalize_tolerates_junk_custom_data(config, custom_data):
     event["custom_data"] = custom_data
     out = Pipeline(config).finalize(event, "llm")
     assert out is not None
-    assert out["custom_data"] == {}
+    assert out["custom_data"] == {"integration": "litellm"}
+
+
+def test_nan_in_content_and_metadata_is_scrubbed_not_fatal(config):
+    event = _llm("chat", config)
+    event["custom_data"]["duration_ms"] = float("nan")
+    event["custom_data"]["temperature"] = float("inf")
+    event["body"]["input"]["tools"] = [{"parameters": {"default": float("-inf")}}]
+    pipeline = Pipeline(config)
+    out = pipeline.finalize(event, "llm")
+    assert out is not None
+    assert out["custom_data"]["duration_ms"] is None
+    assert out["custom_data"]["temperature"] is None
+    assert out["body"]["input"]["tools"][0]["parameters"]["default"] is None
+    json.dumps(out, allow_nan=False)  # strict JSON: this is what goes on the wire
+    assert pipeline.dropped_unserializable == 0
+
+
+def test_nan_outside_the_scrubbed_fields_is_dropped_and_counted(config):
+    pipeline = Pipeline(config)
+    event = _llm("chat", config)
+    event["unscrubbed_top_level"] = float("nan")
+    assert pipeline.finalize(event, "llm") is None
+    assert pipeline.dropped_unserializable == 1
+
+
+def test_caller_controlled_values_cannot_get_an_event_dropped(config):
+    cfg = replace(config, max_event_bytes=16384)
+    event = _llm("chat", cfg)
+    event["custom_data"]["litellm_end_user_id"] = "u" * 60_000  # the request's ``user`` field
+    event["user_id"] = "u" * 60_000
+    event["session_id"] = "s" * 60_000
+    event["custom_data"]["turn_id"] = "t" * 60_000
+    pipeline = Pipeline(cfg)
+    out = pipeline.finalize(event, "llm")
+    assert out is not None
+    assert pipeline.dropped_oversize == 0
+    assert len(out["user_id"]) <= 256 + len("...[TRUNCATED]")
+    assert len(out["session_id"]) <= 256 + len("...[TRUNCATED]")
+    assert len(out["custom_data"]["litellm_end_user_id"]) <= 256 + len("...[TRUNCATED]")
+    assert pipeline.last_size == len(json.dumps(out).encode())
+
+
+def test_many_tags_are_shed_before_the_event_is_dropped(config):
+    cfg = replace(config, max_event_bytes=6000)
+    event = _llm("chat", cfg)
+    event["custom_data"]["request_tags"] = [f"tag-{i}-" + "x" * 400 for i in range(1000)]
+    event["headers"] = {"x-tenant": "h" * 8000}
+    out = Pipeline(cfg).finalize(event, "llm")
+    assert out is not None
+    assert out["custom_data"]["request_tags"] == []
+    assert out["headers"] is None
+    assert out["custom_data"]["content_dropped_oversize"] is True
+    assert out["custom_data"]["metadata_dropped_oversize"] is True
+
+
+def test_oversize_warnings_are_throttled(config, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm.pipeline")
+    cfg = replace(config, max_event_bytes=1024)
+    pipeline = Pipeline(cfg)
+    for _ in range(5):
+        event = _llm("chat", cfg)
+        event["custom_data"]["extra_field"] = ["t" * 2000]
+        assert pipeline.finalize(event, "llm") is None
+    assert pipeline.dropped_oversize == 5
+    assert len([r for r in caplog.records if "oversized" in r.getMessage()]) == 1
 
 
 def test_finalize_redacts_error_and_result_summary(config):

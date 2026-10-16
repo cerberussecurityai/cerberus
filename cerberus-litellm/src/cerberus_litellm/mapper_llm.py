@@ -5,6 +5,8 @@ happen in pipeline.py. Field names were verified against LiteLLM v1.105.1
 captures (CER-346 spike); the accessors in payload.py tolerate their absence.
 """
 
+import math
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -51,6 +53,19 @@ def llm_method(call_type: str) -> str:
     return _CALL_TYPE_METHODS.get(call_type.strip().lower(), "llm_call")
 
 
+_WHITESPACE = re.compile(r"\s+")
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def clean_label(value: str) -> str:
+    """Trim, collapse internal whitespace to ``_`` and drop control characters.
+
+    Labels come from client-influenced fields (wildcard model routing, tool
+    names) and end up in endpoint strings and log lines.
+    """
+    return _CONTROL_CHARS.sub("", _WHITESPACE.sub("_", value.strip()))
+
+
 def endpoint_segment(label: str, suffix: str = "_model") -> str:
     """Make an endpoint label safe from the ingest health filter.
 
@@ -63,7 +78,7 @@ def endpoint_segment(label: str, suffix: str = "_model") -> str:
     segment. The ingest filter does not parse ``?`` or ``#``, so ``health?x``
     is not a health name and passes unchanged.
     """
-    core = label.strip().rstrip("/")
+    core = clean_label(label).rstrip("/")
     if not core:
         return "unknown"
     return "/".join(
@@ -72,8 +87,10 @@ def endpoint_segment(label: str, suffix: str = "_model") -> str:
 
 
 def _label(value: Any, fallback: str = "unknown") -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()[:MAX_LABEL_CHARS]
+    if isinstance(value, str):
+        cleaned = clean_label(value)[:MAX_LABEL_CHARS]
+        if cleaned:
+            return cleaned
     return fallback
 
 
@@ -91,6 +108,8 @@ def _model_label(slo: Mapping[str, Any], provider: str) -> str:
 
 def _number(value: Any) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
 

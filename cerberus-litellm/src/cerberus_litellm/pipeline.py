@@ -15,12 +15,14 @@ them in step.
 
 import json
 import logging
+import math
 import re
 from typing import Any
 
 from cerberus_core import normalize_ip, sanitize_dict
 
 from .config import SENSITIVE_HEADER_NAMES, Config
+from .logthrottle import LogThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,19 @@ MAX_ERROR_CHARS = 2048
 MAX_IP_CHARS = 64
 TRUNCATION_MARKER = "...[TRUNCATED]"
 _CATALOGUE_KEYS = ("tools", "resources", "prompts")
+# Identity-like custom_data strings that callers can influence (the request's
+# ``user`` field, session and turn headers): bounded tighter than content.
+_SHORT_CUSTOM_KEYS = (
+    "litellm_end_user_id",
+    "litellm_user_id",
+    "litellm_key_alias",
+    "litellm_team_id",
+    "litellm_team_alias",
+    "litellm_org_id",
+    "litellm_session_id",
+    "session_id",
+    "turn_id",
+)
 # Wire-style credential header names (config.py normalises cerberus-core's
 # Django-style spelling); matched case-insensitively below.
 _SENSITIVE_HEADERS = SENSITIVE_HEADER_NAMES
@@ -75,9 +90,15 @@ def redact_secrets(text: str) -> str:
 
 
 def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
-    """Recursively truncate string values longer than ``limit`` characters."""
+    """Recursively truncate string values longer than ``limit`` characters.
+
+    Non-finite floats (NaN, Infinity) become None: they are not valid JSON and
+    one of them would otherwise cost the event (or its whole batch).
+    """
     if isinstance(data, str):
         return data[:limit] + TRUNCATION_MARKER if len(data) > limit else data
+    if isinstance(data, float) and not math.isfinite(data):
+        return None
     if isinstance(data, dict):
         return {key: truncate_values(value, limit) for key, value in data.items()}
     if isinstance(data, list):
@@ -93,7 +114,9 @@ def client_ip(raw: Any) -> str:
 
 
 def _encoded_size(event: dict[str, Any]) -> int:
-    return len(json.dumps(event).encode("utf-8"))
+    # allow_nan=False: the wire form must be valid JSON, so a stray NaN fails here
+    # (and the event is dropped and counted) instead of failing the whole batch later.
+    return len(json.dumps(event, allow_nan=False).encode("utf-8"))
 
 
 class Pipeline:
@@ -103,13 +126,18 @@ class Pipeline:
         self.config = config
         self.dropped_oversize = 0
         self.dropped_unserializable = 0
+        # Encoded size of the event most recently returned by finalize(), so the
+        # queue can account bytes without serialising the event a second time.
+        self.last_size = 0
+        self._throttle = LogThrottle()
 
     def finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
         """Sanitize captured content, bound scalar fields, enforce the byte cap."""
         event["remote_addr"] = client_ip(event.get("remote_addr"))
         event["user_agent"] = truncate_values(event.get("user_agent"), MAX_USER_AGENT_CHARS)
-        if event.get("user_id") is not None:
-            event["user_id"] = truncate_values(event["user_id"], MAX_USER_ID_CHARS)
+        for field in ("user_id", "session_id"):
+            if event.get(field) is not None:
+                event[field] = truncate_values(event[field], MAX_USER_ID_CHARS)
         custom_data = event.get("custom_data")
         if not isinstance(custom_data, dict):
             custom_data = {}
@@ -124,6 +152,16 @@ class Pipeline:
             if isinstance(summary, str):
                 summary = redact_secrets(summary)
             custom_data["result_summary"] = truncate_values(summary)
+        # Everything else in custom_data can carry caller-supplied text (tags,
+        # the request's ``user`` field, headers): bound every string, and the
+        # identity-like ones tighter, so caller input cannot push an event
+        # over the cap on its own.
+        custom_data = truncate_values(custom_data)
+        for key in _SHORT_CUSTOM_KEYS:
+            if isinstance(custom_data.get(key), str):
+                custom_data[key] = truncate_values(custom_data[key], MAX_USER_ID_CHARS)
+        custom_data["integration"] = "litellm"
+        event["custom_data"] = custom_data
 
         headers = event.get("headers")
         if isinstance(headers, dict):
@@ -157,10 +195,10 @@ class Pipeline:
         try:
             size = _encoded_size(event)
         except (TypeError, ValueError):
-            logger.warning("Dropping unserializable event for endpoint %s", event.get("endpoint"))
-            self.dropped_unserializable += 1
+            self._drop_unserializable(event)
             return None
         if size <= self.config.max_event_bytes:
+            self.last_size = size
             return event
 
         event = {**event, "body": None}
@@ -177,9 +215,28 @@ class Pipeline:
 
         size = _encoded_size(event)
         if size <= self.config.max_event_bytes:
+            self.last_size = size
             return event
 
-        logger.warning(
+        # Second stage: shed the enrichment too (headers, tags, guardrails,
+        # error text). Losing enrichment beats losing the event.
+        event = {**event, "headers": None}
+        custom_data = dict(event["custom_data"])
+        for key in ("request_tags", "guardrails_applied"):
+            if custom_data.get(key):
+                custom_data[key] = []
+        if custom_data.get("error"):
+            custom_data["error"] = None
+        custom_data["metadata_dropped_oversize"] = True
+        event["custom_data"] = custom_data
+
+        size = _encoded_size(event)
+        if size <= self.config.max_event_bytes:
+            self.last_size = size
+            return event
+
+        self._throttle.warn(
+            logger,
             "Dropping oversized event (%dB > %dB) for endpoint %s",
             size,
             self.config.max_event_bytes,
@@ -187,3 +244,9 @@ class Pipeline:
         )
         self.dropped_oversize += 1
         return None
+
+    def _drop_unserializable(self, event: dict[str, Any]) -> None:
+        self._throttle.warn(
+            logger, "Dropping unserializable event for endpoint %s", event.get("endpoint")
+        )
+        self.dropped_unserializable += 1

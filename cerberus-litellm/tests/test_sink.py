@@ -6,6 +6,7 @@ skipping, and {"accepted": N, "skipped": M} responses.
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import replace
 
@@ -154,11 +155,12 @@ class _GatedClient:
         self.release = asyncio.Event()
         self.posted: list = []
 
-    async def post(self, url, json, headers):
+    async def post(self, url, content, headers):
         self.started.set()
         await self.release.wait()
-        self.posted.extend(json["events"])
-        return httpx.Response(200, json={"accepted": len(json["events"]), "skipped": 0})
+        events = json.loads(content)["events"]
+        self.posted.extend(events)
+        return httpx.Response(200, json={"accepted": len(events), "skipped": 0})
 
     async def aclose(self):
         pass
@@ -179,6 +181,84 @@ async def test_close_does_not_drop_in_flight_batch(config, queue):
     await asyncio.wait_for(close_task, timeout=2)
     assert len(client.posted) == 3
     assert len(queue) == 0
+
+
+def _events(n=1):
+    return [{"endpoint": f"llm://openai/m{i}", "method": "llm_chat_completion"} for i in range(n)]
+
+
+async def test_nan_batch_is_dropped_and_counted_without_ending_the_loop(config, queue):
+    seen = []
+    transport = httpx.MockTransport(
+        lambda request: seen.append(json.loads(request.content)) or httpx.Response(200, json={})
+    )
+    cfg = replace(config, flush_interval_ms=100, batch_size=1)
+    sink = Sink(cfg, queue, client=httpx.AsyncClient(transport=transport))
+    sink.start()
+    queue.append({"endpoint": "llm://openai/bad", "x": float("nan")})
+    await asyncio.sleep(0.3)
+    queue.append(_events()[0])
+    await asyncio.sleep(0.35)
+    task_alive = sink._task is not None and not sink._task.done()
+    await sink.close()
+    assert task_alive
+    assert sink.post_failures == 1
+    assert sink.posted == 1
+    assert len(seen) == 1  # only the good batch reached the wire
+
+
+async def test_post_raising_value_error_does_not_end_the_sink_task(config, queue):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("boom")
+        return httpx.Response(200, json={"accepted": 1, "skipped": 0})
+
+    cfg = replace(config, flush_interval_ms=100, batch_size=1)
+    sink = Sink(cfg, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    sink.start()
+    queue.append(_events()[0])
+    await asyncio.sleep(0.3)
+    queue.append(_events()[0])
+    await asyncio.sleep(0.35)
+    alive = not sink._task.done()
+    await sink.close()
+    assert alive
+    assert sink.post_failures == 1
+    assert sink.posted == 1
+
+
+async def test_non_http_errors_are_logged_by_type_only(config, queue, caplog):
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm.sink")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise ValueError("secret-looking-detail")
+
+    sink = Sink(config, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    queue.append(_events()[0])
+    await sink.flush_once()
+    assert sink.post_failures == 1
+    assert "ValueError" in caplog.text
+    assert "secret-looking-detail" not in caplog.text
+    await sink.close()
+
+
+async def test_batch_is_posted_as_strict_json_with_content_type(config, queue):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["type"] = request.headers["content-type"]
+        captured["body"] = request.content
+        return httpx.Response(200, json={"accepted": 1, "skipped": 0})
+
+    sink = Sink(config, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    queue.append(_events()[0])
+    await sink.flush_once()
+    assert captured["type"] == "application/json"
+    assert json.loads(captured["body"])["events"][0]["method"] == "llm_chat_completion"
+    await sink.close()
 
 
 async def test_on_tick_runs_each_flush_and_survives_errors(config):

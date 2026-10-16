@@ -146,6 +146,22 @@ def test_health_final_piece_is_guarded_case_insensitively(config):
     assert _with_group(config, "x/LIVE")["endpoint"] == "llm://openai/x/LIVE_model"
 
 
+def test_control_characters_and_whitespace_in_labels_are_cleaned(config):
+    assert _with_group(config, "gpt\n4")["endpoint"] == "llm://openai/gpt_4"
+    assert _with_group(config, "a\tb  c\x00d\x7f")["endpoint"] == "llm://openai/a_b_cd"
+    assert _with_group(config, "gpt\n4")["custom_data"]["model"] == "gpt_4"
+
+
+def test_non_finite_numbers_in_the_payload_become_none(config):
+    slo = dict(load_capture("chat")["standard_logging_object"])
+    slo["model_parameters"] = {"temperature": float("nan"), "top_p": float("inf")}
+    slo["response_cost"] = float("-inf")
+    event = map_llm_event(slo, config)
+    for key in ("temperature", "top_p"):
+        assert key not in event["custom_data"]
+    assert event["custom_data"]["cost_usd"] is None
+
+
 def test_ordinary_label_is_unchanged(config):
     assert _with_group(config, "gpt-4o")["endpoint"] == "llm://openai/gpt-4o"
     assert _with_group(config, "gpt-4o/mini")["endpoint"] == "llm://openai/gpt-4o/mini"

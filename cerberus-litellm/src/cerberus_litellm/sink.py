@@ -9,6 +9,7 @@ documented known gap).
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 import httpx
 
 from .config import Config
+from .logthrottle import LogThrottle
 from .queue import BoundedQueue
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,7 @@ class Sink:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._on_tick = on_tick
+        self._throttle = LogThrottle()
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._flush_loop())
@@ -89,27 +92,34 @@ class Sink:
 
     async def _post(self, batch: list) -> None:
         try:
+            # Serialise here rather than via httpx's json=: strict JSON (no NaN)
+            # and a failure we can count instead of one that escapes.
+            body = json.dumps({"events": batch}, allow_nan=False).encode("utf-8")
             response = await self._client.post(
                 self._url,
-                json={"events": batch},
-                headers={"X-API-Key": self.config.token},
+                content=body,
+                headers={"X-API-Key": self.config.token, "Content-Type": "application/json"},
             )
         except httpx.HTTPError as exc:
             self.post_failures += 1
             logger.warning("Dropping batch of %d events: %s", len(batch), exc)
             return
+        except Exception as exc:
+            # Anything else (bad URL, unencodable header, unserialisable batch)
+            # must not end the flush loop; name the type only, never its args.
+            self.post_failures += 1
+            self._throttle.warn(
+                logger,
+                "Dropping batch of %d events: %s while sending",
+                len(batch),
+                type(exc).__name__,
+            )
+            return
         # Only a 2xx means the batch was ingested. A 3xx (redirect — httpx does
         # not follow by default, and we must not, or POST->GET would corrupt the
         # body) means it was NOT delivered; treat it as a failure, not success.
-        #
-        # KNOWN ISSUE: a 403 here may not be an auth problem — the ingest LB
-        # runs Cloud Armor SQLi/XSS/RCE/LFI signature rules in enforcement
-        # with JSON body inspection, and the LLM prompt/completion content
-        # this plugin ships in event `body` fields can match them. When that
-        # happens the WHOLE batch is dropped below (at-most-once delivery),
-        # silently losing up to batch_size unrelated events. Live today;
-        # mitigation (path-scoped WAF exclusion for /v1/ingest/* or
-        # client-side encoding of body fields) is still to be designed.
+        # A 403 from the ingest is treated as rejected and not retried; see the
+        # README troubleshooting section.
         if not (200 <= response.status_code < 300):
             self.post_failures += 1
             logger.warning(
