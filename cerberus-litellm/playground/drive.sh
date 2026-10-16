@@ -9,6 +9,10 @@
 set -eu
 cd "$(dirname "$0")"
 
+# Scratch space for response bodies: private, unpredictable, removed on exit.
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
+
 LITELLM="${LITELLM:-http://127.0.0.1:4000}"
 MASTER="sk-playground-master"
 SESSION="spike-session-0001"
@@ -26,10 +30,10 @@ curl -fsS "$LITELLM/health/liveliness" >/dev/null || { echo "LiteLLM never becam
 
 say "S0 identity: team + virtual key (so key hash/alias/team/user are populated)"
 TEAM_ID=$(curl -fsS "$LITELLM/team/new" -H "Authorization: Bearer $MASTER" -H 'Content-Type: application/json' \
-  -d '{"team_alias": "spike-team", "metadata": {"org": "spike-org"}, "object_permission": {"mcp_servers": ["mockmcp"]}}' | json team_id)
+  -d '{"team_alias": "playground-team", "metadata": {"org": "playground-org"}, "object_permission": {"mcp_servers": ["mockmcp"]}}' | json team_id)
 echo "    team_id=$TEAM_ID"
 KEY=$(curl -sS "$LITELLM/key/generate" -H "Authorization: Bearer $MASTER" -H 'Content-Type: application/json' \
-  -d "{\"key_alias\": \"spike-key\", \"team_id\": \"$TEAM_ID\", \"user_id\": \"spike-user\", \"metadata\": {\"purpose\": \"cer-346\"}, \"object_permission\": {\"mcp_servers\": [\"mockmcp\"]}}" | json key)
+  -d "{\"key_alias\": \"playground-key\", \"team_id\": \"$TEAM_ID\", \"user_id\": \"playground-user\", \"metadata\": {\"purpose\": \"playground\"}, \"object_permission\": {\"mcp_servers\": [\"mockmcp\"]}}" | json key)
 echo "    key=${KEY:0:12}..."
 
 set +e  # scenarios may legitimately fail; keep going
@@ -83,10 +87,10 @@ curl -sS "$LITELLM/v1/chat/completions" "${COMMON[@]}" \
 say "S8 MCP on /mcp (aggregate): initialize, tools/list, tools/call x3"
 MCPH=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
       -H "x-litellm-session-id: $SESSION" -H "traceparent: $TRACEPARENT" -H 'x-forwarded-for: 203.0.113.7' -H 'User-Agent: spike-mcp-client/0.1')
-MCPSESS=$(curl -sS -D - -o /tmp/spike_init.out "$LITELLM/mcp" "${MCPH[@]}" \
+MCPSESS=$(curl -sS -D - -o "$TMPD/init.out" "$LITELLM/mcp" "${MCPH[@]}" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spike-client","version":"0.1"}}}' \
   | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
-echo "    mcp session: ${MCPSESS:-<none>}"; head -c 300 /tmp/spike_init.out; echo
+echo "    mcp session: ${MCPSESS:-<none>}"; head -c 300 "$TMPD/init.out"; echo
 curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || true
 curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
@@ -102,20 +106,20 @@ done
 say "S9 MCP on the server-scoped route"
 for route in "/mcp/mockmcp" "/mockmcp/mcp"; do
   printf '    %s initialize -> ' "$route"
-  RSESS=$(curl -sS -D - -o /tmp/spike_route.out "$LITELLM$route" "${MCPH[@]}" \
+  RSESS=$(curl -sS -D - -o "$TMPD/route.out" "$LITELLM$route" "${MCPH[@]}" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spike-client","version":"0.1"}}}' \
     | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
-  echo "session=${RSESS:-<none>}"; head -c 160 /tmp/spike_route.out; echo
+  echo "session=${RSESS:-<none>}"; head -c 160 "$TMPD/route.out"; echo
   curl -sS "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || true
   printf '    %s tools/call echo -> ' "$route"
-  curl -sS -o /tmp/spike_route.out -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
+  curl -sS -o "$TMPD/route.out" -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"scoped route"}}}'
-  echo; head -c 160 /tmp/spike_route.out; echo
+  echo; head -c 160 "$TMPD/route.out"; echo
   printf '    %s tools/call mockmcp-echo -> ' "$route"
-  curl -sS -o /tmp/spike_route.out -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
+  curl -sS -o "$TMPD/route.out" -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
     -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mockmcp-echo","arguments":{"message":"scoped route namespaced"}}}'
-  echo; head -c 160 /tmp/spike_route.out; echo
+  echo; head -c 160 "$TMPD/route.out"; echo
 done
 
 say "S10 second call in the same session (session continuity)"
@@ -125,9 +129,47 @@ curl -sS "$LITELLM/v1/chat/completions" "${COMMON[@]}" -H 'x-cerberus-turn-id: t
 say "waiting for the plugin flush and the next stats tick (every 10 s in this playground)"
 sleep 12
 
+# ---- checks: every assertion runs and is reported; any failure exits 1 ----
+FAILURES=0
+check() {  # check <description> <actual> <expected>
+  if [ "$2" = "$3" ]; then
+    printf '    PASS  %s (%s)\n' "$1" "$2"
+  else
+    printf '    FAIL  %s (got %s, expected %s)\n' "$1" "$2" "$3"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Same variable compose interpolates: unset/empty means the stub is the target.
+if [ -z "${CERBERUS_INGEST_SERVICE:-}" ]; then
+  EXPECTED_CAPTURES="${EXPECTED_CAPTURES:-19}"
+else
+  EXPECTED_CAPTURES=0   # events went to another ingest; nothing lands in ./captures
+fi
+
 say "events that reached the stub ingest"
-ls captures | wc -l
+CAPTURES=$(ls captures 2>/dev/null | wc -l | tr -d ' ')
 docker compose logs --no-log-prefix stub-ingest | grep "^\[stub_ingest\]" | tail -30
 
-say "plugin stats (from the proxy log)"
-docker compose logs --no-log-prefix litellm | grep "cerberus-litellm stats" | tail -1
+say "plugin log lines"
+PLUGIN_LOG=$(docker compose logs --no-log-prefix litellm 2>&1 | grep "cerberus-litellm" || true)
+LOADED=$(printf '%s\n' "$PLUGIN_LOG" | grep -c "cerberus-litellm 0.1.0 loaded" || true)
+STATS=$(printf '%s\n' "$PLUGIN_LOG" | grep -c "cerberus-litellm stats" || true)
+LAST_STATS=$(printf '%s\n' "$PLUGIN_LOG" | grep "cerberus-litellm stats" | tail -1)
+echo "    ${LAST_STATS:-<no stats line>}"
+LAST_ERRORS=$(printf '%s\n' "$LAST_STATS" | grep -c "'errors': 0[,}]" || true)
+LEAKS=$(grep -rl "dummy-upstream-key\|should-not-leak\|Bearer \|sk-playground-master" captures 2>/dev/null | wc -l | tr -d ' ')
+
+say "checks"
+check "captures in ./captures" "$CAPTURES" "$EXPECTED_CAPTURES"
+check "captured files containing a secret" "$LEAKS" "0"
+check "plugin 'loaded' lines" "$LOADED" "1"
+[ "$STATS" -ge 1 ] && check "plugin stats lines (at least one)" "yes" "yes" || check "plugin stats lines (at least one)" "none" "yes"
+check "last stats line reports zero errors" "$LAST_ERRORS" "1"
+
+if [ "$FAILURES" -eq 0 ]; then
+  echo "PASS: all playground checks passed"
+else
+  echo "FAIL: $FAILURES playground check(s) failed"
+  exit 1
+fi

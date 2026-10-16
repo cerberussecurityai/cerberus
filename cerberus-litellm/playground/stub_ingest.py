@@ -2,7 +2,7 @@
 
 Same HTTP surface as the Envoy playground stub (POST /v1/ingest/batch with
 X-API-Key, GET /api/secret-key), but every accepted event is also written to
-$SPIKE_CAPTURE_DIR (default /captures) as NNN_<method>.json, and printed, so
+$CAPTURE_DIR (default /captures) as NNN_<method>.json, and printed, so
 the wire shape can be inspected.
 """
 
@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 API_KEY = "sk_test_playground"
 SECRET_KEY = "playground-hmac-secret"
-CAPTURE_DIR = os.environ.get("SPIKE_CAPTURE_DIR", "/captures")
+CAPTURE_DIR = os.environ.get("CAPTURE_DIR", "/captures")
 HEALTH_SEGMENTS = {
     "health", "healthz", "healthcheck", "health_check", "health-check",
     "ready", "readyz", "readiness", "live", "livez", "liveness",
