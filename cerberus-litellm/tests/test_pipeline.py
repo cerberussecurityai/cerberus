@@ -174,6 +174,28 @@ def test_truncate_values_recurses():
             "connect https://user:pass@db.example.com:5432/x",
             "connect https://[REDACTED]@db.example.com:5432/x",
         ),
+        # Underscore/hyphen-prefixed secret names.
+        ("client_secret=abc ok", "client_secret=[REDACTED] ok"),
+        ("refresh_token=abc ok", "refresh_token=[REDACTED] ok"),
+        ("AWS_SECRET_ACCESS_KEY=abc ok", "AWS_SECRET_ACCESS_KEY=[REDACTED] ok"),
+        ("id_token=abc auth-token=def", "id_token=[REDACTED] auth-token=[REDACTED]"),
+        # JSON-style and spaced separators, quoted keys and values.
+        ('{"api_key": "abc def", "n": 1}', '{"api_key": "[REDACTED]", "n": 1}'),
+        ("{'password':'p w','n':1}", "{'password':'[REDACTED]','n':1}"),
+        ("api_key : abc rest", "api_key : [REDACTED] rest"),
+        ('"client_secret" = "xyz"', '"client_secret" = "[REDACTED]"'),
+        # Basic credentials.
+        ("Authorization: Basic dXNlcjpwYXNzd29yZA== end", "Authorization: Basic [REDACTED] end"),
+        # Provider key prefixes.
+        ("key AIzaSyA1234567890abcdefghijKL end", "key [REDACTED] end"),
+        ("slack xoxb-1234567890-abcdef end", "slack [REDACTED] end"),
+        ("gh ghp_abcdefghijklmnopqrstuvwx end", "gh [REDACTED] end"),
+        ("aws AKIAABCDEFGHIJKLMNOP end", "aws [REDACTED] end"),
+        # Userinfo is masked up to the LAST @ before the host.
+        ("see https://u:p@ss@host.example/x", "see https://[REDACTED]@host.example/x"),
+        ("see https://TOKEN@github.com/o/r", "see https://[REDACTED]@github.com/o/r"),
+        # An "sk-" inside a longer word is not a token.
+        ("task-12345678 done", "task-12345678 done"),
     ],
 )
 def test_redact_secrets_masks_patterns_and_keeps_surroundings(text, expected):
@@ -181,8 +203,34 @@ def test_redact_secrets_masks_patterns_and_keeps_surroundings(text, expected):
 
 
 def test_redact_secrets_leaves_plain_messages_alone():
-    for text in ("mock upstream exploded", "rate limit: retry in 20s", "a monkey=happy"):
+    for text in (
+        "mock upstream exploded",
+        "rate limit: retry in 20s",
+        "a monkey eats bananas",
+        "keyboard layout: us",
+        "see mail user@example.com for help",
+    ):
         assert redact_secrets(text) == text
+
+
+def test_redact_secrets_is_fast_on_adversarial_input():
+    import time
+
+    start = time.perf_counter()
+    redact_secrets("a" * 200_000)
+    redact_secrets("key=" * 50_000)
+    redact_secrets("://" + "@" * 50_000)
+    redact_secrets("Basic " + "A" * 200_000)
+    assert time.perf_counter() - start < 5
+
+
+@pytest.mark.parametrize("custom_data", [None, "junk", ["x"]])
+def test_finalize_tolerates_junk_custom_data(config, custom_data):
+    event = _llm("chat", config)
+    event["custom_data"] = custom_data
+    out = Pipeline(config).finalize(event, "llm")
+    assert out is not None
+    assert out["custom_data"] == {}
 
 
 def test_finalize_redacts_error_and_result_summary(config):
