@@ -174,9 +174,9 @@ tool name.
   unserialisable drops, schema reports suppressed, and POST outcomes.
 - **Memory ceiling.** The queue holds at most `CERBERUS_QUEUE_MAX_BYTES` of encoded events (64 MiB
   by default) in the proxy process, plus the batch being posted.
-- **Delivery guarantee.** Delivery is at-most-once. The flush at exit is best-effort: a batch the
-  background task has already taken off the queue but not yet had acknowledged is not covered by
-  it.
+- **Delivery guarantee.** Delivery is at-most-once. Events still queued when the process is
+  killed (SIGKILL) or crashes are lost. The flush at exit is best-effort: a batch the background
+  task has already taken off the queue but not yet had acknowledged is not covered by it.
 - **Concurrency.** The queue assumes all access happens on the proxy's single event loop. Do not
   run the callback under a threaded executor.
 - **Sampling.** `CERBERUS_SAMPLE_RATE` applies per event. Keep the default of 1.0 for complete

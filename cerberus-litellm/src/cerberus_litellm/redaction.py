@@ -53,7 +53,6 @@ REDACTION_INPUT_FACTOR = 4
 # characters (longer than any credential prefix the patterns can leave), but
 # never more than half of what is left, so a small cap keeps most of its text.
 REDACTION_BOUNDARY_MARGIN = 256
-_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+/=-")
 TRUNCATION_MARKER = "...[TRUNCATED]"
 
 
@@ -61,8 +60,8 @@ def redact_bounded(text: str, final_cap: int) -> str:
     """``redact_secrets`` over at most ``REDACTION_INPUT_FACTOR * final_cap`` characters.
 
     If the input was longer than that, the result also loses its last
-    ``REDACTION_BOUNDARY_MARGIN`` characters (see above) plus any run of token
-    characters left at the end (a partial token of any length), and ends with
+    ``REDACTION_BOUNDARY_MARGIN`` characters (see above) plus the whole run of
+    non-whitespace left at the end (any partial fragment, of any length), and ends with
     the truncation marker, so the caller's own cap and marker logic still
     applies.
     """
@@ -72,10 +71,11 @@ def redact_bounded(text: str, final_cap: int) -> str:
         return redacted
     margin = min(REDACTION_BOUNDARY_MARGIN, len(redacted) // 2)
     kept = redacted[: len(redacted) - margin]
-    # Strip a trailing token run by hand: a regex anchored at the end is
+    # Strip the trailing run of non-whitespace by hand (a fragment such as
+    # "user:pass@" or "%41" at the edge goes too): a regex anchored at the end is
     # quadratic on a long unbroken run.
     end = len(kept)
-    while end and kept[end - 1] in _TOKEN_CHARS:
+    while end and not kept[end - 1].isspace():
         end -= 1
     return kept[:end] + TRUNCATION_MARKER
 

@@ -591,6 +591,12 @@ def test_a_cut_slice_never_ends_in_a_partial_token_of_any_length():
     # characters, which end one character into the 68th "ab" (a partial token).
     out = redact_bounded("ab " * 300, 101)
     assert out == "ab " * 67 + "...[TRUNCATED]"  # the partial "a" is gone; ends on a space
+    # The whole trailing non-whitespace run goes, not only token characters:
+    # here the 202 kept characters end inside "%41%42..." after 198 characters.
+    out = redact_bounded("ab " * 66 + "%41%42%43%44%45 " + "ab " * 200, 101)
+    assert out == "ab " * 66 + "...[TRUNCATED]"
+    out = redact_bounded("ab " * 66 + "user:pass@host.example/x " + "ab " * 200, 101)
+    assert out == "ab " * 66 + "...[TRUNCATED]"
     # An unbroken run of token characters at the end, however long, is dropped.
     out = redact_bounded("hello " + "Q" * 5_000, 100)
     assert out == "hello " + "...[TRUNCATED]"
