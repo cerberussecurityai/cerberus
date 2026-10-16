@@ -8,6 +8,21 @@
 set -eu
 cd "$(dirname "$0")"
 
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/spike.XXXXXX")
+KEY=""
+
+# Idempotent; runs on every exit path so a failed run never leaves the
+# throwaway virtual key in captures/. Does not alter the exit status.
+scrub_captures() {
+  [ -n "${KEY:-}" ] || return 0
+  grep -rlF -- "$KEY" captures 2>/dev/null | while IFS= read -r f; do
+    KEYVAL="$KEY" perl -pi -e 's/\Q$ENV{KEYVAL}\E/<redacted-virtual-key>/g' "$f"
+  done
+  return 0
+}
+cleanup() { scrub_captures; rm -rf "$TMPD"; }
+trap cleanup EXIT
+
 LITELLM="${LITELLM:-http://127.0.0.1:4000}"
 MASTER="sk-spike-master"
 SESSION="spike-session-0001"
@@ -30,6 +45,7 @@ echo "    team_id=$TEAM_ID"
 KEY=$(curl -sS "$LITELLM/key/generate" -H "Authorization: Bearer $MASTER" -H 'Content-Type: application/json' \
   -d "{\"key_alias\": \"spike-key\", \"team_id\": \"$TEAM_ID\", \"user_id\": \"spike-user\", \"metadata\": {\"purpose\": \"capture-comparison\"}, \"object_permission\": {\"mcp_servers\": [\"mockmcp\"]}}" | json key)
 echo "    key=${KEY:0:12}..."
+[ -n "$KEY" ] || { echo "no virtual key issued" >&2; exit 1; }
 
 set +e  # scenarios may legitimately fail; keep going
 COMMON=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
@@ -82,10 +98,10 @@ curl -sS "$LITELLM/v1/chat/completions" "${COMMON[@]}" \
 say "S8 MCP on /mcp (aggregate): initialize, tools/list, tools/call x3"
 MCPH=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
       -H "x-litellm-session-id: $SESSION" -H "traceparent: $TRACEPARENT" -H 'x-forwarded-for: 203.0.113.7' -H 'User-Agent: spike-mcp-client/0.1')
-MCPSESS=$(curl -sS -D - -o /tmp/spike_init.out "$LITELLM/mcp" "${MCPH[@]}" \
+MCPSESS=$(curl -sS -D - -o "$TMPD/init.out" "$LITELLM/mcp" "${MCPH[@]}" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spike-client","version":"0.1"}}}' \
   | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
-echo "    mcp session: ${MCPSESS:-<none>}"; head -c 300 /tmp/spike_init.out; echo
+echo "    mcp session: ${MCPSESS:-<none>}"; head -c 300 "$TMPD/init.out"; echo
 curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
   -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || true
 curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
@@ -101,20 +117,20 @@ done
 say "S9 MCP on the server-scoped route"
 for route in "/mcp/mockmcp" "/mockmcp/mcp"; do
   printf '    %s initialize -> ' "$route"
-  RSESS=$(curl -sS -D - -o /tmp/spike_route.out "$LITELLM$route" "${MCPH[@]}" \
+  RSESS=$(curl -sS -D - -o "$TMPD/route.out" "$LITELLM$route" "${MCPH[@]}" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spike-client","version":"0.1"}}}' \
     | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
-  echo "session=${RSESS:-<none>}"; head -c 160 /tmp/spike_route.out; echo
+  echo "session=${RSESS:-<none>}"; head -c 160 "$TMPD/route.out"; echo
   curl -sS "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || true
   printf '    %s tools/call echo -> ' "$route"
-  curl -sS -o /tmp/spike_route.out -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
+  curl -sS -o "$TMPD/route.out" -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"scoped route"}}}'
-  echo; head -c 160 /tmp/spike_route.out; echo
+  echo; head -c 160 "$TMPD/route.out"; echo
   printf '    %s tools/call mockmcp-echo -> ' "$route"
-  curl -sS -o /tmp/spike_route.out -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
+  curl -sS -o "$TMPD/route.out" -w '%{http_code}' "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \
     -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mockmcp-echo","arguments":{"message":"scoped route namespaced"}}}'
-  echo; head -c 160 /tmp/spike_route.out; echo
+  echo; head -c 160 "$TMPD/route.out"; echo
 done
 
 say "S10 second call in the same session (session continuity)"
@@ -128,8 +144,8 @@ for d in plugin otel events; do printf '    %-7s %s\n' "$d" "$(ls captures/$d 2>
 say "bridge stats"; curl -sS http://127.0.0.1:4318/stats; echo
 
 say "redacting the throwaway virtual key from committed captures"
-grep -rl "$KEY" captures 2>/dev/null | while read -r f; do perl -pi -e "s/\Q$KEY\E/sk-REDACTED-virtual-key/g" "$f"; done
-echo "    remaining occurrences: $(grep -rl "$KEY" captures 2>/dev/null | wc -l | tr -d ' ')"
+scrub_captures
+echo "    remaining occurrences: $(grep -rlF -- "$KEY" captures 2>/dev/null | wc -l | tr -d ' ')"
 
 say "final gate: virtual key must not appear anywhere under captures/"
 if grep -rqF -- "$KEY" captures 2>/dev/null; then

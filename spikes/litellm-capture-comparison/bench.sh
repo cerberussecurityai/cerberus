@@ -11,11 +11,13 @@
 #   N=3000 C=50 ./bench.sh
 set -eu
 cd "$(dirname "$0")"
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/spike.XXXXXX")
+trap 'rm -rf "$TMPD"' EXIT
 N="${N:-1500}"; C="${C:-20}"
 MASTER="sk-spike-master"
 
 body='{"model":"mock-gpt","messages":[{"role":"user","content":"bench"}],"user":"bench-user"}'
-printf '%s' "$body" > /tmp/spike_bench_body.json
+printf '%s' "$body" > "$TMPD/body.json"
 
 wait_live() {
   for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:4000/health/liveliness >/dev/null 2>&1 && return 0; sleep 2; done
@@ -26,10 +28,10 @@ run_ab() {  # $1 = label
   KEY=$(curl -fsS http://127.0.0.1:4000/key/generate -H "Authorization: Bearer $MASTER" -H 'Content-Type: application/json' \
         -d '{"key_alias":"bench-'"$RANDOM"'"}' | jq -r .key)
   # warm-up
-  ab -q -n 100 -c "$C" -p /tmp/spike_bench_body.json -T application/json -H "Authorization: Bearer $KEY" \
+  ab -q -n 100 -c "$C" -p "$TMPD/body.json" -T application/json -H "Authorization: Bearer $KEY" \
      http://127.0.0.1:4000/v1/chat/completions >/dev/null
   echo "==> $1: ab -n $N -c $C"
-  ab -q -n "$N" -c "$C" -p /tmp/spike_bench_body.json -T application/json -H "Authorization: Bearer $KEY" \
+  ab -q -n "$N" -c "$C" -p "$TMPD/body.json" -T application/json -H "Authorization: Bearer $KEY" \
      http://127.0.0.1:4000/v1/chat/completions | grep -E "Requests per second|Time per request.*mean\)|Failed requests|  50%|  95%|  99%|Non-2xx"
 }
 

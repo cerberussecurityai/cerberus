@@ -27,18 +27,25 @@ from litellm.integrations.custom_logger import CustomLogger
 CAPTURE_DIR = os.environ.get("SPIKE_CAPTURE_DIR", "/captures/plugin")
 _SKIP_KEYS = {"litellm_logging_obj", "logger_fn", "acompletion"}
 _MAX_DEPTH = 14
-_SECRET_KEYS = {"api_key", "authorization"}
+_SECRET_KEYS = {
+    "api_key", "apikey", "authorization", "proxy-authorization", "x-api-key",
+    "x-litellm-api-key", "token", "access_token", "refresh_token", "id_token",
+    "password", "secret", "client_secret", "cookie", "set-cookie",
+}
+_SECRET_SUFFIXES = ("_api_key", "_token", "_secret", "_password")
+_SECRET_VALUE = re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+)")
 _SAFE = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def _is_secret_key(key: Any) -> bool:
     k = str(key).lower()
-    return k in _SECRET_KEYS or k.endswith("_api_key")
+    return k in _SECRET_KEYS or k.endswith(_SECRET_SUFFIXES)
 
 
 def _safe_name(value: Any) -> str:
     """Request-derived text is reduced to [A-Za-z0-9_-], max 40 chars."""
     return _SAFE.sub("_", str(value or ""))[:40] or "unknown"
+
 
 _seq = 0
 _lock = threading.Lock()
@@ -47,7 +54,9 @@ _lock = threading.Lock()
 def _jsonable(obj: Any, depth: int = 0) -> Any:
     if depth > _MAX_DEPTH:
         return f"<max depth {type(obj).__name__}>"
-    if obj is None or isinstance(obj, (bool, int, float, str)):
+    if isinstance(obj, str):
+        return _SECRET_VALUE.sub("<redacted>", obj)
+    if obj is None or isinstance(obj, (bool, int, float)):
         return obj
     if isinstance(obj, bytes):
         return {"__bytes__": len(obj)}

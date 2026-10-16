@@ -8,7 +8,6 @@ bridge's output can be diffed against the plugin dumps.
 
 import json
 import os
-import re
 import threading
 
 import uvicorn
@@ -23,13 +22,7 @@ HEALTH_SEGMENTS = {
 }
 
 app = FastAPI(title="spike-stub-ingest")
-_SAFE = re.compile(r"[^A-Za-z0-9_-]")
-
-
-def _safe_name(value: object) -> str:
-    """Request-derived text is reduced to [A-Za-z0-9_-], max 40 chars."""
-    cleaned = _SAFE.sub("_", str(value or ""))[:40]
-    return cleaned or "unknown"
+_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 
 _seq = 0
 _lock = threading.Lock()
@@ -66,7 +59,10 @@ async def ingest_batch(payload: dict, x_api_key: str | None = Header(None)) -> d
         with _lock:
             _seq += 1
             seq = _seq
-        name = f"{seq:03d}_{_safe_name(event.get('method'))}.json"
+        method = str(event.get("method") or "").upper()
+        # Fixed label set: the filename never contains request-derived text.
+        label = method if method in _METHODS else "other"
+        name = f"{seq:03d}_{label}.json"
         with open(os.path.join(CAPTURE_DIR, name), "w", encoding="utf-8") as fh:
             json.dump(event, fh, indent=2, sort_keys=True)
         print(f"[stub_ingest] {name} {endpoint} bytes={len(json.dumps(event))}", flush=True)
