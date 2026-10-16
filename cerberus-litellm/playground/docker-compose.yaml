@@ -33,7 +33,7 @@ services:
       LITELLM_MASTER_KEY: sk-playground-master
       DATABASE_URL: postgresql://litellm:litellm@postgres:5432/litellm
       STORE_MODEL_IN_DB: "False"
-      # Interpolated so Task 13 can point the SAME compose file at the dev
+      # Interpolated so a shell variable can override these to point at another
       # ingest: shell env wins, the stub is the default.
       CERBERUS_INGEST_SERVICE: ${CERBERUS_INGEST_SERVICE:-http://stub-ingest:9089}
       CERBERUS_TOKEN: ${CERBERUS_TOKEN:-sk_test_playground}

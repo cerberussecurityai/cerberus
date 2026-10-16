@@ -24,6 +24,9 @@ typecheck: $(VENV)
 
 build:
 	rm -rf dist && uv build
+	# The playground image installs the in-repo cerberus-core alongside the plugin,
+	# so it does not depend on which cerberus-core versions are published.
+	uv build --wheel --out-dir dist ../cerberus-core
 
 # Regenerate tests/fixtures/litellm/*.json from a directory of spike captures.
 fixtures: $(VENV)

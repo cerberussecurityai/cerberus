@@ -45,7 +45,9 @@ export CERBERUS_TOKEN=<your-api-key>      # or CERBERUS_TOKEN_FILE=/path/to/file
 ```
 
 LiteLLM fails closed when a callback cannot be imported, so check the install before rolling out:
-`python -c "import cerberus_litellm"`.
+`python -c "import cerberus_litellm.plugin"`. That imports every dependency of the plugin and
+reads no environment variables. (Importing just `cerberus_litellm` proves nothing: the handler is
+built lazily.)
 
 ## Configuration
 
@@ -68,6 +70,7 @@ that names the variable.
 | `CERBERUS_BATCH_SIZE` | `50` | Events per POST (1 to 1000). |
 | `CERBERUS_FLUSH_INTERVAL_MS` | `2000` | Flush period (100 to 60000). |
 | `CERBERUS_QUEUE_CAPACITY` | `10000` | Queue bound (100 to 1000000); events beyond it are dropped. |
+| `CERBERUS_QUEUE_MAX_BYTES` | `67108864` | Byte budget for queued events (1048576 to 1073741824); an event that would exceed it is dropped and counted. Together with the count bound this caps the queue's memory inside the proxy process. |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | Per-event size cap (1024 to 63488). |
 | `CERBERUS_SAMPLE_RATE` | `1.0` | Fraction of calls to report (0.0 to 1.0). |
 | `CERBERUS_SCHEMA_REPORT_INTERVAL_S` | `3600` | Minimum seconds (0 to 86400) between identical per-server tool catalogues; `0` reports every tools/list. |
@@ -145,8 +148,11 @@ tool name.
   loses its captured content (marked `content_dropped_oversize`), and is dropped only if it is
   still too large.
 - **Counters.** The periodic stats log line reports events by kind, skipped, deduplicated and
-  sampled-out calls, queue drops, oversize and unserialisable drops, schema reports suppressed,
-  and POST outcomes.
+  sampled-out calls, queue drops by count (`queue_dropped_full`) and by bytes
+  (`queue_dropped_bytes`), the queue's current size (`queued`, `queued_bytes`), oversize and
+  unserialisable drops, schema reports suppressed, and POST outcomes.
+- **Memory ceiling.** The queue holds at most `CERBERUS_QUEUE_MAX_BYTES` of encoded events (64 MiB
+  by default) in the proxy process, plus the batch being posted.
 
 ## Known gaps
 
@@ -156,7 +162,18 @@ tool name.
 - No delivery retry; a failed batch is dropped.
 - Events still queued at shutdown are lost.
 - A callback import failure aborts proxy startup (LiteLLM behaviour); verify the install with
-  `python -c "import cerberus_litellm"` before rolling out.
+  `python -c "import cerberus_litellm.plugin"` before rolling out.
+
+## Troubleshooting
+
+- **Nothing arrives.** Look for the "cerberus-litellm 0.1.0 loaded" line and the periodic stats
+  line in the proxy log. A "disabled" error line names the configuration problem. When the proxy
+  attaches no log handler for the plugin, its lines go to stderr.
+- **`post_failures` is climbing.** A batch the ingest rejects (a 403, for example) is dropped,
+  counted and not retried. Check the API key and `CERBERUS_INGEST_SERVICE`; with
+  `CERBERUS_LOG_LEVEL=debug` the first 200 characters of the response body are logged.
+- **Events are missing under load.** `queue_dropped_full` or `queue_dropped_bytes` in the stats
+  line means the queue filled faster than batches were delivered.
 
 ## Playground
 
