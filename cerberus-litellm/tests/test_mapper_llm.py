@@ -3,7 +3,7 @@ from dataclasses import replace
 
 from helpers import HEALTH_SEGMENTS, load_capture, load_expected
 
-from cerberus_litellm.mapper_llm import llm_method, map_llm_event
+from cerberus_litellm.mapper_llm import endpoint_segment, llm_method, map_llm_event
 
 
 def _map(name: str, config, headers=None):
@@ -127,3 +127,26 @@ def test_mapper_never_raises_on_junk(config):
         assert event["scheme"] == "llm"
         assert event["endpoint"] == "llm://unknown/unknown"
         assert event["custom_data"]["integration"] == "litellm"
+
+
+def _with_group(config, group: str) -> dict:
+    slo = dict(load_capture("chat")["standard_logging_object"])
+    slo["model_group"] = group
+    return map_llm_event(slo, config)
+
+
+def test_health_model_label_is_guarded_in_endpoint_only(config):
+    event = _with_group(config, "health")
+    assert event["endpoint"] == "llm://openai/health_model"
+    assert event["custom_data"]["model"] == "health"
+
+
+def test_health_final_piece_is_guarded_case_insensitively(config):
+    assert _with_group(config, "team/readyz")["endpoint"] == "llm://openai/team/readyz_model"
+    assert _with_group(config, "x/LIVE")["endpoint"] == "llm://openai/x/LIVE_model"
+
+
+def test_ordinary_label_is_unchanged(config):
+    assert _with_group(config, "gpt-4o")["endpoint"] == "llm://openai/gpt-4o"
+    assert _with_group(config, "health/gpt-4o")["endpoint"] == "llm://openai/health/gpt-4o"
+    assert endpoint_segment("mock-gpt") == "mock-gpt"

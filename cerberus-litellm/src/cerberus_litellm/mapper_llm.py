@@ -26,11 +26,42 @@ _CALL_TYPE_METHODS = {
     "responses": "llm_responses",
     "aresponses": "llm_responses",
 }
+
+# Last-path-segment names the ingest API treats as health probes and silently
+# drops. Mirrors the ingest filter; keep in sync.
+HEALTH_SEGMENTS = frozenset(
+    {
+        "health",
+        "healthz",
+        "healthcheck",
+        "health_check",
+        "health-check",
+        "ready",
+        "readyz",
+        "readiness",
+        "live",
+        "livez",
+        "liveness",
+    }
+)
 _REQUEST_PARAMS = ("temperature", "top_p", "max_tokens", "max_output_tokens")
 
 
 def llm_method(call_type: str) -> str:
     return _CALL_TYPE_METHODS.get(call_type.strip().lower(), "llm_call")
+
+
+def endpoint_segment(label: str) -> str:
+    """Make an endpoint label safe from the ingest health filter.
+
+    The label can be client-influenced (wildcard model routing), so a name
+    like ``anything/health`` would make its events vanish. When the final
+    ``/``-separated piece is a health-probe name, append ``_model`` to it.
+    """
+    head, sep, last = label.rpartition("/")
+    if last.lower() in HEALTH_SEGMENTS:
+        return f"{head}{sep}{last}_model"
+    return label
 
 
 def _label(value: Any, fallback: str = "unknown") -> str:
@@ -168,7 +199,7 @@ def map_llm_event(
     user_agent = payload.get(slo, "user_agent")
     return {
         "remote_addr": payload.get(slo, "requester_ip_address"),
-        "endpoint": f"llm://{provider}/{model}",
+        "endpoint": f"llm://{provider}/{endpoint_segment(model)}",
         "scheme": "llm",
         "method": method,
         "timestamp": payload.iso_timestamp(payload.get(slo, "startTime")),
