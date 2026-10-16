@@ -246,7 +246,7 @@ Set `CERBERUS_DEBUG=true` environment variable to enable verbose logging in both
 
 - Both cerberus-django and cerberus-mcp use the same event payload format (CoreData/MCPEventData), so the backend accepts either without changes
 - MCP events use `mcp://` URI scheme in the `endpoint` field and `mcp_*` prefixed method names
-- LLM events (cerberus-envoy-ai-gateway) use `llm://{provider}/{model}` endpoints, `scheme="llm"`, and `llm_*` prefixed methods. `llm_*` must never collide with the `mcp_*` routing prefix. Non-HTTP schemes need matching backend support, so check the cerberus-int notes before changing scheme or method naming on either side
+- LLM events (cerberus-envoy-ai-gateway, cerberus-litellm) use `llm://{provider}/{model}` endpoints, `scheme="llm"`, and `llm_*` prefixed methods. `llm_*` must never collide with the `mcp_*` routing prefix. Non-HTTP schemes need matching backend support, so check the cerberus-int notes before changing scheme or method naming on either side
 - MCP-specific metadata (arguments, duration, session info) goes in `custom_data`
 - Event queue is bounded (10,000 max for cerberus-mcp) to prevent unbounded memory growth
 - WebSocket transport is shared pattern but not shared code (each package has its own copy for independence)

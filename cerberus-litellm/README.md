@@ -67,11 +67,11 @@ that names the variable.
 | `CERBERUS_MCP_SERVER_FALLBACK` | `litellm` | Server name used for a tool whose name carries no server prefix. |
 | `CERBERUS_BATCH_SIZE` | `50` | Events per POST (1 to 1000). |
 | `CERBERUS_FLUSH_INTERVAL_MS` | `2000` | Flush period (100 to 60000). |
-| `CERBERUS_QUEUE_CAPACITY` | `10000` | Queue bound; events beyond it are dropped. |
+| `CERBERUS_QUEUE_CAPACITY` | `10000` | Queue bound (100 to 1000000); events beyond it are dropped. |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | Per-event size cap (1024 to 63488). |
 | `CERBERUS_SAMPLE_RATE` | `1.0` | Fraction of calls to report (0.0 to 1.0). |
-| `CERBERUS_SCHEMA_REPORT_INTERVAL_S` | `3600` | Minimum seconds between identical per-server tool catalogues; `0` reports every tools/list. |
-| `CERBERUS_STATS_LOG_INTERVAL_S` | `300` | Period of the stats log line; `0` disables it. |
+| `CERBERUS_SCHEMA_REPORT_INTERVAL_S` | `3600` | Minimum seconds (0 to 86400) between identical per-server tool catalogues; `0` reports every tools/list. |
+| `CERBERUS_STATS_LOG_INTERVAL_S` | `300` | Period in seconds (0 to 86400) of the stats log line; `0` disables it. |
 | `CERBERUS_LOG_LEVEL` | `info` | `debug`, `info`, `warning` or `error`. When the proxy attaches no log handler for the plugin, its lines go to stderr. |
 
 ## What is captured
@@ -112,8 +112,9 @@ holds `mcp_server`, `event_type`, `tools` (name, description, input schema), `re
 `prompts`, plus the correlation and identity fields. A server's report is sent again only when
 its tool catalogue changes or `CERBERUS_SCHEMA_REPORT_INTERVAL_S` elapses.
 
-Endpoint labels that would match a health-probe path are suffixed (`_model` or `_tool`) so the
-event is not mistaken for a probe; `custom_data` keeps the original name.
+Endpoint labels are normalised: surrounding whitespace and trailing slashes are trimmed, and a
+label is occasionally suffixed with `_model` or `_tool`. `custom_data` keeps the original model or
+tool name.
 
 ## Identity, sessions and traces
 
@@ -121,10 +122,10 @@ event is not mistaken for a probe; `custom_data` keeps the original name.
   `litellm_org_id`, `litellm_user_id` and `litellm_end_user_id` come from the proxy's key and
   team records. The key hash is LiteLLM's own hash, never the key.
 - **`user_id`:** the first non-empty field in `CERBERUS_USER_ID_SOURCE`.
-- **`session_id`:** LiteLLM's session id, else the `x-litellm-session-id` header. It needs
+- **`session_id`:** LiteLLM's session id, else the session header (default `x-litellm-session-id`, set by `CERBERUS_SESSION_HEADER`). It needs
   `request_correlation_in_logs: true` on the proxy. `litellm_trace_id` equals the session id by
   LiteLLM's design.
-- **`turn_id`:** the `x-cerberus-turn-id` header, when the caller sends one.
+- **`turn_id`:** the turn header (default `x-cerberus-turn-id`, set by `CERBERUS_TURN_HEADER`), when the caller sends one.
 - **`trace_id`:** the trace id from the caller's W3C `traceparent` header on LLM routes.
 
 ## Security
