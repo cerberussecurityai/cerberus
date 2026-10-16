@@ -14,12 +14,15 @@ at module level and touches no environment until ``CerberusLogger()`` runs.)
 
 from __future__ import annotations
 
+import atexit
+import ipaddress
 import logging
 import random
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 try:  # the proxy is the host; tests and tooling run without it
     from litellm.integrations.custom_logger import CustomLogger
@@ -45,6 +48,35 @@ from .sink import REQUEST_TIMEOUT_SECONDS, Sink
 logger = logging.getLogger("cerberus_litellm")
 
 DEDUPE_WINDOW = 4096
+SHUTDOWN_FLUSH_BUDGET_S = 2.0
+
+
+def warn_if_plain_http(ingest_service: str, target: logging.Logger) -> bool:
+    """Warn once when the API key would travel over plain http to a remote host.
+
+    Loopback hosts (localhost, 127.0.0.0/8, ::1) are exempt. Only the host is
+    named. Returns True when a warning was logged.
+    """
+    try:
+        parts = urlsplit(ingest_service)
+        host = parts.hostname or ""
+        if parts.scheme != "http" or not host:
+            return False
+        if host.lower() == "localhost":
+            return False
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                return False
+        except ValueError:
+            pass  # a hostname, not an address
+    except ValueError:
+        return False
+    target.warning(
+        "cerberus-litellm: the ingest URL uses plain http to %s; the API key and event "
+        "content are sent unencrypted. Use https.",
+        host,
+    )
+    return True
 
 
 def ensure_log_handler(target: logging.Logger) -> None:
@@ -86,6 +118,7 @@ class CerberusLogger(CustomLogger):
             self.queue = BoundedQueue(config.queue_capacity, config.queue_max_bytes)
             self.pipeline = Pipeline(config)
             self._schema = SchemaReporter(config)
+            warn_if_plain_http(config.ingest_service, logger)
         self.sink: Sink | None = None
         self._client: httpx.AsyncClient | None = None  # tests inject a mock transport
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -181,6 +214,31 @@ class CerberusLogger(CustomLogger):
         client = self._client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         self.sink = Sink(self.config, self.queue, client=client, on_tick=self._log_stats_if_due)
         self.sink.start()
+        # LiteLLM v1.105.1 gives a callback no shutdown hook, so events still
+        # queued when the process exits would be lost; register a best-effort
+        # flush. Registered once, when events first flow (not at import).
+        atexit.register(self._shutdown_flush)
+
+    def _shutdown_flush(self, client: httpx.Client | None = None) -> None:
+        """Best-effort synchronous flush at interpreter exit. Never raises.
+
+        Works whether or not the event loop is still alive: it uses a blocking
+        client, sends at most two batches and spends at most
+        SHUTDOWN_FLUSH_BUDGET_S seconds.
+        """
+        try:
+            if self.sink is None or len(self.queue) == 0:
+                return
+            queued = len(self.queue)
+            sent, left = self.sink.flush_blocking(SHUTDOWN_FLUSH_BUDGET_S, client=client)
+            logger.info(
+                "cerberus-litellm shutdown flush: %d queued, %d batch(es) sent, %d left unsent",
+                queued,
+                sent,
+                left,
+            )
+        except Exception:
+            pass
 
     def _log_stats_if_due(self) -> None:
         interval = self.config.stats_log_interval_s

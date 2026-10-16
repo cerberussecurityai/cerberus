@@ -143,6 +143,8 @@ tool name.
   `traceparent`.
 - **Custom headers are an allowlist.** Only names in `CERBERUS_CAPTURE_HEADERS` are forwarded, and
   credential-bearing names (authorization, cookies, API-key headers) are refused at startup.
+- **Use https.** The API key travels in a request header. The plugin logs a warning at startup
+  when `CERBERUS_INGEST_SERVICE` is plain `http://` to a host that is not loopback.
 - **Source IPs are sent as-is** (normalised, not hashed).
 - **Size cap.** Each event is bounded by `CERBERUS_MAX_EVENT_BYTES`. An oversized event first
   loses its captured content (marked `content_dropped_oversize`), and is dropped only if it is
@@ -160,7 +162,9 @@ tool name.
 - MCP events carry no client name or version.
 - The MCP route exposes no custom headers, so the turn id is unavailable there.
 - No delivery retry; a failed batch is dropped.
-- Events still queued at shutdown are lost.
+- At exit the plugin makes one best-effort synchronous flush (at most two batches and two
+  seconds, because LiteLLM gives a callback no shutdown hook). Events beyond that, and events lost
+  to a hard kill, are not delivered.
 - A callback import failure aborts proxy startup (LiteLLM behaviour); verify the install with
   `python -c "import cerberus_litellm.plugin"` before rolling out.
 
@@ -198,5 +202,5 @@ make venv test lint typecheck
 make fixtures CAPTURES=<dir>   # regenerate tests/fixtures/litellm from a capture directory
 ```
 
-The fixtures are real payloads captured from a LiteLLM proxy; `tests/fixtures/trim_from_spike.py`
+The fixtures are real payloads captured from a LiteLLM proxy; `tests/fixtures/trim_captures.py`
 shows which captures feed which fixture.

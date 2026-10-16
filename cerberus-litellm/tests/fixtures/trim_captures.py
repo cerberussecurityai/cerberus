@@ -1,8 +1,8 @@
-"""Regenerate tests/fixtures/litellm/*.json from CER-346 spike captures.
+"""Regenerate tests/fixtures/litellm/*.json from captured LiteLLM payloads.
 
-Usage: python tests/fixtures/trim_from_spike.py <dir-with-NNN_*.json>
+Usage: python tests/fixtures/trim_captures.py <dir-with-NNN_*.json>
 
-Each spike capture holds the whole hook payload (kwargs included). The
+Each capture holds the whole hook payload (kwargs included). The
 plugin only ever reads standard_logging_object + response_obj, so the test
 fixtures keep just those (plus the timestamps). One capture is kept whole
 (full_kwargs_chat.json) so test_handler can prove nothing from kwargs leaks.

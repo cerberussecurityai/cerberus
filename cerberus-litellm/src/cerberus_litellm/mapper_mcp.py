@@ -1,6 +1,6 @@
 """Map LiteLLM MCP-gateway logging payloads to Cerberus MCP events.
 
-Two payload shapes, both verified on LiteLLM v1.105.1 (CER-346 spike):
+Two payload shapes, both verified on LiteLLM v1.105.1:
 
 * ``call_type == "call_mcp_tool"`` — one tool call. The tool, server and
   arguments are in ``metadata.mcp_tool_call_metadata``; the full

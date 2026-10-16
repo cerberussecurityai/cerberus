@@ -15,7 +15,7 @@ trap 'rm -rf "$TMPD"' EXIT
 
 LITELLM="${LITELLM:-http://127.0.0.1:4000}"
 MASTER="sk-playground-master"
-SESSION="spike-session-0001"
+SESSION="playground-session-0001"
 TRACEPARENT="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -44,7 +44,7 @@ set +e  # scenarios may legitimately fail; keep going
 COMMON=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json'
         -H "x-litellm-session-id: $SESSION" -H 'x-cerberus-turn-id: turn-1'
         -H "traceparent: $TRACEPARENT" -H "baggage: session.id=$SESSION,user.id=baggage-user"
-        -H 'x-forwarded-for: 203.0.113.7' -H 'User-Agent: spike-agent/0.1'
+        -H 'x-forwarded-for: 203.0.113.7' -H 'User-Agent: playground-agent/0.1'
         -H 'x-custom-secret: should-not-leak')
 
 TOOLS='[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"unit":{"type":"string"}},"required":["city"]}}}]'
@@ -90,9 +90,9 @@ curl -sS "$LITELLM/v1/chat/completions" "${COMMON[@]}" \
 
 say "S8 MCP on /mcp (aggregate): initialize, tools/list, tools/call x3"
 MCPH=(-H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
-      -H "x-litellm-session-id: $SESSION" -H "traceparent: $TRACEPARENT" -H 'x-forwarded-for: 203.0.113.7' -H 'User-Agent: spike-mcp-client/0.1')
+      -H "x-litellm-session-id: $SESSION" -H "traceparent: $TRACEPARENT" -H 'x-forwarded-for: 203.0.113.7' -H 'User-Agent: playground-mcp-client/0.1')
 MCPSESS=$(curl -sS -D - -o "$TMPD/init.out" "$LITELLM/mcp" "${MCPH[@]}" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spike-client","version":"0.1"}}}' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"playground-client","version":"0.1"}}}' \
   | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
 echo "    mcp session: ${MCPSESS:-<none>}"; head -c 300 "$TMPD/init.out"; echo
 curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
@@ -102,7 +102,7 @@ curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
 for call in \
   '{"name":"mockmcp-echo","arguments":{"message":"hi mcp","api_key":"should-be-redacted"}}' \
   '{"name":"mockmcp-lookup_big","arguments":{"doc_id":"doc-7"}}' \
-  '{"name":"mockmcp-fail","arguments":{"reason":"spike"}}'; do
+  '{"name":"mockmcp-fail","arguments":{"reason":"playground"}}'; do
   curl -sS "$LITELLM/mcp" "${MCPH[@]}" ${MCPSESS:+-H "Mcp-Session-Id: $MCPSESS"} \
     -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":$call}" | head -c 300; echo
 done
@@ -111,7 +111,7 @@ say "S9 MCP on the server-scoped route"
 for route in "/mcp/mockmcp" "/mockmcp/mcp"; do
   printf '    %s initialize -> ' "$route"
   RSESS=$(curl -sS -D - -o "$TMPD/route.out" "$LITELLM$route" "${MCPH[@]}" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spike-client","version":"0.1"}}}' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"playground-client","version":"0.1"}}}' \
     | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
   echo "session=${RSESS:-<none>}"; head -c 160 "$TMPD/route.out"; echo
   curl -sS "$LITELLM$route" "${MCPH[@]}" ${RSESS:+-H "Mcp-Session-Id: $RSESS"} \

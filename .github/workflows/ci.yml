@@ -32,6 +32,8 @@ jobs:
             install: -e ".[dev]" -e ../cerberus-core
           - package: cerberus-envoy-ai-gateway
             install: -e ".[dev]" -e ../cerberus-core
+          - package: cerberus-litellm
+            install: -e ".[dev]" -e ../cerberus-core
           - package: cerberus-agentcore-interceptor
             install: -e ".[dev]" -e ../cerberus-core
     defaults:

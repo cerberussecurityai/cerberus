@@ -1,6 +1,6 @@
 """Mock OpenAI-compatible upstream for the cerberus-litellm playground.
 
-Richer than the Envoy playground mock on purpose: the spike has to observe how
+Richer than the Envoy playground mock on purpose: the playground has to observe how
 LiteLLM assembles *streamed* tool-call arguments, how it reports upstream
 errors, and whether large bodies survive, so this mock can produce all three.
 
@@ -24,7 +24,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-app = FastAPI(title="spike-mock-llm")
+app = FastAPI(title="playground-mock-llm")
 
 TOOL_ARGS = {"city": "Reykjavik", "unit": "celsius", "api_key": "should-be-redacted"}
 

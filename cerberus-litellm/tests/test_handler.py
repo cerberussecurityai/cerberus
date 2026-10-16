@@ -10,6 +10,7 @@ import pytest
 from helpers import load_capture
 
 from cerberus_litellm.plugin import CerberusLogger, ensure_log_handler
+from cerberus_litellm.sink import Sink
 
 
 def test_callback_path_resolves_like_litellm_loader(monkeypatch):
@@ -236,6 +237,107 @@ async def test_unexpected_config_exception_disables_and_logs_only_the_type(monke
     assert plugin.disabled_reason is not None
     assert "RuntimeError" in caplog.text
     assert "detail-that-must-not-be-logged" not in caplog.text
+
+
+def _queued_plugin(config, n=1):
+    """A plugin with ``n`` events queued and a sink that has never run (no loop needed)."""
+    plugin = CerberusLogger(replace(config, flush_interval_ms=60000, batch_size=1))
+    plugin.sink = Sink(plugin.config, plugin.queue, client=httpx.AsyncClient())
+    for i in range(n):
+        plugin.queue.append({"endpoint": f"llm://openai/m{i}", "scheme": "llm"}, 50)
+    return plugin
+
+
+def test_shutdown_flush_posts_queued_events_without_a_loop(config, caplog):
+    seen = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"accepted": 1, "skipped": 0})
+
+    caplog.set_level(logging.INFO, logger="cerberus_litellm")
+    plugin = _queued_plugin(config, 2)
+    plugin._shutdown_flush(client=httpx.Client(transport=httpx.MockTransport(respond)))
+    assert len(seen) == 2
+    assert plugin.stats()["posted"] == 2
+    assert len(plugin.queue) == 0
+    assert len([r for r in caplog.records if "shutdown flush" in r.getMessage()]) == 1
+
+
+def test_shutdown_flush_after_the_event_loop_is_closed(config):
+    seen = []
+
+    async def start():
+        plugin = CerberusLogger(replace(config, flush_interval_ms=60000))
+        await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)
+        return plugin
+
+    plugin = asyncio.run(start())  # the loop is closed when this returns
+    transport = httpx.MockTransport(
+        lambda request: seen.append(1) or httpx.Response(200, json={"accepted": 1, "skipped": 0})
+    )
+    plugin._shutdown_flush(client=httpx.Client(transport=transport))
+    assert seen == [1]
+    assert plugin.stats()["posted"] == 1
+
+
+def test_shutdown_flush_failure_does_not_raise_and_is_counted(config):
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise ValueError("secret-looking-detail")
+
+    plugin = _queued_plugin(config, 1)
+    plugin._shutdown_flush(client=httpx.Client(transport=httpx.MockTransport(boom)))  # no raise
+    assert plugin.stats()["post_failures"] == 1
+
+
+def test_shutdown_flush_is_a_noop_with_nothing_queued_or_no_sink(config):
+    plugin = CerberusLogger(config)
+    plugin._shutdown_flush()  # no sink yet
+    plugin = _queued_plugin(config, 0)
+    plugin._shutdown_flush()  # empty queue
+
+
+def test_shutdown_flush_is_registered_once_when_events_first_flow(config, exit_hooks):
+    async def run():
+        plugin = CerberusLogger(replace(config, flush_interval_ms=60000))
+        assert exit_hooks == []
+        await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)
+        await plugin.async_log_success_event(_kwargs("failure_500"), None, 0, 1)
+        await plugin.sink.close()
+        return plugin
+
+    plugin = asyncio.run(run())
+    assert exit_hooks == [plugin._shutdown_flush]
+
+
+@pytest.mark.parametrize(
+    "url,warns",
+    [
+        ("http://ingest.example.com", True),
+        ("http://203.0.113.9:8080", True),
+        ("https://ingest.example.com", False),
+        ("http://localhost:9089", False),
+        ("http://127.0.0.1:9089", False),
+        ("http://127.0.0.2", False),
+        ("http://[::1]:9089", False),
+    ],
+)
+def test_plain_http_to_a_remote_host_warns_once(config, caplog, url, warns):
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm")
+    CerberusLogger(replace(config, ingest_service=url))
+    messages = [r.getMessage() for r in caplog.records if "plain http" in r.getMessage()]
+    assert len(messages) == (1 if warns else 0)
+    if warns:
+        assert "sk_test_0123456789" not in messages[0]
+        assert "/v1/ingest" not in messages[0]
+
+
+def test_plain_http_warning_names_the_host_only(config, caplog):
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm")
+    CerberusLogger(replace(config, ingest_service="http://user:pw@ingest.example.com:81/path?k=v"))
+    text = " ".join(r.getMessage() for r in caplog.records if "plain http" in r.getMessage())
+    assert "ingest.example.com" in text
+    assert "pw" not in text and "path" not in text and "k=v" not in text
 
 
 async def test_end_to_end_flush_posts_batch(config):

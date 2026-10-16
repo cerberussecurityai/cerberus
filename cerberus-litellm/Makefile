@@ -28,9 +28,9 @@ build:
 	# so it does not depend on which cerberus-core versions are published.
 	uv build --wheel --out-dir dist ../cerberus-core
 
-# Regenerate tests/fixtures/litellm/*.json from a directory of spike captures.
+# Regenerate tests/fixtures/litellm/*.json from a directory of captured payloads.
 fixtures: $(VENV)
-	$(PY) tests/fixtures/trim_from_spike.py $(CAPTURES)
+	$(PY) tests/fixtures/trim_captures.py $(CAPTURES)
 
 # Local playground: LiteLLM with the plugin installed + mocks + stub ingest.
 run:

@@ -11,6 +11,7 @@ documented known gap).
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -90,31 +91,80 @@ class Sink:
                 return
             await self._post(batch)
 
+    def _request_parts(self, batch: list) -> tuple[bytes, dict[str, str]]:
+        # Serialise here rather than via httpx's json=: strict JSON (no NaN)
+        # and a failure we can count instead of one that escapes.
+        body = json.dumps({"events": batch}, allow_nan=False).encode("utf-8")
+        return body, {"X-API-Key": self.config.token, "Content-Type": "application/json"}
+
     async def _post(self, batch: list) -> None:
         try:
-            # Serialise here rather than via httpx's json=: strict JSON (no NaN)
-            # and a failure we can count instead of one that escapes.
-            body = json.dumps({"events": batch}, allow_nan=False).encode("utf-8")
-            response = await self._client.post(
-                self._url,
-                content=body,
-                headers={"X-API-Key": self.config.token, "Content-Type": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            self.post_failures += 1
+            body, headers = self._request_parts(batch)
+            response = await self._client.post(self._url, content=body, headers=headers)
+        except Exception as exc:
+            self._record_failure(batch, exc)
+            return
+        self._record_response(batch, response)
+
+    def _record_failure(self, batch: list, exc: Exception) -> None:
+        self.post_failures += 1
+        if isinstance(exc, httpx.HTTPError):
             logger.warning("Dropping batch of %d events: %s", len(batch), exc)
             return
-        except Exception as exc:
-            # Anything else (bad URL, unencodable header, unserialisable batch)
-            # must not end the flush loop; name the type only, never its args.
-            self.post_failures += 1
-            self._throttle.warn(
-                logger,
-                "Dropping batch of %d events: %s while sending",
-                len(batch),
-                type(exc).__name__,
-            )
-            return
+        # Anything else (bad URL, unencodable header, unserialisable batch)
+        # must not end the flush loop; name the type only, never its args.
+        self._throttle.warn(
+            logger,
+            "Dropping batch of %d events: %s while sending",
+            len(batch),
+            type(exc).__name__,
+        )
+
+    def flush_blocking(
+        self, budget_s: float = 2.0, client: httpx.Client | None = None
+    ) -> tuple[int, int]:
+        """Best-effort synchronous drain for interpreter exit. Never raises.
+
+        At exit the event loop may already be closed, so this uses a blocking
+        client. It sends at most two batches and never spends more than
+        ``budget_s`` seconds in total (each request's timeout is the time
+        left). Outcomes go into the same counters as the async path. Returns
+        (batches sent, events still queued).
+        """
+        sent = 0
+        own_client = client is None
+        try:
+            deadline = time.monotonic() + budget_s
+            if client is None:
+                client = httpx.Client()
+            for _ in range(2):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                batch = self.queue.drain(self.config.batch_size)
+                if not batch:
+                    break
+                sent += 1
+                try:
+                    body, headers = self._request_parts(batch)
+                    response = client.post(
+                        self._url, content=body, headers=headers, timeout=remaining
+                    )
+                except Exception as exc:
+                    self._record_failure(batch, exc)
+                    continue
+                self._record_response(batch, response)
+        except Exception:
+            logger.debug("Shutdown flush stopped early", exc_info=True)
+        finally:
+            if own_client and client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+        return sent, len(self.queue)
+
+    def _record_response(self, batch: list, response: httpx.Response) -> None:
         # Only a 2xx means the batch was ingested. A 3xx (redirect — httpx does
         # not follow by default, and we must not, or POST->GET would corrupt the
         # body) means it was NOT delivered; treat it as a failure, not success.

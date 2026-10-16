@@ -15,7 +15,7 @@ import json
 import uvicorn
 from fastapi import FastAPI, Response
 
-app = FastAPI(title="spike-mock-mcp")
+app = FastAPI(title="playground-mock-mcp")
 
 TOOLS = [
     {
@@ -77,7 +77,7 @@ async def mcp(payload: dict) -> Response:
             {
                 "protocolVersion": params.get("protocolVersion", "2025-06-18"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "spike-mock-mcp", "version": "0.1.0"},
+                "serverInfo": {"name": "playground-mock-mcp", "version": "0.1.0"},
             },
         )
     elif method == "tools/list":

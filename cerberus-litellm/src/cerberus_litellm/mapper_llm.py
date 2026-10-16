@@ -2,7 +2,7 @@
 
 The mapper extracts raw values only — sanitization, truncation and size caps
 happen in pipeline.py. Field names were verified against LiteLLM v1.105.1
-captures (CER-346 spike); the accessors in payload.py tolerate their absence.
+captures; the accessors in payload.py tolerate their absence.
 """
 
 import math

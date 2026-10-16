@@ -59,7 +59,7 @@ cerberus/
 │   ├── Makefile
 │   ├── src/cerberus_litellm/
 │   ├── playground/            # LiteLLM image with the plugin + mocks + stub ingest
-│   └── tests/                 # fixtures captured from a real proxy (CER-346 spike)
+│   └── tests/                 # fixtures captured from LiteLLM v1.105.1
 ├── cerberus-agentcore-interceptor/ # Lambda interceptor for Amazon Bedrock AgentCore Gateway
 │   ├── pyproject.toml
 │   ├── Makefile               # incl. `make zip` (Lambda deployment package)
@@ -169,7 +169,7 @@ make run                  # playground: docker compose + standalone `aigw run`
 
 ### cerberus-litellm
 
-LiteLLM proxy callback plugin. Registered via `litellm_settings.callbacks: ["cerberus_litellm.handler"]`; reads `kwargs["standard_logging_object"]` + `response_obj` in the two terminal logging hooks and nothing else (the proxy's provider keys live in `kwargs` and must never be serialised). Maps LLM calls to `llm://{provider}/{model}` events and MCP tool calls / tools/list to `mcp://{server}/{tool}` events and `mcp_schema_report`, sanitizes and caps them with the same numbers as the Envoy bridge (copied, not shared — owner decision), and posts batches from a bounded queue on the proxy's event loop.
+LiteLLM proxy callback plugin. Registered via `litellm_settings.callbacks: ["cerberus_litellm.handler"]`; reads `kwargs["standard_logging_object"]` + `response_obj` in the two terminal logging hooks and nothing else (the proxy's provider keys live in `kwargs` and must never be serialised). Maps LLM calls to `llm://{provider}/{model}` events and MCP tool calls / tools/list to `mcp://{server}/{tool}` events and `mcp_schema_report`, sanitizes and caps them with the same numbers as the Envoy bridge (copied, not shared), and posts batches from a bounded queue on the proxy's event loop.
 
 **Build/test:** `cd cerberus-litellm && make venv && make test` (fixtures are real captures; regenerate with `make fixtures CAPTURES=<dir>`), `make run` for the playground.
 

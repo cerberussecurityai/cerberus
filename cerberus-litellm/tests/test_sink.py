@@ -261,6 +261,60 @@ async def test_batch_is_posted_as_strict_json_with_content_type(config, queue):
     await sink.close()
 
 
+def _blocking_sink(config, queue, handler, batch_size=1):
+    cfg = replace(config, batch_size=batch_size)
+    sink = Sink(cfg, queue, client=httpx.AsyncClient())
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return sink, client
+
+
+def test_flush_blocking_sends_at_most_two_batches(config, queue):
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(json.loads(request.content)["events"])
+        return httpx.Response(200, json={"accepted": 1, "skipped": 0})
+
+    sink, client = _blocking_sink(config, queue, handler)
+    for event in _events(5):
+        queue.append(event)
+    sent, left = sink.flush_blocking(2.0, client=client)
+    assert (sent, left) == (2, 3)
+    assert len(posts) == 2
+    assert sink.posted == 2
+
+
+def test_flush_blocking_respects_the_time_budget(config, queue):
+    seen_timeouts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_timeouts.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json={"accepted": 1, "skipped": 0})
+
+    sink, client = _blocking_sink(config, queue, handler)
+    for event in _events(2):
+        queue.append(event)
+    sink.flush_blocking(1.5, client=client)
+    assert seen_timeouts and all(0 < t <= 1.5 for t in seen_timeouts)
+
+    # A spent budget sends nothing and leaves the events queued.
+    for event in _events(2):
+        queue.append(event)
+    assert sink.flush_blocking(0.0, client=client) == (0, 2)
+
+
+def test_flush_blocking_counts_failures_and_never_raises(config, queue):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("nope")
+
+    sink, client = _blocking_sink(config, queue, handler)
+    queue.append(_events()[0])
+    sent, left = sink.flush_blocking(2.0, client=client)  # must not raise
+    assert (sent, left) == (1, 0)
+    assert sink.post_failures == 1
+    assert sink.posted == 0
+
+
 async def test_on_tick_runs_each_flush_and_survives_errors(config):
     calls = []
 

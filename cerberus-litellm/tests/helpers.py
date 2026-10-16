@@ -10,7 +10,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def load_capture(name: str) -> dict[str, Any]:
-    """Load a trimmed LiteLLM hook payload captured by the CER-346 spike."""
+    """Load a trimmed LiteLLM hook payload captured from a real proxy."""
     return json.loads((FIXTURES / "litellm" / f"{name}.json").read_text())
 
 
