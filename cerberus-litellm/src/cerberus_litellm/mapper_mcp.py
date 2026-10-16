@@ -22,7 +22,7 @@ from typing import Any
 from . import __version__, payload
 from .config import Config
 from .mapper_llm import clean_label, endpoint_segment
-from .redaction import redact_secrets
+from .redaction import redact_bounded
 
 MAX_LABEL_CHARS = 256
 TRUNCATION_MARKER = "...[TRUNCATED]"
@@ -66,7 +66,7 @@ def result_text(content: Any, limit: int) -> str | None:
         text = str(content)
     # Redact BEFORE cutting: a credential split by the cut can fall below a
     # pattern's minimum length and survive as a recognisable prefix.
-    text = redact_secrets(text)
+    text = redact_bounded(text, limit)
     if len(text) > limit:
         return text[:limit] + TRUNCATION_MARKER
     return text

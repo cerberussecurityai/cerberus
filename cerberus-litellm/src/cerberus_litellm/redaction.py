@@ -36,6 +36,19 @@ def _mask_param_value(match: re.Match[str]) -> str:
     return f"{match.group(1)}{quote}[REDACTED]{quote}"
 
 
+# Free text is cut to this many times its final cap BEFORE the regex passes run,
+# so a multi-megabyte tool result or error costs a bounded amount of regex time
+# on the proxy's event loop. The discarded tail is far beyond the final cap and
+# never reaches the event; a credential that starts inside the cap and runs past
+# it is still seen whole (or, if enormous, long enough to match) in the slice.
+REDACTION_INPUT_FACTOR = 4
+
+
+def redact_bounded(text: str, final_cap: int) -> str:
+    """``redact_secrets`` over at most ``REDACTION_INPUT_FACTOR * final_cap`` characters."""
+    return redact_secrets(text[: final_cap * REDACTION_INPUT_FACTOR])
+
+
 def redact_secrets(text: str) -> str:
     """Mask credential-shaped substrings in free text; other text is unchanged."""
     text = _USERINFO.sub("[REDACTED]@", text)

@@ -2,10 +2,11 @@
 
 POSTs ``{"events": [...]}`` to ``{ingestService}/v1/ingest/batch`` with the
 API key in ``X-API-Key`` — the same wire contract the flex-gateway policy
-uses (the server fans api_key/client_id/token into each event, so events
-carry no credentials). Delivery is at-most-once: failed batches are dropped
-and counted, matching the flex-gateway v1 posture (retry/backoff is a
-documented known gap).
+uses. The batch carries events (which hold no credentials); a 2xx response
+means the batch was accepted, and the counts in the response body are
+informational. Delivery is at-most-once: failed batches are dropped and
+counted, matching the flex-gateway v1 posture (retry/backoff is a documented
+known gap).
 """
 
 import asyncio
@@ -31,7 +32,7 @@ REQUEST_TIMEOUT_SECONDS = 10.0
 
 
 def _safe_int(value: Any) -> int:
-    """Coerce a server-returned counter to int, defaulting to 0 on junk."""
+    """Coerce a counter from the ingest response to int, defaulting to 0 on junk."""
     try:
         return int(value or 0)
     except (ValueError, TypeError):
@@ -50,8 +51,8 @@ class Sink:
         self.queue = queue
         self.posted = 0
         self.post_failures = 0
-        # Server-side filtering visibility: the ingest endpoint may skip
-        # events while returning 200.
+        # Counts reported in the ingest response body (informational; a 2xx
+        # already means the batch was accepted).
         self.server_accepted = 0
         self.server_skipped = 0
         self._client = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
@@ -204,7 +205,7 @@ class Sink:
         self.server_skipped += skipped
         if skipped:
             logger.warning(
-                "Ingest skipped %d of %d events in batch (server-side filter)",
+                "Ingest response reports %d of %d events in the batch as skipped",
                 skipped,
                 len(batch),
             )

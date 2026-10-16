@@ -23,7 +23,8 @@ from cerberus_core import REDACTED, SENSITIVE_KEYS, normalize_ip, sanitize_dict
 
 from .config import SENSITIVE_HEADER_NAMES, Config
 from .logthrottle import LogThrottle
-from .redaction import redact_secrets
+from .redaction import redact_bounded
+from .redaction import redact_secrets as redact_secrets  # re-exported
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def _scrub_schema(node: Any, depth: int = 0) -> Any:
     if depth > _MAX_SCHEMA_DEPTH:
         return REDACTED
     if isinstance(node, str):
-        return redact_secrets(node)
+        return redact_bounded(node, MAX_VALUE_CHARS)
     if isinstance(node, list):
         return [_scrub_schema(item, depth + 1) for item in node]
     if not isinstance(node, dict):
@@ -173,12 +174,12 @@ class Pipeline:
         if custom_data.get("error") is not None:
             error = custom_data["error"]
             if isinstance(error, str):
-                error = redact_secrets(error)  # before truncation: no split tokens
+                error = redact_bounded(error, MAX_ERROR_CHARS)  # before truncation
             custom_data["error"] = truncate_values(error, MAX_ERROR_CHARS)
         if custom_data.get("result_summary") is not None:
             summary = custom_data["result_summary"]
             if isinstance(summary, str):
-                summary = redact_secrets(summary)
+                summary = redact_bounded(summary, MAX_VALUE_CHARS)
             custom_data["result_summary"] = truncate_values(summary)
         if kind == "schema":
             # Catalogues are declarations: keep the definitions (names, types,

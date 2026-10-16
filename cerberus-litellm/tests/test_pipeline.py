@@ -508,6 +508,51 @@ def test_credential_straddling_the_result_cut_leaves_no_prefix(config, secret, f
         assert secret not in json.dumps(out)
 
 
+def test_multi_megabyte_result_is_bounded_and_a_credential_inside_the_cap_is_redacted(config):
+    import copy
+
+    limit = 256
+    cfg = replace(config, mcp_result_max_chars=limit)
+    secret = "sk-live-abcdef0123456789"
+    text = "a " * 100 + secret + " " + "b " * 2_000_000  # ~4 MB, credential well inside the cap
+    slo = copy.deepcopy(load_capture("mcp_tool_call")["standard_logging_object"])
+    slo["response"]["content"] = [{"type": "text", "text": text}]
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    summary = out["custom_data"]["result_summary"]
+    assert "sk-[REDACTED]" in summary and secret not in summary
+    assert len(summary) <= limit + len("...[TRUNCATED]")
+    assert summary.endswith("...[TRUNCATED]")
+
+
+def test_the_same_bound_applies_to_error_text_and_catalogue_strings(config):
+    import copy
+
+    secret = "sk-live-abcdef0123456789"
+    big = "x " * 3_000_000
+    slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_message"] = "boom " + secret + " " + big
+    cfg = replace(config, capture_mcp_results=True)
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    assert secret not in out["custom_data"]["error"]
+    assert len(out["custom_data"]["error"]) <= cfg.mcp_result_max_chars + len("...[TRUNCATED]")
+
+    event = _schema_event(config, {}, "tool " + secret + " " + big)
+    description = finalized(Pipeline(config), event, "schema")["custom_data"]["tools"][0][
+        "description"
+    ]
+    assert secret not in description
+    assert len(description) <= MAX_VALUE_CHARS + len("...[TRUNCATED]")
+
+
+def test_redact_bounded_only_looks_at_four_times_the_cap():
+    from cerberus_litellm.redaction import REDACTION_INPUT_FACTOR, redact_bounded
+
+    assert REDACTION_INPUT_FACTOR == 4
+    text = "a" * 40 + " sk-live-abcdef0123456789"
+    assert redact_bounded(text, 100).endswith("sk-[REDACTED]")  # inside 400 characters
+    assert len(redact_bounded("z" * 10_000, 100)) == 400
+
+
 def test_credential_straddling_the_error_cut_leaves_no_prefix(config):
     import copy
 

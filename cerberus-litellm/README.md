@@ -184,10 +184,9 @@ tool name.
   sampled out.
 - **Workers.** Under `uvicorn --reload` or with several workers, each worker process holds its
   own queue, sink and exit flush.
-- **Duplicate suppression is bounded.** LiteLLM can fire a logging hook more than once for one
-  call; the plugin suppresses the repeats using a window of the last 4096 call identifiers. A
-  flood of unique call ids evicts older entries, which only affects duplicate suppression, never
-  whether a first firing is reported.
+- **Duplicate suppression.** LiteLLM can fire a logging hook more than once for one call, and
+  the plugin suppresses the repeats. Duplicate suppression is bounded and best-effort; it only
+  affects duplicate firings of the same call.
 
 ## Known gaps
 
