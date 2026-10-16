@@ -23,7 +23,7 @@ from cerberus_core import REDACTED, SENSITIVE_KEYS, normalize_ip, sanitize_dict
 
 from .config import SENSITIVE_HEADER_NAMES, Config
 from .logthrottle import LogThrottle
-from .redaction import redact_bounded
+from .redaction import TRUNCATION_MARKER, redact_bounded
 from .redaction import redact_secrets as redact_secrets  # re-exported
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ MAX_USER_AGENT_CHARS = 1024
 MAX_USER_ID_CHARS = 256
 MAX_ERROR_CHARS = 2048
 MAX_IP_CHARS = 64
-TRUNCATION_MARKER = "...[TRUNCATED]"
 _CATALOGUE_KEYS = ("tools", "resources", "prompts")
 # Identity-like custom_data strings that callers can influence (the request's
 # ``user`` field, session and turn headers): bounded tighter than content.

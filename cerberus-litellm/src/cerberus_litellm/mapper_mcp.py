@@ -22,10 +22,9 @@ from typing import Any
 from . import __version__, payload
 from .config import Config
 from .mapper_llm import clean_label, endpoint_segment
-from .redaction import redact_bounded
+from .redaction import TRUNCATION_MARKER, redact_bounded
 
 MAX_LABEL_CHARS = 256
-TRUNCATION_MARKER = "...[TRUNCATED]"
 # An isError tool result arrives as a failure whose error message IS the result
 # text, so it is subject to the result-capture flag like a success result.
 TOOL_RESULT_ERROR_CLASS = "MCPToolResultError"

@@ -565,7 +565,58 @@ def test_redact_bounded_only_looks_at_four_times_the_cap():
     assert REDACTION_INPUT_FACTOR == 4
     text = "a" * 40 + " sk-live-abcdef0123456789"
     assert redact_bounded(text, 100).endswith("sk-[REDACTED]")  # inside 400 characters
-    assert len(redact_bounded("z" * 10_000, 100)) == 400
+    cut = redact_bounded("z" * 10_000, 100)  # only 400 characters were looked at
+    assert cut == "z" * 200 + "...[TRUNCATED]"  # half of them dropped as the boundary margin
+
+
+def test_an_uncut_text_is_unchanged_by_the_boundary_margin():
+    from cerberus_litellm.redaction import redact_bounded, redact_secrets
+
+    for text in ("short", "x" * 400, "a " * 100 + "sk-live-abcdef0123456789"):  # all <= 4 * 100
+        assert redact_bounded(text, 100) == redact_secrets(text)
+
+
+def test_a_large_cut_keeps_the_full_margin():
+    from cerberus_litellm.redaction import REDACTION_BOUNDARY_MARGIN, redact_bounded
+
+    cap = 2048
+    cut = redact_bounded("z" * 100_000, cap)
+    assert len(cut) == cap * 4 - REDACTION_BOUNDARY_MARGIN + len("...[TRUNCATED]")
+
+
+def test_a_credential_cut_at_the_slice_boundary_leaves_no_fragment_after_heavy_masking(config):
+    import re
+
+    from cerberus_litellm.redaction import redact_bounded
+
+    cap = 64  # slice of 256 characters
+    # One enormous secret collapses to 13 characters, so the masked slice is far
+    # shorter than the cap; the next secret starts 5 characters before the cut.
+    first = "sk-" + "A" * 247  # 250 characters
+    text = first + " " + "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 3
+    assert 4 * cap < len(text) and text[251 : 4 * cap] == "sk-AB"  # straddles the boundary
+    out = redact_bounded(text, cap)
+    final = out if len(out) <= cap else out[:cap] + "...[TRUNCATED]"
+    assert final.endswith("...[TRUNCATED]")
+    assert not re.search(r"sk-[A-Za-z0-9]", final)  # no raw fragment survives
+    assert "sk-AB" not in final
+
+
+def test_a_heavily_masked_many_secret_text_longer_than_the_slice_ends_clean(config):
+    import copy
+    import re
+
+    cap = 128
+    cfg = replace(config, mcp_result_max_chars=cap)
+    secret = "sk-live-" + "Q" * 300
+    text = (secret + " ") * 12  # far longer than 4 * cap; every secret is masked
+    slo = copy.deepcopy(load_capture("mcp_tool_call")["standard_logging_object"])
+    slo["response"]["content"] = [{"type": "text", "text": text}]
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    summary = out["custom_data"]["result_summary"]
+    assert summary.endswith("...[TRUNCATED]")
+    assert not re.search(r"sk-[A-Za-z0-9]", summary)
+    assert len(summary) <= cap + len("...[TRUNCATED]")
 
 
 def test_credential_straddling_the_error_cut_leaves_no_prefix(config):

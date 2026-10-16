@@ -43,10 +43,29 @@ def _mask_param_value(match: re.Match[str]) -> str:
 # it is still seen whole (or, if enormous, long enough to match) in the slice.
 REDACTION_INPUT_FACTOR = 4
 
+# Redaction shrinks text, so a heavily masked slice can end up no longer than
+# the final cap, and the caller's truncation would then keep characters right at
+# the slice boundary, where a credential cut mid-token is too short for any
+# pattern to match. When the slice was cut, that tail is dropped: this many
+# characters (longer than any credential prefix the patterns can leave), but
+# never more than half of what is left, so a small cap keeps most of its text.
+REDACTION_BOUNDARY_MARGIN = 256
+TRUNCATION_MARKER = "...[TRUNCATED]"
+
 
 def redact_bounded(text: str, final_cap: int) -> str:
-    """``redact_secrets`` over at most ``REDACTION_INPUT_FACTOR * final_cap`` characters."""
-    return redact_secrets(text[: final_cap * REDACTION_INPUT_FACTOR])
+    """``redact_secrets`` over at most ``REDACTION_INPUT_FACTOR * final_cap`` characters.
+
+    If the input was longer than that, the result also loses its last
+    ``REDACTION_BOUNDARY_MARGIN`` characters (see above) and ends with the
+    truncation marker, so the caller's own cap and marker logic still applies.
+    """
+    limit = final_cap * REDACTION_INPUT_FACTOR
+    redacted = redact_secrets(text[:limit])
+    if len(text) <= limit:
+        return redacted
+    margin = min(REDACTION_BOUNDARY_MARGIN, len(redacted) // 2)
+    return redacted[: len(redacted) - margin] + TRUNCATION_MARKER
 
 
 def redact_secrets(text: str) -> str:
