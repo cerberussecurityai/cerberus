@@ -280,3 +280,46 @@ def test_blank_strings_fall_back_to_defaults(monkeypatch):
     assert cfg.session_header == "x-litellm-session-id"
     assert cfg.turn_header == "x-cerberus-turn-id"
     assert cfg.mcp_server_fallback == "litellm"
+
+
+def test_queue_max_bytes_default_and_range(monkeypatch):
+    _env(monkeypatch)
+    assert Config.from_env().queue_max_bytes == 67_108_864
+    for ok in ("1048576", "1073741824"):
+        _env(monkeypatch, CERBERUS_QUEUE_MAX_BYTES=ok)
+        assert Config.from_env().queue_max_bytes == int(ok)
+    for bad in ("1048575", "1073741825", "abc"):
+        _env(monkeypatch, CERBERUS_QUEUE_MAX_BYTES=bad)
+        with pytest.raises(ConfigError, match="CERBERUS_QUEUE_MAX_BYTES"):
+            Config.from_env()
+
+
+def test_invalid_utf8_token_file_raises_config_error_without_the_bytes(monkeypatch, tmp_path):
+    path = tmp_path / "token"
+    path.write_bytes(b"\xff\xfe-secret-bytes-\x80")
+    _env(monkeypatch)
+    monkeypatch.delenv("CERBERUS_TOKEN")
+    monkeypatch.setenv("CERBERUS_TOKEN_FILE", str(path))
+    with pytest.raises(ConfigError) as info:
+        Config.from_env()
+    assert str(path) in str(info.value)
+    assert "secret-bytes" not in str(info.value)
+    assert info.value.__cause__ is None
+
+
+def test_bom_prefixed_token_is_stripped(monkeypatch, tmp_path):
+    path = tmp_path / "token"
+    path.write_text("﻿from-file\n", encoding="utf-8")
+    _env(monkeypatch)
+    monkeypatch.delenv("CERBERUS_TOKEN")
+    monkeypatch.setenv("CERBERUS_TOKEN_FILE", str(path))
+    assert Config.from_env().token == "from-file"
+    _env(monkeypatch, CERBERUS_TOKEN="﻿abc123")
+    assert Config.from_env().token == "abc123"
+
+
+@pytest.mark.parametrize("token", ["ab​cd", "café", "has space", "tab\there", "ctl\x01x"])
+def test_token_must_be_printable_ascii(monkeypatch, token):
+    _env(monkeypatch, CERBERUS_TOKEN=token)
+    with pytest.raises(ConfigError, match="printable ASCII"):
+        Config.from_env()

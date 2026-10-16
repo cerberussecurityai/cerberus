@@ -19,6 +19,11 @@ DEFAULT_MAX_EVENT_BYTES = 57344  # 56KB
 MAX_EVENT_BYTES_CEILING = 63488  # 62KB
 MIN_FLUSH_INTERVAL_MS = 100
 
+# Byte budget for the in-process queue (the count bound alone allows ~560 MB).
+DEFAULT_QUEUE_MAX_BYTES = 67_108_864  # 64 MiB
+MIN_QUEUE_MAX_BYTES = 1_048_576  # 1 MiB
+MAX_QUEUE_MAX_BYTES = 1_073_741_824  # 1 GiB
+
 # Request headers an operator may forward. Bounded: each becomes an
 # unsheddable `headers` entry on every event.
 MAX_CAPTURE_HEADERS = 20
@@ -43,6 +48,11 @@ SENSITIVE_HEADER_NAMES = (
 
 class ConfigError(ValueError):
     """Raised when required configuration is missing or invalid."""
+
+
+def _clean_token(raw: str) -> str:
+    """Strip surrounding whitespace and a leading byte-order mark."""
+    return raw.strip().lstrip("\ufeff").strip()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -131,6 +141,7 @@ class Config:
     batch_size: int = 50
     flush_interval_ms: int = 2000
     queue_capacity: int = 10000
+    queue_max_bytes: int = DEFAULT_QUEUE_MAX_BYTES
     max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES
     sample_rate: float = 1.0
     schema_report_interval_s: int = 3600
@@ -154,20 +165,21 @@ class Config:
                 f"(got {ingest_service!r})"
             )
 
-        token = (os.environ.get("CERBERUS_TOKEN") or "").strip()
+        token = _clean_token(os.environ.get("CERBERUS_TOKEN") or "")
         token_file = (os.environ.get("CERBERUS_TOKEN_FILE") or "").strip()
         if not token and token_file:
             try:
                 with open(token_file, encoding="utf-8") as fh:
-                    token = fh.read().strip()
-            except OSError as exc:
-                raise ConfigError(
-                    f"could not read CERBERUS_TOKEN_FILE {token_file!r}: {exc}"
-                ) from exc
+                    token = _clean_token(fh.read())
+            except (OSError, UnicodeDecodeError):
+                # Name only the path: a decode error carries the file's bytes.
+                raise ConfigError(f"could not read CERBERUS_TOKEN_FILE {token_file!r}") from None
         if not token:
             raise ConfigError(
                 "CERBERUS_TOKEN (or CERBERUS_TOKEN_FILE) is required (Cerberus API key)"
             )
+        if not all("!" <= ch <= "~" for ch in token):
+            raise ConfigError("token must be printable ASCII")
 
         log_level = (os.environ.get("CERBERUS_LOG_LEVEL") or "info").strip().lower()
         if log_level not in _LOG_LEVELS:
@@ -215,6 +227,12 @@ class Config:
                 "CERBERUS_FLUSH_INTERVAL_MS", 2000, MIN_FLUSH_INTERVAL_MS, 60000
             ),
             queue_capacity=_env_int("CERBERUS_QUEUE_CAPACITY", 10000, 100, 1_000_000),
+            queue_max_bytes=_env_int(
+                "CERBERUS_QUEUE_MAX_BYTES",
+                DEFAULT_QUEUE_MAX_BYTES,
+                MIN_QUEUE_MAX_BYTES,
+                MAX_QUEUE_MAX_BYTES,
+            ),
             max_event_bytes=_env_int(
                 "CERBERUS_MAX_EVENT_BYTES", DEFAULT_MAX_EVENT_BYTES, 1024, MAX_EVENT_BYTES_CEILING
             ),
