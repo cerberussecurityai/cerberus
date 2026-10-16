@@ -97,6 +97,31 @@ async def test_duplicate_call_id_is_dropped(plugin):
     assert plugin.stats()["deduplicated"] == 1
 
 
+async def test_reused_caller_chosen_call_id_does_not_silence_later_calls(plugin):
+    first = _kwargs("chat")["standard_logging_object"]
+    later = dict(first, startTime=first["startTime"] + 5, endTime=first["endTime"] + 5)
+    await plugin.async_log_success_event({"standard_logging_object": first}, None, 0, 1)
+    await plugin.async_log_success_event({"standard_logging_object": later}, None, 0, 1)
+    assert len(await _drain(plugin)) == 2  # same call id, different timestamps
+    assert plugin.stats()["deduplicated"] == 0
+    # An exact duplicate firing of the first call is still suppressed.
+    await plugin.async_log_success_event({"standard_logging_object": first}, None, 0, 1)
+    assert plugin.stats()["deduplicated"] == 1
+
+
+async def test_queue_byte_budget_drops_and_counts(config):
+    plugin = CerberusLogger(replace(config, flush_interval_ms=60000, queue_max_bytes=3000))
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)
+    other = dict(_kwargs("chat")["standard_logging_object"], litellm_call_id="another")
+    await plugin.async_log_success_event({"standard_logging_object": other}, None, 0, 1)
+    stats = plugin.stats()
+    assert stats["events_llm"] == 1
+    assert stats["queue_dropped_bytes"] == 1
+    assert stats["queue_dropped_full"] == 0
+    assert 0 < stats["queued_bytes"] <= 3000
+    await plugin.sink.close()
+
+
 async def test_same_call_success_and_failure_are_both_kept(plugin):
     kwargs = _kwargs("chat")
     await plugin.async_log_success_event(kwargs, None, 0, 1)
@@ -186,6 +211,31 @@ async def test_disabled_on_config_error(monkeypatch, caplog):
     assert "cerberus-litellm disabled" in caplog.text
     await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)  # no-op, no raise
     assert plugin.stats()["events_llm"] == 0
+
+
+async def test_invalid_utf8_token_file_disables_instead_of_aborting(monkeypatch, tmp_path, caplog):
+    path = tmp_path / "token"
+    path.write_bytes(b"\xff\xfe-secret-bytes-\x80")
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.delenv("CERBERUS_TOKEN", raising=False)
+    monkeypatch.setenv("CERBERUS_TOKEN_FILE", str(path))
+    caplog.set_level(logging.ERROR)
+    plugin = CerberusLogger()  # must not raise
+    assert plugin.disabled_reason is not None
+    assert "secret-bytes" not in caplog.text
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)  # no-op
+
+
+async def test_unexpected_config_exception_disables_and_logs_only_the_type(monkeypatch, caplog):
+    def boom():
+        raise RuntimeError("detail-that-must-not-be-logged")
+
+    monkeypatch.setattr("cerberus_litellm.plugin.Config.from_env", staticmethod(boom))
+    caplog.set_level(logging.ERROR)
+    plugin = CerberusLogger()
+    assert plugin.disabled_reason is not None
+    assert "RuntimeError" in caplog.text
+    assert "detail-that-must-not-be-logged" not in caplog.text
 
 
 async def test_end_to_end_flush_posts_batch(config):

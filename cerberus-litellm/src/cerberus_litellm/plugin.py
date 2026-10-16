@@ -34,6 +34,7 @@ import httpx
 
 from . import __version__, payload
 from .config import Config, ConfigError
+from .logthrottle import LogThrottle
 from .mapper_llm import map_llm_event
 from .mapper_mcp import map_mcp_event
 from .pipeline import Pipeline
@@ -44,7 +45,6 @@ from .sink import REQUEST_TIMEOUT_SECONDS, Sink
 logger = logging.getLogger("cerberus_litellm")
 
 DEDUPE_WINDOW = 4096
-_WARN_EVERY_SECONDS = 60.0
 
 
 def ensure_log_handler(target: logging.Logger) -> None:
@@ -72,11 +72,18 @@ class CerberusLogger(CustomLogger):
                 config = Config.from_env()
             except ConfigError as exc:
                 self.disabled_reason = str(exc)
-                logger.error("cerberus-litellm disabled: %s", exc)
+            except Exception as exc:
+                # Never abort proxy startup, and never print an unknown
+                # exception's args (a decode error carries the offending bytes).
+                self.disabled_reason = (
+                    f"unexpected {type(exc).__name__} while reading the configuration"
+                )
+            if self.disabled_reason is not None:
+                logger.error("cerberus-litellm disabled: %s", self.disabled_reason)
         if config is not None:
             self.config = config
             logging.getLogger("cerberus_litellm").setLevel(config.log_level.upper())
-            self.queue = BoundedQueue(config.queue_capacity)
+            self.queue = BoundedQueue(config.queue_capacity, config.queue_max_bytes)
             self.pipeline = Pipeline(config)
             self._schema = SchemaReporter(config)
         self.sink: Sink | None = None
@@ -90,9 +97,10 @@ class CerberusLogger(CustomLogger):
             "deduplicated": 0,
             "sampled_out": 0,
             "queue_dropped_full": 0,
+            "queue_dropped_bytes": 0,
             "errors": 0,
         }
-        self._last_warning = 0.0
+        self._throttle = LogThrottle()
         self._last_stats = time.monotonic()
         logger.info(
             "cerberus-litellm %s loaded%s",
@@ -131,10 +139,9 @@ class CerberusLogger(CustomLogger):
                 finalized = self.pipeline.finalize(event, kind)
                 if finalized is None:
                     continue
-                if self.queue.append(finalized):
+                # Drops are counted by the queue itself (by count or by bytes).
+                if self.queue.append(finalized, self.pipeline.last_size):
                     self._counts[f"events_{kind}"] += 1
-                else:
-                    self._counts["queue_dropped_full"] += 1
         except Exception:
             self._counts["errors"] += 1
             self._warn_throttled("cerberus-litellm: failed to map an event")
@@ -154,7 +161,13 @@ class CerberusLogger(CustomLogger):
         call_id = payload.get(slo, "litellm_call_id")
         if not isinstance(call_id, str) or not call_id:
             return False
-        key = f"{call_id}:{payload.status(slo)}"
+        # The call id can be chosen by the caller (x-litellm-call-id), so it is not
+        # enough on its own: a caller that reuses one id must not silence its own
+        # later calls. LiteLLM's duplicate firings of one call share timestamps.
+        key = (
+            f"{call_id}:{payload.status(slo)}:"
+            f"{payload.get(slo, 'startTime')}:{payload.get(slo, 'endTime')}"
+        )
         if key in self._seen:
             return True
         self._seen[key] = None
@@ -179,15 +192,17 @@ class CerberusLogger(CustomLogger):
             logger.info("cerberus-litellm stats %s", self.stats())
 
     def _warn_throttled(self, message: str) -> None:
-        now = time.monotonic()
-        if now - self._last_warning >= _WARN_EVERY_SECONDS:
-            self._last_warning = now
-            logger.warning("%s (errors so far: %d)", message, self._counts["errors"], exc_info=True)
+        self._throttle.warn(
+            logger, "%s (errors so far: %d)", message, self._counts["errors"], exc_info=True
+        )
 
     def stats(self) -> dict[str, int]:
         out = dict(self._counts)
         if self.disabled_reason is None:
             out["queued"] = len(self.queue)
+            out["queued_bytes"] = self.queue.queued_bytes
+            out["queue_dropped_full"] = self.queue.dropped_full
+            out["queue_dropped_bytes"] = self.queue.dropped_bytes
             out["dropped_oversize"] = self.pipeline.dropped_oversize
             out["dropped_unserializable"] = self.pipeline.dropped_unserializable
             out["schema_reports_suppressed"] = self._schema.suppressed
