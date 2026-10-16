@@ -148,5 +148,25 @@ def test_health_final_piece_is_guarded_case_insensitively(config):
 
 def test_ordinary_label_is_unchanged(config):
     assert _with_group(config, "gpt-4o")["endpoint"] == "llm://openai/gpt-4o"
-    assert _with_group(config, "health/gpt-4o")["endpoint"] == "llm://openai/health/gpt-4o"
+    assert _with_group(config, "gpt-4o/mini")["endpoint"] == "llm://openai/gpt-4o/mini"
     assert endpoint_segment("mock-gpt") == "mock-gpt"
+
+
+def test_endpoint_segment_normalises_like_the_ingest_filter():
+    assert endpoint_segment("health/") == "health_model"
+    assert endpoint_segment("x/health/") == "x/health_model"
+    assert endpoint_segment("health//") == "health_model"
+    assert endpoint_segment("health/gpt-4o") == "health_model/gpt-4o"  # every piece guarded
+    assert endpoint_segment("") == "unknown"
+    assert endpoint_segment("/") == "unknown"
+    assert endpoint_segment(" readyz ") == "readyz_model"
+    # The ingest filter does not parse ? or #, so these are not health names.
+    assert endpoint_segment("health?x") == "health?x"
+    assert endpoint_segment("health#x") == "health#x"
+    assert endpoint_segment("gpt-4o") == "gpt-4o"
+
+
+def test_trailing_slash_health_label_is_guarded_end_to_end(config):
+    event = _with_group(config, "health/")
+    assert event["endpoint"] == "llm://openai/health_model"
+    assert event["custom_data"]["model"] == "health/"

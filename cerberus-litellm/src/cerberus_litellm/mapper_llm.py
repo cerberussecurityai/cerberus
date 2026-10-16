@@ -55,13 +55,20 @@ def endpoint_segment(label: str) -> str:
     """Make an endpoint label safe from the ingest health filter.
 
     The label can be client-influenced (wildcard model routing), so a name
-    like ``anything/health`` would make its events vanish. When the final
-    ``/``-separated piece is a health-probe name, append ``_model`` to it.
+    like ``anything/health`` would make its events vanish. The ingest takes
+    ``endpoint.rstrip("/").rsplit("/", 1)[-1].lower()``, so normalise the same
+    way: strip whitespace and trailing slashes (``health/`` is dropped there),
+    and guard every ``/``-separated piece, appending ``_model`` to health names.
+    An empty label becomes ``unknown`` so the provider can never be the last
+    segment. The ingest filter does not parse ``?`` or ``#``, so ``health?x``
+    is not a health name and passes unchanged.
     """
-    head, sep, last = label.rpartition("/")
-    if last.lower() in HEALTH_SEGMENTS:
-        return f"{head}{sep}{last}_model"
-    return label
+    core = label.strip().rstrip("/")
+    if not core:
+        return "unknown"
+    return "/".join(
+        piece + "_model" if piece.lower() in HEALTH_SEGMENTS else piece for piece in core.split("/")
+    )
 
 
 def _label(value: Any, fallback: str = "unknown") -> str:
