@@ -29,8 +29,15 @@ _LOG_LEVELS = ("debug", "info", "warning", "error")
 # cerberus-core spells credential headers Django-style (HTTP_X_API_KEY). LiteLLM
 # hands us wire-style names (x-api-key), so normalize once here and compare
 # against this set everywhere (config validation and pipeline filtering).
-SENSITIVE_HEADER_NAMES = frozenset(
-    name.removeprefix("HTTP_").replace("_", "-").lower() for name in SENSITIVE_HEADERS
+#
+# The proxy also accepts its virtual/master key in x-litellm-api-key, and
+# Azure-style callers send api-key. cerberus-core does not know about those two,
+# so they are plugin-specific additions: forwarding either would ship the proxy
+# credential on every event.
+_PLUGIN_SENSITIVE_HEADERS = frozenset({"x-litellm-api-key", "api-key"})
+SENSITIVE_HEADER_NAMES = (
+    frozenset(name.removeprefix("HTTP_").replace("_", "-").lower() for name in SENSITIVE_HEADERS)
+    | _PLUGIN_SENSITIVE_HEADERS
 )
 
 
@@ -73,6 +80,19 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
         raise ConfigError(f"{name} must be a number (got {raw!r})") from exc
     if not minimum <= value <= maximum:
         raise ConfigError(f"{name} must be between {minimum} and {maximum} (got {value})")
+    return value
+
+
+def _env_str(name: str, default: str) -> str:
+    """Stripped string; unset or whitespace-only falls back to the default."""
+    return (os.environ.get(name) or "").strip() or default
+
+
+def _env_header_name(name: str, default: str) -> str:
+    """A single header name, lower-cased; credential-bearing names are refused."""
+    value = _env_str(name, default).lower()
+    if value in SENSITIVE_HEADER_NAMES:
+        raise ConfigError(f"{name}: {value!r} is a credential-bearing header and is never used")
     return value
 
 
@@ -175,6 +195,9 @@ class Config:
                     f"(got {source!r})"
                 )
 
+        session_header = _env_header_name("CERBERUS_SESSION_HEADER", "x-litellm-session-id")
+        turn_header = _env_header_name("CERBERUS_TURN_HEADER", "x-cerberus-turn-id")
+
         return cls(
             ingest_service=ingest_service,
             token=token,
@@ -183,16 +206,10 @@ class Config:
             capture_mcp_results=_env_bool("CERBERUS_CAPTURE_MCP_RESULTS", True),
             mcp_result_max_chars=_env_int("CERBERUS_MCP_RESULT_MAX_CHARS", 2048, 64, 8192),
             capture_headers=capture_headers,
-            session_header=(os.environ.get("CERBERUS_SESSION_HEADER") or "x-litellm-session-id")
-            .strip()
-            .lower(),
-            turn_header=(os.environ.get("CERBERUS_TURN_HEADER") or "x-cerberus-turn-id")
-            .strip()
-            .lower(),
+            session_header=session_header,
+            turn_header=turn_header,
             user_id_source=user_id_source,
-            mcp_server_fallback=(
-                os.environ.get("CERBERUS_MCP_SERVER_FALLBACK") or "litellm"
-            ).strip(),
+            mcp_server_fallback=_env_str("CERBERUS_MCP_SERVER_FALLBACK", "litellm"),
             batch_size=_env_int("CERBERUS_BATCH_SIZE", 50, 1, MAX_SERVER_BATCH_SIZE),
             flush_interval_ms=_env_int(
                 "CERBERUS_FLUSH_INTERVAL_MS", 2000, MIN_FLUSH_INTERVAL_MS, 60000

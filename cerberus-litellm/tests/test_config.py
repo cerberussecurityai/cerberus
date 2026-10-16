@@ -21,6 +21,8 @@ def test_sensitive_header_names_are_wire_style():
         "x-api-key",
         "x-auth-token",
         "proxy-authorization",
+        "x-litellm-api-key",
+        "api-key",
     } <= SENSITIVE_HEADER_NAMES
     assert all(name == name.lower() and "_" not in name for name in SENSITIVE_HEADER_NAMES)
 
@@ -144,3 +146,137 @@ def test_log_level_validated(monkeypatch):
     _env(monkeypatch, CERBERUS_LOG_LEVEL="verbose")
     with pytest.raises(ConfigError, match="CERBERUS_LOG_LEVEL"):
         Config.from_env()
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("CERBERUS_BATCH_SIZE", "1"),
+        ("CERBERUS_BATCH_SIZE", "1000"),
+        ("CERBERUS_MAX_EVENT_BYTES", "1024"),
+        ("CERBERUS_MAX_EVENT_BYTES", "63488"),
+        ("CERBERUS_FLUSH_INTERVAL_MS", "100"),
+        ("CERBERUS_FLUSH_INTERVAL_MS", "60000"),
+        ("CERBERUS_MCP_RESULT_MAX_CHARS", "64"),
+        ("CERBERUS_MCP_RESULT_MAX_CHARS", "8192"),
+        ("CERBERUS_QUEUE_CAPACITY", "100"),
+        ("CERBERUS_QUEUE_CAPACITY", "1000000"),
+        ("CERBERUS_SCHEMA_REPORT_INTERVAL_S", "0"),
+        ("CERBERUS_SCHEMA_REPORT_INTERVAL_S", "86400"),
+        ("CERBERUS_STATS_LOG_INTERVAL_S", "0"),
+        ("CERBERUS_STATS_LOG_INTERVAL_S", "86400"),
+        ("CERBERUS_SAMPLE_RATE", "0"),
+        ("CERBERUS_SAMPLE_RATE", "1"),
+    ],
+)
+def test_inclusive_boundaries_accepted(monkeypatch, name, value):
+    _env(monkeypatch, **{name: value})
+    Config.from_env()
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("CERBERUS_BATCH_SIZE", "0"),
+        ("CERBERUS_BATCH_SIZE", "1001"),
+        ("CERBERUS_MAX_EVENT_BYTES", "1023"),
+        ("CERBERUS_FLUSH_INTERVAL_MS", "99"),
+        ("CERBERUS_FLUSH_INTERVAL_MS", "60001"),
+        ("CERBERUS_MCP_RESULT_MAX_CHARS", "63"),
+        ("CERBERUS_MCP_RESULT_MAX_CHARS", "8193"),
+        ("CERBERUS_QUEUE_CAPACITY", "99"),
+        ("CERBERUS_QUEUE_CAPACITY", "1000001"),
+        ("CERBERUS_SCHEMA_REPORT_INTERVAL_S", "-1"),
+        ("CERBERUS_SCHEMA_REPORT_INTERVAL_S", "86401"),
+        ("CERBERUS_STATS_LOG_INTERVAL_S", "-1"),
+        ("CERBERUS_STATS_LOG_INTERVAL_S", "86401"),
+        ("CERBERUS_SAMPLE_RATE", "-0.1"),
+        ("CERBERUS_SAMPLE_RATE", "1.01"),
+    ],
+)
+def test_out_of_range_rejected(monkeypatch, name, value):
+    _env(monkeypatch, **{name: value})
+    with pytest.raises(ConfigError, match=name):
+        Config.from_env()
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("CERBERUS_BATCH_SIZE", "abc"),
+        ("CERBERUS_SAMPLE_RATE", "abc"),
+        ("CERBERUS_SAMPLE_RATE", "nan"),
+    ],
+)
+def test_non_numeric_rejected(monkeypatch, name, value):
+    _env(monkeypatch, **{name: value})
+    with pytest.raises(ConfigError, match=name):
+        Config.from_env()
+
+
+@pytest.mark.parametrize("header", sorted(SENSITIVE_HEADER_NAMES))
+def test_every_sensitive_header_refused(monkeypatch, header):
+    for spelling in (header, header.upper(), header.title()):
+        _env(monkeypatch, CERBERUS_CAPTURE_HEADERS=f"x-tenant,{spelling}")
+        with pytest.raises(ConfigError, match="CERBERUS_CAPTURE_HEADERS"):
+            Config.from_env()
+
+
+def test_token_env_wins_over_token_file(monkeypatch, tmp_path):
+    path = tmp_path / "token"
+    path.write_text("from-file\n")
+    _env(monkeypatch, CERBERUS_TOKEN_FILE=str(path))
+    assert Config.from_env().token == "tok"
+
+
+def test_token_file_missing(monkeypatch, tmp_path):
+    _env(monkeypatch, CERBERUS_TOKEN_FILE=str(tmp_path / "absent"))
+    monkeypatch.delenv("CERBERUS_TOKEN")
+    with pytest.raises(ConfigError, match="CERBERUS_TOKEN_FILE"):
+        Config.from_env()
+
+
+def test_token_file_empty(monkeypatch, tmp_path):
+    path = tmp_path / "token"
+    path.write_text("  \n")
+    _env(monkeypatch, CERBERUS_TOKEN_FILE=str(path))
+    monkeypatch.delenv("CERBERUS_TOKEN")
+    with pytest.raises(ConfigError, match="is required"):
+        Config.from_env()
+
+
+def test_user_id_source_dedupes(monkeypatch):
+    _env(monkeypatch, CERBERUS_USER_ID_SOURCE="end_user,end_user,user_id")
+    assert Config.from_env().user_id_source == ("end_user", "user_id")
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_user_id_source_blank_uses_default(monkeypatch, value):
+    _env(monkeypatch, CERBERUS_USER_ID_SOURCE=value)
+    assert Config.from_env().user_id_source == ("end_user", "user_id", "key_alias")
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("CERBERUS_SESSION_HEADER", "authorization"),
+        ("CERBERUS_TURN_HEADER", "X-API-Key"),
+    ],
+)
+def test_session_and_turn_header_refuse_credential_names(monkeypatch, name, value):
+    _env(monkeypatch, **{name: value})
+    with pytest.raises(ConfigError, match=name):
+        Config.from_env()
+
+
+def test_blank_strings_fall_back_to_defaults(monkeypatch):
+    _env(
+        monkeypatch,
+        CERBERUS_SESSION_HEADER="  ",
+        CERBERUS_TURN_HEADER=" ",
+        CERBERUS_MCP_SERVER_FALLBACK="   ",
+    )
+    cfg = Config.from_env()
+    assert cfg.session_header == "x-litellm-session-id"
+    assert cfg.turn_header == "x-cerberus-turn-id"
+    assert cfg.mcp_server_fallback == "litellm"
