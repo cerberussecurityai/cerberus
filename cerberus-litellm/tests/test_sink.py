@@ -6,6 +6,7 @@ skipping, and {"accepted": N, "skipped": M} responses.
 """
 
 import asyncio
+import logging
 from dataclasses import replace
 
 import httpx
@@ -81,6 +82,18 @@ async def test_invalid_key_drops_batch(config, queue):
     assert sink.post_failures == 1
     assert sink.posted == 0
     assert len(queue) == 0  # at-most-once: dropped, not retried
+
+
+async def test_ingest_error_body_is_logged_only_at_debug(config, queue, caplog):
+    caplog.set_level(logging.DEBUG, logger="cerberus_litellm.sink")
+    sink = make_sink(replace(config, token="sk_test_wrong"), queue, make_stub_ingest([]))
+    queue.append({"endpoint": "llm://openai/gpt-4o"})
+    await sink.flush_once()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert warnings and all("invalid API key" not in r.getMessage() for r in warnings)
+    assert "403" in warnings[0].getMessage()
+    assert any("invalid API key" in r.getMessage() for r in debugs)
 
 
 async def test_connection_error_drops_batch(config, queue):

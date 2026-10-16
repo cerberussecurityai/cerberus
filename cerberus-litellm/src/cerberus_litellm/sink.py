@@ -113,11 +113,11 @@ class Sink:
         if not (200 <= response.status_code < 300):
             self.post_failures += 1
             logger.warning(
-                "Dropping batch of %d events: ingest returned %d %s",
+                "Dropping batch of %d events: ingest returned %d",
                 len(batch),
                 response.status_code,
-                response.text[:200],
             )
+            logger.debug("Ingest error body: %s", response.text[:200])
             return
         self.posted += len(batch)
         try:
