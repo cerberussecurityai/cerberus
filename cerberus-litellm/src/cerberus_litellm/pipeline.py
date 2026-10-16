@@ -1,0 +1,166 @@
+"""Event finalization: sanitize, truncate, normalize the IP, enforce the cap.
+
+All privacy-affecting work happens here, before anything reaches the queue:
+- MCP arguments, LLM content, captured headers and schema catalogues pass
+  through ``cerberus_core.sanitize_dict`` so SENSITIVE_KEYS values are redacted;
+- credential-bearing headers are dropped outright;
+- error and result text is scrubbed of credential-shaped substrings;
+- long string values are truncated and oversized events shed content, then
+  are dropped, so one giant prompt can't blow the ingest per-event cap.
+
+Source IPs are normalized and shipped raw: they are not PII and are never
+hashed. The numbers below are identical to cerberus-envoy-ai-gateway's; keep
+them in step.
+"""
+
+import json
+import logging
+import re
+from typing import Any
+
+from cerberus_core import normalize_ip, sanitize_dict
+
+from .config import SENSITIVE_HEADER_NAMES, Config
+
+logger = logging.getLogger(__name__)
+
+MAX_VALUE_CHARS = 8192
+MAX_USER_AGENT_CHARS = 1024
+MAX_USER_ID_CHARS = 256
+MAX_ERROR_CHARS = 2048
+MAX_IP_CHARS = 64
+TRUNCATION_MARKER = "...[TRUNCATED]"
+_CATALOGUE_KEYS = ("tools", "resources", "prompts")
+# Wire-style credential header names (config.py normalises cerberus-core's
+# Django-style spelling); matched case-insensitively below.
+_SENSITIVE_HEADERS = SENSITIVE_HEADER_NAMES
+
+# Credential-shaped substrings. Exception text from LiteLLM can embed provider
+# URLs with keys, bearer tokens or URL userinfo.
+_USERINFO = re.compile(r"(?<=://)[^/\s:@]+:[^/\s@]+@")
+_BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_SK_TOKEN = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+_SECRET_PARAM = re.compile(
+    r"\b(key|api_key|apikey|api-key|token|access_token|password|secret)=([^&\s\"']+)",
+    re.IGNORECASE,
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Mask credential-shaped substrings in free text; other text is unchanged."""
+    text = _USERINFO.sub("[REDACTED]@", text)
+    text = _BEARER.sub("Bearer [REDACTED]", text)
+    text = _SK_TOKEN.sub("sk-[REDACTED]", text)
+    return _SECRET_PARAM.sub(r"\1=[REDACTED]", text)
+
+
+def truncate_values(data: Any, limit: int = MAX_VALUE_CHARS) -> Any:
+    """Recursively truncate string values longer than ``limit`` characters."""
+    if isinstance(data, str):
+        return data[:limit] + TRUNCATION_MARKER if len(data) > limit else data
+    if isinstance(data, dict):
+        return {key: truncate_values(value, limit) for key, value in data.items()}
+    if isinstance(data, list):
+        return [truncate_values(item, limit) for item in data]
+    return data
+
+
+def client_ip(raw: Any) -> str:
+    """Normalized, raw (never hashed) client IP; malformed values are capped."""
+    if not isinstance(raw, str) or not raw:
+        return "unknown"
+    return str(normalize_ip(raw))[:MAX_IP_CHARS]
+
+
+def _encoded_size(event: dict[str, Any]) -> int:
+    return len(json.dumps(event).encode("utf-8"))
+
+
+class Pipeline:
+    """Stateful finalizer with drop counters."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.dropped_oversize = 0
+        self.dropped_unserializable = 0
+
+    def finalize(self, event: dict[str, Any], kind: str) -> dict[str, Any] | None:
+        """Sanitize captured content, bound scalar fields, enforce the byte cap."""
+        event["remote_addr"] = client_ip(event.get("remote_addr"))
+        event["user_agent"] = truncate_values(event.get("user_agent"), MAX_USER_AGENT_CHARS)
+        if event.get("user_id") is not None:
+            event["user_id"] = truncate_values(event["user_id"], MAX_USER_ID_CHARS)
+        custom_data = event.setdefault("custom_data", {})
+        if custom_data.get("error") is not None:
+            error = custom_data["error"]
+            if isinstance(error, str):
+                error = redact_secrets(error)  # before truncation: no split tokens
+            custom_data["error"] = truncate_values(error, MAX_ERROR_CHARS)
+        if custom_data.get("result_summary") is not None:
+            summary = custom_data["result_summary"]
+            if isinstance(summary, str):
+                summary = redact_secrets(summary)
+            custom_data["result_summary"] = truncate_values(summary)
+
+        headers = event.get("headers")
+        if isinstance(headers, dict):
+            kept = {k: v for k, v in headers.items() if str(k).lower() not in _SENSITIVE_HEADERS}
+            event["headers"] = truncate_values(sanitize_dict(kept)) or None
+        else:
+            event["headers"] = None
+
+        if kind == "schema":
+            for key in _CATALOGUE_KEYS:
+                items = custom_data.get(key)
+                if items:
+                    custom_data[key] = truncate_values(
+                        [sanitize_dict(i) if isinstance(i, dict) else i for i in items]
+                    )
+        elif kind == "mcp":
+            if self.config.capture_mcp_arguments:
+                arguments = truncate_values(sanitize_dict(custom_data.get("arguments") or {}))
+                custom_data["arguments"] = arguments
+                event["body"] = arguments or None
+            else:
+                custom_data["arguments"] = {}
+                event["body"] = None
+        elif event.get("body") is not None:
+            event["body"] = truncate_values(sanitize_dict(event["body"]))
+
+        return self._enforce_size(event)
+
+    def _enforce_size(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        """Shed captured content, then drop the whole event, to stay under the cap."""
+        try:
+            size = _encoded_size(event)
+        except (TypeError, ValueError):
+            logger.warning("Dropping unserializable event for endpoint %s", event.get("endpoint"))
+            self.dropped_unserializable += 1
+            return None
+        if size <= self.config.max_event_bytes:
+            return event
+
+        event = {**event, "body": None}
+        custom_data = dict(event.get("custom_data") or {})
+        if "arguments" in custom_data:
+            custom_data["arguments"] = {}
+        if custom_data.get("result_summary"):
+            custom_data["result_summary"] = None
+        for key in _CATALOGUE_KEYS:
+            if custom_data.get(key):
+                custom_data[key] = []
+        custom_data["content_dropped_oversize"] = True
+        event["custom_data"] = custom_data
+
+        size = _encoded_size(event)
+        if size <= self.config.max_event_bytes:
+            return event
+
+        logger.warning(
+            "Dropping oversized event (%dB > %dB) for endpoint %s",
+            size,
+            self.config.max_event_bytes,
+            event.get("endpoint"),
+        )
+        self.dropped_oversize += 1
+        return None
