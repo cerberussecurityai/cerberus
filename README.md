@@ -23,6 +23,7 @@ Background on what these packages are for, independent of which one you use:
 | [**cerberus-mcp**](./cerberus-mcp/README.md) | Drop-in `FastMCP` replacement that instruments MCP tool / resource / prompt calls | Python · MCP (FastMCP) | PyPI |
 | [**cerberus-flex-gateway**](./cerberus-flex-gateway/README.md) | Custom policy for MuleSoft Anypoint Flex Gateway — captures and forwards request metadata with no application code changes | Rust → WASM (`wasm32-wasip1`) | Prebuilt bundle → customer's own Anypoint Exchange ([INSTALL.md](./cerberus-flex-gateway/INSTALL.md)) |
 | [**cerberus-envoy-ai-gateway**](./cerberus-envoy-ai-gateway/README.md) | OTLP trace bridge for Envoy AI Gateway — converts the gateway's LLM + MCP telemetry into Cerberus events, deployed beside the gateway with a few OTel env vars | Python · OTLP/HTTP | PyPI / container image |
+| [**cerberus-litellm**](./cerberus-litellm/README.md) | LiteLLM proxy callback plugin — ships every LLM call, MCP tool call and MCP tools/list the proxy serves, with assembled streamed tool calls, MCP results and virtual-key identity | Python · LiteLLM CustomLogger | PyPI |
 
 **Shared test fixtures:** [**parity-fixtures**](./parity-fixtures/README.md) — language-agnostic YAML cases that keep the Python and Rust sanitization logic byte-for-byte consistent.
 
@@ -31,6 +32,7 @@ Background on what these packages are for, independent of which one you use:
 - **Django app** → [`cerberus-django`](./cerberus-django/README.md) (depends on `cerberus-core`)
 - **MCP server** (FastMCP) → [`cerberus-mcp`](./cerberus-mcp/README.md) (depends on `cerberus-core`)
 - **Envoy AI Gateway** in front of LLM providers / MCP servers → [`cerberus-envoy-ai-gateway`](./cerberus-envoy-ai-gateway/README.md) (depends on `cerberus-core`)
+- **LiteLLM proxy** in front of LLM providers / MCP servers → [`cerberus-litellm`](./cerberus-litellm/README.md) (depends on `cerberus-core`)
 - **Any API / non-Python stack / no code changes** → [`cerberus-flex-gateway`](./cerberus-flex-gateway/README.md) deployed in front of your service
 - **Building a new integration** → reuse [`cerberus-core`](./cerberus-core/README.md)'s sanitization contract and the shared event schema
 
@@ -38,7 +40,7 @@ Background on what these packages are for, independent of which one you use:
 
 - All integrations emit the **same event payload** (`CoreData` / `MCPEventData`), so the Cerberus backend (`event_ingest`) needs no per-client changes.
 - Sanitization happens **before** any data leaves the client, via `cerberus-core` (Python) or its ported equivalent in the Rust gateway. Redaction matches **key names** against `SENSITIVE_KEYS`, so it catches the usual suspects rather than inspecting values. Source IPs are not treated as PII: the Flex Gateway policy sends the normalized client IP as-is, and the Python integrations' remaining HMAC-SHA256 IP hashing (when a secret key is configured) is being removed to match.
-- The Flex Gateway policy re-implements the sanitization logic in Rust (there is no shared crate across languages). **Parity is enforced** by [`parity-fixtures`](./parity-fixtures/README.md): `cerberus-flex-gateway/tests/parity_runner.rs` and `cerberus-django/tests/test_parity.py` consume the same YAML cases, so any drift fails CI. (`cerberus-envoy-ai-gateway` *imports* `cerberus-core` directly, so it needs no parity runner.)
+- The Flex Gateway policy re-implements the sanitization logic in Rust (there is no shared crate across languages). **Parity is enforced** by [`parity-fixtures`](./parity-fixtures/README.md): `cerberus-flex-gateway/tests/parity_runner.rs` and `cerberus-django/tests/test_parity.py` consume the same YAML cases, so any drift fails CI. (`cerberus-envoy-ai-gateway` and `cerberus-litellm` *import* `cerberus-core` directly, so they need no parity runner.)
   - ⚠️ If you change `SENSITIVE_KEYS` (or other sanitization rules) in `cerberus-core`, update the matching fixture in the **same PR**.
 
 ## Development & publishing
@@ -46,6 +48,7 @@ Background on what these packages are for, independent of which one you use:
 - The Python packages build with `uv build` and publish to PyPI via [`./publish_package.sh`](./publish_package.sh) `<package>` (e.g. `./publish_package.sh cerberus-core`).
 - [`cerberus-flex-gateway`](./cerberus-flex-gateway/README.md) compiles to WASM and is distributed as a prebuilt bundle each customer publishes into **their own** Anypoint Exchange via the bundled `install.sh` (see [INSTALL.md](./cerberus-flex-gateway/INSTALL.md)). Maintainers build the bundle with `make bundle`; CI attaches it to a `flex-gateway-v*` GitHub Release. It can also be dropped onto a Flex Gateway pod as a `.wasm` (Local mode).
 - [`cerberus-envoy-ai-gateway`](./cerberus-envoy-ai-gateway/README.md) additionally ships as a container image (`make image`, push to your registry) with Kubernetes manifests in its `deploy/` directory.
+- [`cerberus-litellm`](./cerberus-litellm/README.md) installs into your LiteLLM proxy as a wheel; its `playground/Dockerfile` (`make image`) is the template for baking the plugin into your own proxy image.
 - Repo-wide guidance (architecture, commands, conventions) for contributors and AI assistants: [CLAUDE.md](./CLAUDE.md).
 
 ## License
