@@ -8,7 +8,7 @@ import httpx
 import pytest
 from helpers import load_capture
 
-from cerberus_litellm.plugin import CerberusLogger
+from cerberus_litellm.plugin import CerberusLogger, ensure_log_handler
 
 
 def test_callback_path_resolves_like_litellm_loader(monkeypatch):
@@ -185,3 +185,20 @@ async def test_end_to_end_flush_posts_batch(config):
     await plugin.sink.close()
     assert seen and seen[0]["events"][0]["scheme"] == "llm"
     assert plugin.stats()["posted"] == 1
+
+
+def test_log_handler_is_attached_only_when_the_chain_has_none(monkeypatch):
+    # The LiteLLM proxy configures no handler for foreign loggers, so INFO
+    # lines (loaded, stats) would be dropped without one.
+    target = logging.getLogger("cerberus_litellm_handler_test")
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])
+    assert not target.hasHandlers()
+    ensure_log_handler(target)
+    ensure_log_handler(target)  # idempotent
+    assert len(target.handlers) == 1
+    target.handlers.clear()
+
+    sentinel = logging.NullHandler()
+    monkeypatch.setattr(logging.getLogger(), "handlers", [sentinel])
+    ensure_log_handler(target)
+    assert target.handlers == []  # an existing chain is left alone

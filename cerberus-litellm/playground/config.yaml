@@ -1,0 +1,32 @@
+# LiteLLM proxy config for the cerberus-litellm playground. Everything points
+# at the mocks in docker-compose.yaml; no real provider is called.
+model_list:
+  - model_name: mock-gpt
+    litellm_params: { model: openai/mock-gpt, api_base: http://mock-llm:9081/v1, api_key: dummy-upstream-key }
+  - model_name: mock-embed
+    litellm_params: { model: openai/mock-embed, api_base: http://mock-llm:9081/v1, api_key: dummy-upstream-key }
+  - model_name: mock-big
+    litellm_params: { model: openai/mock-big, api_base: http://mock-llm:9081/v1, api_key: dummy-upstream-key }
+  - model_name: mock-error
+    litellm_params: { model: openai/mock-error, api_base: http://mock-llm:9081/v1, api_key: dummy-upstream-key }
+  - model_name: mock-429
+    litellm_params: { model: openai/mock-429, api_base: http://mock-llm:9081/v1, api_key: dummy-upstream-key }
+
+litellm_settings:
+  callbacks: ["cerberus_litellm.handler"]
+  request_correlation_in_logs: true   # populates session_id from x-litellm-session-id
+  drop_params: true
+  num_retries: 0
+
+router_settings:
+  disable_cooldowns: true
+
+mcp_servers:
+  mockmcp:
+    url: http://mock-mcp:9082/mcp
+    transport: http
+
+general_settings:
+  use_x_forwarded_for: true           # requester_ip_address = client, not the TCP peer
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

@@ -47,9 +47,24 @@ DEDUPE_WINDOW = 4096
 _WARN_EVERY_SECONDS = 60.0
 
 
+def ensure_log_handler(target: logging.Logger) -> None:
+    """Give ``target`` a stderr handler when nothing in its chain has one.
+
+    The LiteLLM proxy attaches handlers to its own loggers only, so without
+    this the plugin's INFO lines (loaded, periodic stats) would be dropped.
+    A host that does configure logging is left alone.
+    """
+    if target.hasHandlers():
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    target.addHandler(handler)
+
+
 class CerberusLogger(CustomLogger):
     def __init__(self, config: Config | None = None) -> None:
         super().__init__()
+        ensure_log_handler(logger)
         self.disabled_reason: str | None = None
         self.config: Config
         if config is None:
