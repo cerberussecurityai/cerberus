@@ -15,14 +15,12 @@ at module level and touches no environment until ``CerberusLogger()`` runs.)
 from __future__ import annotations
 
 import atexit
-import ipaddress
 import logging
 import random
 import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import urlsplit
 
 try:  # the proxy is the host; tests and tooling run without it
     from litellm.integrations.custom_logger import CustomLogger
@@ -36,7 +34,7 @@ except ImportError:  # pragma: no cover - exercised only outside the proxy
 import httpx
 
 from . import __version__, payload
-from .config import Config, ConfigError
+from .config import Config, ConfigError, plain_http_remote_host
 from .logthrottle import LogThrottle
 from .mapper_llm import map_llm_event
 from .mapper_mcp import map_mcp_event
@@ -52,24 +50,14 @@ SHUTDOWN_FLUSH_BUDGET_S = 2.0
 
 
 def warn_if_plain_http(ingest_service: str, target: logging.Logger) -> bool:
-    """Warn once when the API key would travel over plain http to a remote host.
+    """Warn once when the API key travels over plain http to a remote host.
 
-    Loopback hosts (localhost, 127.0.0.0/8, ::1) are exempt. Only the host is
+    Reached only when CERBERUS_ALLOW_PLAIN_HTTP allowed it (otherwise the
+    configuration is refused). Loopback hosts are exempt. Only the host is
     named. Returns True when a warning was logged.
     """
-    try:
-        parts = urlsplit(ingest_service)
-        host = parts.hostname or ""
-        if parts.scheme != "http" or not host:
-            return False
-        if host.lower() == "localhost":
-            return False
-        try:
-            if ipaddress.ip_address(host).is_loopback:
-                return False
-        except ValueError:
-            pass  # a hostname, not an address
-    except ValueError:
+    host = plain_http_remote_host(ingest_service)
+    if host is None:
         return False
     target.warning(
         "cerberus-litellm: the ingest URL uses plain http to %s; the API key and event "
@@ -241,9 +229,17 @@ class CerberusLogger(CustomLogger):
         Works whether or not the event loop is still alive: it uses a blocking
         client, sends at most two batches and spends at most
         SHUTDOWN_FLUSH_BUDGET_S seconds.
+
+        The queue is not thread-safe, so this assumes atexit runs after the
+        server has stopped the event loop (uvicorn does that before the
+        interpreter exits). If the sink's loop is somehow still running, the
+        blocking drain is skipped rather than racing the flush task.
         """
         try:
             if self.sink is None or len(self.queue) == 0:
+                return
+            if self.sink.loop_is_running():
+                logger.debug("cerberus-litellm shutdown flush skipped: event loop still running")
                 return
             queued = len(self.queue)
             sent, left = self.sink.flush_blocking(SHUTDOWN_FLUSH_BUDGET_S, client=client)
@@ -254,7 +250,7 @@ class CerberusLogger(CustomLogger):
                 left,
             )
         except Exception:
-            pass
+            logger.debug("cerberus-litellm shutdown flush failed", exc_info=True)
 
     def _log_stats_if_due(self) -> None:
         interval = self.config.stats_log_interval_s

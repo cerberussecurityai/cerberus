@@ -26,6 +26,7 @@ from .redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
+# Copied from cerberus_envoy_ai_gateway/pipeline.py (same numbers; keep them in step).
 MAX_VALUE_CHARS = 8192
 MAX_USER_AGENT_CHARS = 1024
 MAX_USER_ID_CHARS = 256

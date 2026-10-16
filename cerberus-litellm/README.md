@@ -49,6 +49,19 @@ LiteLLM fails closed when a callback cannot be imported, so check the install be
 reads no environment variables. (Importing just `cerberus_litellm` proves nothing: the handler is
 built lazily.)
 
+### What is sent by default
+
+With only the two required variables set, the plugin sends, for every call:
+
+- the prompt and completion content of LLM calls (`CERBERUS_CAPTURE_LLM_CONTENT`),
+- the arguments of MCP tool calls (`CERBERUS_CAPTURE_MCP_ARGUMENTS`), and
+- the results of MCP tool calls (`CERBERUS_CAPTURE_MCP_RESULTS`),
+
+all three on by default. This content has passed best-effort key-name sanitisation and, for error
+and tool-result text, regex redaction of common credential shapes; that is not a guarantee that no
+secret is present. Set the variable named above to `false` to stop sending that part. Metadata
+(model, token counts, timing, status, identity fields) is always sent.
+
 ## Configuration
 
 All configuration is by environment variable. Invalid values disable the plugin with an error
@@ -58,6 +71,7 @@ that names the variable.
 |---|---|---|
 | `CERBERUS_INGEST_SERVICE` | required | Base URL of the Cerberus ingest endpoint (`http://` or `https://`). |
 | `CERBERUS_TOKEN` / `CERBERUS_TOKEN_FILE` | one required | Cerberus API key, or a file containing it. `CERBERUS_TOKEN` wins when both are set. |
+| `CERBERUS_ALLOW_PLAIN_HTTP` | `false` | Allow a plain `http://` ingest URL to a non-loopback host (the plugin logs a warning). Off by default: such a URL disables the plugin. |
 | `CERBERUS_CAPTURE_LLM_CONTENT` | `true` | Send prompt and completion content. When `false`, LLM events carry metadata only. |
 | `CERBERUS_CAPTURE_MCP_ARGUMENTS` | `true` | Send MCP tool-call arguments. |
 | `CERBERUS_CAPTURE_MCP_RESULTS` | `true` | Send MCP tool results and tool-result error text. |
@@ -144,8 +158,11 @@ tool name.
   `traceparent`.
 - **Custom headers are an allowlist.** Only names in `CERBERUS_CAPTURE_HEADERS` are forwarded, and
   credential-bearing names (authorization, cookies, API-key headers) are refused at startup.
-- **Use https.** The API key travels in a request header. The plugin logs a warning at startup
-  when `CERBERUS_INGEST_SERVICE` is plain `http://` to a host that is not loopback.
+- **Use https.** The API key travels in a request header. A plain `http://` ingest URL to a host
+  that is not loopback (localhost, 127.0.0.0/8, ::1) is refused at startup and the plugin
+  disables itself, unless `CERBERUS_ALLOW_PLAIN_HTTP=true` is set, in which case it logs a
+  warning naming the host. Configuration errors show only the scheme and host of a URL, never
+  userinfo, path or query.
 - **Source IPs are sent as-is** (normalised, not hashed).
 - **Size cap.** Each event is bounded by `CERBERUS_MAX_EVENT_BYTES`. An oversized event first
   loses its captured content (marked `content_dropped_oversize`), and is dropped only if it is
@@ -161,6 +178,10 @@ tool name.
   it.
 - **Concurrency.** The queue assumes all access happens on the proxy's single event loop. Do not
   run the callback under a threaded executor.
+- **Duplicate suppression is bounded.** LiteLLM can fire a logging hook more than once for one
+  call; the plugin suppresses the repeats using a window of the last 4096 call identifiers. A
+  flood of unique call ids evicts older entries, which only affects duplicate suppression, never
+  whether a first firing is reported.
 
 ## Known gaps
 

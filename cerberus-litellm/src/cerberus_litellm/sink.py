@@ -57,12 +57,18 @@ class Sink:
         self._client = client or httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         self._url = f"{config.ingest_service}/v1/ingest/batch"
         self._task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._stop = asyncio.Event()
         self._on_tick = on_tick
         self._throttle = LogThrottle()
 
     def start(self) -> None:
-        self._task = asyncio.get_running_loop().create_task(self._flush_loop())
+        self._loop = asyncio.get_running_loop()
+        self._task = self._loop.create_task(self._flush_loop())
+
+    def loop_is_running(self) -> bool:
+        """True while the event loop this sink started on is still running."""
+        return self._loop is not None and self._loop.is_running()
 
     async def _flush_loop(self) -> None:
         interval = self.config.flush_interval_ms / 1000
@@ -109,7 +115,10 @@ class Sink:
     def _record_failure(self, batch: list, exc: Exception) -> None:
         self.post_failures += 1
         if isinstance(exc, httpx.HTTPError):
-            logger.warning("Dropping batch of %d events: %s", len(batch), exc)
+            # The error text can name the request URL: keep it out of the
+            # warning (type only) and available at debug level.
+            logger.warning("Dropping batch of %d events: %s", len(batch), type(exc).__name__)
+            logger.debug("Batch error detail: %s", exc)
             return
         # Anything else (bad URL, unencodable header, unserialisable batch)
         # must not end the flush loop; name the type only, never its args.
@@ -144,7 +153,6 @@ class Sink:
                 batch = self.queue.drain(self.config.batch_size)
                 if not batch:
                     break
-                sent += 1
                 try:
                     body, headers = self._request_parts(batch)
                     response = client.post(
@@ -154,6 +162,8 @@ class Sink:
                     self._record_failure(batch, exc)
                     continue
                 self._record_response(batch, response)
+                if 200 <= response.status_code < 300:
+                    sent += 1  # only an acknowledged POST counts as sent
         except Exception:
             logger.debug("Shutdown flush stopped early", exc_info=True)
         finally:

@@ -38,6 +38,9 @@ services:
       CERBERUS_INGEST_SERVICE: ${CERBERUS_INGEST_SERVICE:-http://stub-ingest:9089}
       CERBERUS_TOKEN: ${CERBERUS_TOKEN:-sk_test_playground}
       CERBERUS_CAPTURE_LLM_CONTENT: ${CERBERUS_CAPTURE_LLM_CONTENT:-true}
+      # The stub ingest is plain http on a Docker network name (not loopback).
+      # Stub only: use an https ingest URL for anything real.
+      CERBERUS_ALLOW_PLAIN_HTTP: "true"
       CERBERUS_FLUSH_INTERVAL_MS: "1000"
       CERBERUS_LOG_LEVEL: debug
       CERBERUS_STATS_LOG_INTERVAL_S: "10"

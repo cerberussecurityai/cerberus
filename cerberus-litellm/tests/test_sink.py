@@ -310,7 +310,7 @@ def test_flush_blocking_counts_failures_and_never_raises(config, queue):
     sink, client = _blocking_sink(config, queue, handler)
     queue.append(_events()[0])
     sent, left = sink.flush_blocking(2.0, client=client)  # must not raise
-    assert (sent, left) == (1, 0)
+    assert (sent, left) == (0, 0)  # attempted, but a failed POST is not counted as sent
     assert sink.post_failures == 1
     assert sink.posted == 0
 

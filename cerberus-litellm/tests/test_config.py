@@ -8,6 +8,7 @@ from cerberus_litellm.config import (
     SENSITIVE_HEADER_NAMES,
     Config,
     ConfigError,
+    plain_http_remote_host,
 )
 
 
@@ -280,6 +281,67 @@ def test_blank_strings_fall_back_to_defaults(monkeypatch):
     assert cfg.session_header == "x-litellm-session-id"
     assert cfg.turn_header == "x-cerberus-turn-id"
     assert cfg.mcp_server_fallback == "litellm"
+
+
+def test_plain_http_to_a_remote_host_is_refused_by_default(monkeypatch):
+    _env(monkeypatch, CERBERUS_INGEST_SERVICE="http://ingest.example.com:8080/base")
+    with pytest.raises(ConfigError, match="plain http") as info:
+        Config.from_env()
+    assert "CERBERUS_ALLOW_PLAIN_HTTP=true" in str(info.value)
+    assert "ingest.example.com" in str(info.value).split("(", 1)[1].split(")", 1)[0]
+    assert Config.__dataclass_fields__["allow_plain_http"].default is False
+
+
+def test_plain_http_is_allowed_with_the_flag(monkeypatch):
+    _env(
+        monkeypatch,
+        CERBERUS_INGEST_SERVICE="http://ingest.example.com",
+        CERBERUS_ALLOW_PLAIN_HTTP="true",
+    )
+    cfg = Config.from_env()
+    assert cfg.allow_plain_http is True
+    assert cfg.ingest_service == "http://ingest.example.com"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:9089",
+        "http://127.0.0.1:9089",
+        "http://127.8.8.8",
+        "http://[::1]:9089",
+        "https://ingest.example.com",
+    ],
+)
+def test_loopback_and_https_are_unaffected_by_the_plain_http_rule(monkeypatch, url):
+    _env(monkeypatch, CERBERUS_INGEST_SERVICE=url)
+    assert Config.from_env().ingest_service == url
+    assert plain_http_remote_host(url) is None
+
+
+def test_plain_http_flag_must_be_a_boolean(monkeypatch):
+    _env(monkeypatch, CERBERUS_ALLOW_PLAIN_HTTP="maybe")
+    with pytest.raises(ConfigError, match="CERBERUS_ALLOW_PLAIN_HTTP"):
+        Config.from_env()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "user:s3cretpass@ingest.example.com",  # no scheme
+        "http://user:s3cretpass@ingest.example.com/path?token=abc",  # refused http
+        "ftp://user:s3cretpass@ingest.example.com",
+    ],
+)
+def test_url_errors_never_echo_userinfo_path_or_query(monkeypatch, url):
+    _env(monkeypatch, CERBERUS_INGEST_SERVICE=url)
+    with pytest.raises(ConfigError) as info:
+        Config.from_env()
+    message = str(info.value)
+    assert "s3cretpass" not in message
+    assert "user:" not in message
+    assert "path" not in message
+    assert "token=abc" not in message
 
 
 def test_queue_max_bytes_default_and_range(monkeypatch):

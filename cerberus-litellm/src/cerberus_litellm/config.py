@@ -6,14 +6,17 @@ secret key: source IPs are shipped raw (they are not PII) and nothing is
 hashed.
 """
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from cerberus_core import SENSITIVE_HEADERS
 
 # The ingest API caps both batch size and per-event size. Stay under both
 # client-side and leave headroom on the per-event cap: identifying fields are
-# added server-side before the limit is applied. Same numbers as the bridge.
+# added server-side before the limit is applied. Copied from
+# cerberus_envoy_ai_gateway/config.py (same numbers; keep them in step).
 MAX_SERVER_BATCH_SIZE = 1000
 DEFAULT_MAX_EVENT_BYTES = 57344  # 56KB
 MAX_EVENT_BYTES_CEILING = 63488  # 62KB
@@ -48,6 +51,27 @@ SENSITIVE_HEADER_NAMES = (
 
 class ConfigError(ValueError):
     """Raised when required configuration is missing or invalid."""
+
+
+def plain_http_remote_host(url: str) -> str | None:
+    """The host of an ``http://`` URL that is not loopback, else None.
+
+    Loopback means localhost, 127.0.0.0/8 or ::1. Only the host is returned:
+    userinfo, path and query never leave this function.
+    """
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return None
+    if parts.scheme != "http" or not host or host.lower() == "localhost":
+        return None
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return None
+    except ValueError:
+        pass  # a hostname, not an address
+    return host
 
 
 def _clean_token(raw: str) -> str:
@@ -125,7 +149,7 @@ def _env_list(name: str, maximum: int) -> tuple[str, ...]:
 class Config:
     """Plugin configuration. Build with :meth:`from_env`."""
 
-    ingest_service: str
+    ingest_service: str = field(repr=False)  # may carry userinfo; never print it
     token: str = field(repr=False)
 
     capture_llm_content: bool = True
@@ -147,6 +171,7 @@ class Config:
     schema_report_interval_s: int = 3600
     stats_log_interval_s: int = 300
     log_level: str = "info"
+    allow_plain_http: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -160,9 +185,16 @@ class Config:
         if not ingest_service:
             raise ConfigError("CERBERUS_INGEST_SERVICE is required (Cerberus ingest URL)")
         if not ingest_service.startswith(("http://", "https://")):
+            # The value is not echoed: it may carry credentials (user:pass@host).
+            raise ConfigError("CERBERUS_INGEST_SERVICE must start with http:// or https://")
+        allow_plain_http = _env_bool("CERBERUS_ALLOW_PLAIN_HTTP", False)
+        plain_http_host = plain_http_remote_host(ingest_service)
+        if plain_http_host is not None and not allow_plain_http:
+            # Only the host is shown, never userinfo, path or query.
             raise ConfigError(
-                "CERBERUS_INGEST_SERVICE must start with http:// or https:// "
-                f"(got {ingest_service!r})"
+                f"CERBERUS_INGEST_SERVICE uses plain http to a non-loopback host "
+                f"({plain_http_host}); the API key and event content would travel "
+                "unencrypted. Use https, or set CERBERUS_ALLOW_PLAIN_HTTP=true to allow"
             )
 
         token = _clean_token(os.environ.get("CERBERUS_TOKEN") or "")
@@ -240,4 +272,5 @@ class Config:
             schema_report_interval_s=_env_int("CERBERUS_SCHEMA_REPORT_INTERVAL_S", 3600, 0, 86400),
             stats_log_interval_s=_env_int("CERBERUS_STATS_LOG_INTERVAL_S", 300, 0, 86400),
             log_level=log_level,
+            allow_plain_http=allow_plain_http,
         )

@@ -19,6 +19,7 @@ def test_callback_path_resolves_like_litellm_loader(monkeypatch):
     exactly; the smoke ``import cerberus_litellm`` alone would not catch a
     missing package attribute."""
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_ALLOW_PLAIN_HTTP", "true")
     monkeypatch.setenv("CERBERUS_TOKEN", "sk_test_0123456789")
     package = importlib.import_module("cerberus_litellm")
     # monkeypatch restores the singleton even if an assert below fails.
@@ -260,6 +261,7 @@ async def test_invalid_utf8_token_file_disables_instead_of_aborting(monkeypatch,
     path = tmp_path / "token"
     path.write_bytes(b"\xff\xfe-secret-bytes-\x80")
     monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
+    monkeypatch.setenv("CERBERUS_ALLOW_PLAIN_HTTP", "true")
     monkeypatch.delenv("CERBERUS_TOKEN", raising=False)
     monkeypatch.setenv("CERBERUS_TOKEN_FILE", str(path))
     caplog.set_level(logging.ERROR)
@@ -384,6 +386,46 @@ def test_plain_http_warning_names_the_host_only(config, caplog):
     assert records[0].args == ("ingest.example.com",)
     text = records[0].getMessage()
     assert "pw" not in text and "path" not in text and "k=v" not in text
+
+
+def _env_for_plugin(monkeypatch, url, **extra):
+    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", url)
+    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test_0123456789")
+    monkeypatch.delenv("CERBERUS_ALLOW_PLAIN_HTTP", raising=False)
+    for key, value in extra.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_plain_http_to_a_remote_host_disables_the_plugin_by_default(monkeypatch, caplog):
+    _env_for_plugin(monkeypatch, "http://user:s3cretpass@ingest.example.com/base")
+    caplog.set_level(logging.ERROR, logger="cerberus_litellm")
+    plugin = CerberusLogger()  # must not raise
+    assert plugin.disabled_reason is not None
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "plain http" in errors[0].getMessage()
+    assert "s3cretpass" not in caplog.text
+
+
+def test_plain_http_with_the_flag_warns_but_runs(monkeypatch, caplog):
+    _env_for_plugin(monkeypatch, "http://ingest.example.com", CERBERUS_ALLOW_PLAIN_HTTP="true")
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm")
+    plugin = CerberusLogger()
+    assert plugin.disabled_reason is None
+    assert len([r for r in caplog.records if "plain http" in r.getMessage()]) == 1
+
+
+async def test_exit_flush_is_skipped_while_the_event_loop_is_running(config, caplog):
+    seen = []
+    plugin = CerberusLogger(replace(config, flush_interval_ms=60000))
+    caplog.set_level(logging.DEBUG, logger="cerberus_litellm")  # after the plugin sets its level
+    await plugin.async_log_success_event(_kwargs("chat"), None, 0, 1)
+    assert plugin.sink.loop_is_running()
+    transport = httpx.MockTransport(lambda request: seen.append(1) or httpx.Response(200))
+    plugin._shutdown_flush(client=httpx.Client(transport=transport))
+    assert seen == []  # nothing was sent...
+    assert len(plugin.queue) == 1  # ...and the queue was left to the running loop
+    assert "event loop still running" in caplog.text
+    await plugin.sink.close()
 
 
 async def test_end_to_end_flush_posts_batch(config):
