@@ -107,6 +107,17 @@ class CerberusLogger(CustomLogger):
             self.pipeline = Pipeline(config)
             self._schema = SchemaReporter(config)
             warn_if_plain_http(config.ingest_service, logger)
+            captured = [
+                label
+                for enabled, label in (
+                    (config.capture_llm_content, "LLM prompts and completions"),
+                    (config.capture_mcp_arguments, "MCP tool arguments"),
+                    (config.capture_mcp_results, "MCP tool results"),
+                )
+                if enabled
+            ]
+            if captured:
+                logger.info("cerberus-litellm captures content: %s", ", ".join(captured))
         self.sink: Sink | None = None
         self._client: httpx.AsyncClient | None = None  # tests inject a mock transport
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -210,10 +221,13 @@ class CerberusLogger(CustomLogger):
         # The call id can be chosen by the caller (x-litellm-call-id), so it is not
         # enough on its own: a caller that reuses one id must not silence its own
         # later calls. LiteLLM's duplicate firings of one call share timestamps.
-        return (
-            f"{call_id}:{payload.status(slo)}:"
-            f"{payload.get(slo, 'startTime')}:{payload.get(slo, 'endTime')}"
-        )
+        start, end = payload.get(slo, "startTime"), payload.get(slo, "endTime")
+        for stamp in (start, end):
+            if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+                # Without both timestamps the id alone would be all that
+                # identifies the call, and the caller chooses it: do not dedupe.
+                return None
+        return f"{call_id}:{payload.status(slo)}:{start}:{end}"
 
     def _mark_seen(self, key: str | None) -> None:
         if key is None:

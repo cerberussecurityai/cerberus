@@ -129,14 +129,41 @@ def test_oversize_schema_report_sheds_tools_but_keeps_skeleton(config):
     assert out["method"] == "mcp_schema_report"
 
 
-def test_schema_report_catalogue_is_sanitized(config):
+def test_schema_catalogue_ships_parameter_definitions_intact(config):
+    # A parameter *named* password or api_key is a definition, not a value.
     capture = load_capture("mcp_list_tools")
     event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[
         0
     ]
-    event["custom_data"]["tools"][0]["input_schema"] = {"properties": {"api_key": "example-secret"}}
+    schema = {
+        "type": "object",
+        "properties": {
+            "password": {"type": "string", "description": "the user's password"},
+            "api_key": {"type": "string"},
+        },
+    }
+    event["custom_data"]["tools"][0]["input_schema"] = schema
     out = finalized(Pipeline(config), event, "schema")
-    assert out["custom_data"]["tools"][0]["input_schema"]["properties"]["api_key"] == "[REDACTED]"
+    assert out["custom_data"]["tools"][0]["input_schema"] == schema
+    assert out["method"] == "mcp_schema_report"
+
+
+def test_schema_catalogue_strings_are_still_truncated(config):
+    capture = load_capture("mcp_list_tools")
+    event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[
+        0
+    ]
+    event["custom_data"]["tools"][0]["description"] = "d" * (MAX_VALUE_CHARS + 50)
+    out = finalized(Pipeline(config), event, "schema")
+    assert len(out["custom_data"]["tools"][0]["description"]) == MAX_VALUE_CHARS + len(
+        "...[TRUNCATED]"
+    )
+
+
+def test_mcp_tool_call_arguments_are_still_sanitized_unlike_catalogues(config):
+    event = finalized(Pipeline(config), _mcp("mcp_tool_call", config), "mcp")
+    assert event["custom_data"]["arguments"]["api_key"] == "[REDACTED]"
+    assert event["body"]["api_key"] == "[REDACTED]"
 
 
 def test_unserializable_event_is_dropped_and_counted(config):

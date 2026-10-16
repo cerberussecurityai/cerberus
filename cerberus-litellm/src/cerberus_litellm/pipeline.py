@@ -1,8 +1,9 @@
 """Event finalization: sanitize, truncate, normalize the IP, enforce the cap.
 
 All privacy-affecting work happens here, before anything reaches the queue:
-- MCP arguments, LLM content, captured headers and schema catalogues pass
-  through ``cerberus_core.sanitize_dict`` so SENSITIVE_KEYS values are redacted;
+- MCP arguments, LLM content and captured headers pass through
+  ``cerberus_core.sanitize_dict`` so SENSITIVE_KEYS values are redacted (schema
+  catalogues are declarations and ship unsanitised, truncated and size-capped);
 - credential-bearing headers are dropped outright;
 - error and result text is scrubbed of credential-shaped substrings;
 - long string values are truncated and oversized events shed content, then
@@ -134,12 +135,14 @@ class Pipeline:
             event["headers"] = None
 
         if kind == "schema":
-            for key in _CATALOGUE_KEYS:
-                items = custom_data.get(key)
-                if items:
-                    custom_data[key] = truncate_values(
-                        [sanitize_dict(i) if isinstance(i, dict) else i for i in items]
-                    )
+            # Tool/resource/prompt catalogues are declarations, not values: a
+            # parameter named ``password`` or ``api_key`` is a definition, and
+            # key-name redaction would blank exactly the sensitive-looking
+            # parameters from the inventory. cerberus-mcp and the Envoy bridge
+            # ship catalogues unsanitised too. They are still truncated (the
+            # generic pass over custom_data above) and still subject to the
+            # size cap below.
+            pass
         elif kind == "mcp":
             if self.config.capture_mcp_arguments:
                 arguments = truncate_values(sanitize_dict(custom_data.get("arguments") or {}))

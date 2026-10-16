@@ -185,6 +185,20 @@ async def test_a_failed_first_firing_leaves_the_call_unmarked_so_the_duplicate_d
     assert plugin.stats()["deduplicated"] == 1
 
 
+@pytest.mark.parametrize("missing", ["startTime", "endTime"])
+@pytest.mark.parametrize("bad", ["absent", None, "not-a-number", True])
+async def test_calls_without_usable_timestamps_are_never_deduplicated(plugin, missing, bad):
+    slo = dict(_kwargs("chat")["standard_logging_object"])
+    if bad == "absent":
+        slo.pop(missing)
+    else:
+        slo[missing] = bad
+    for _ in range(3):  # same caller-chosen call id each time
+        await plugin.async_log_success_event({"standard_logging_object": slo}, None, 0, 1)
+    assert len(await _drain(plugin)) == 3
+    assert plugin.stats()["deduplicated"] == 0
+
+
 async def test_a_sampled_out_call_is_marked_so_its_repeat_is_dropped_too(plugin):
     sampled = CerberusLogger(replace(plugin.config, sample_rate=0.0, flush_interval_ms=60000))
     await sampled.async_log_success_event(_kwargs("chat"), None, 0, 1)
@@ -423,6 +437,39 @@ def _env_for_plugin(monkeypatch, url, **extra):
     monkeypatch.delenv("CERBERUS_ALLOW_PLAIN_HTTP", raising=False)
     for key, value in extra.items():
         monkeypatch.setenv(key, value)
+
+
+@pytest.mark.parametrize(
+    "flags,expected",
+    [
+        ({}, "LLM prompts and completions, MCP tool arguments, MCP tool results"),
+        (
+            {"capture_llm_content": False},
+            "MCP tool arguments, MCP tool results",
+        ),
+        (
+            {"capture_mcp_arguments": False, "capture_mcp_results": False},
+            "LLM prompts and completions",
+        ),
+    ],
+)
+def test_startup_logs_which_content_classes_are_captured(config, caplog, flags, expected):
+    caplog.set_level(logging.INFO, logger="cerberus_litellm")
+    CerberusLogger(replace(config, **flags))
+    lines = [r.getMessage() for r in caplog.records if "captures content" in r.getMessage()]
+    assert lines == [f"cerberus-litellm captures content: {expected}"]
+
+
+def test_startup_posture_line_is_absent_when_no_content_is_captured(config, caplog):
+    caplog.set_level(logging.INFO, logger="cerberus_litellm")
+    off = replace(
+        config,
+        capture_llm_content=False,
+        capture_mcp_arguments=False,
+        capture_mcp_results=False,
+    )
+    CerberusLogger(off)
+    assert not [r for r in caplog.records if "captures content" in r.getMessage()]
 
 
 def test_plain_http_to_a_remote_host_disables_the_plugin_by_default(monkeypatch, caplog):
