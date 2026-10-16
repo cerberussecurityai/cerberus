@@ -1,0 +1,36 @@
+{
+  "body": {
+    "input": [
+      {
+        "content": "embed me",
+        "role": "user"
+      }
+    ],
+    "output": null
+  },
+  "custom_data": {
+    "duration_ms": 3.827712,
+    "error": null,
+    "event_type": "embeddings",
+    "integration": "envoy-ai-gateway",
+    "model": "mock-embed",
+    "provider": "openai",
+    "response_model": "mock-embed",
+    "span_id": "affa7dbcc778748d",
+    "status": "ok",
+    "streaming": null,
+    "tokens_completion": 0,
+    "tokens_prompt": 8,
+    "tokens_total": 8,
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+  },
+  "endpoint": "llm://openai/mock-embed",
+  "headers": null,
+  "method": "llm_embeddings",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:53.472186+00:00",
+  "user_agent": "cerberus-envoy-ai-gateway/0.1.0",
+  "user_id": null
+}

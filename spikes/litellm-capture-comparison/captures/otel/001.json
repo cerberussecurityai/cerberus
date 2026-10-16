@@ -1,0 +1,2206 @@
+{
+  "resource_spans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "telemetry.sdk.language",
+            "value": {
+              "string_value": "python"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "string_value": "opentelemetry"
+            }
+          },
+          {
+            "key": "telemetry.sdk.version",
+            "value": {
+              "string_value": "1.33.1"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "string_value": "litellm-spike"
+            }
+          }
+        ]
+      },
+      "scope_spans": [
+        {
+          "scope": {
+            "name": "litellm",
+            "version": "1.105.1"
+          },
+          "spans": [
+            {
+              "end_time_unix_nano": "1792109092198918959",
+              "flags": 256,
+              "kind": "SPAN_KIND_INTERNAL",
+              "name": "auth /team/new",
+              "parent_span_id": "dvqzaL4u+yY=",
+              "span_id": "09MYil3X+Zc=",
+              "start_time_unix_nano": "1792109092181064125",
+              "status": {},
+              "trace_id": "RhnR4uK9wOhnWMaKh+qP6g=="
+            },
+            {
+              "end_time_unix_nano": "1792109092385929875",
+              "flags": 256,
+              "kind": "SPAN_KIND_INTERNAL",
+              "name": "auth /key/generate",
+              "parent_span_id": "qJy+E3UxnfM=",
+              "span_id": "MP3GRYK2ebQ=",
+              "start_time_unix_nano": "1792109092384104250",
+              "status": {},
+              "trace_id": "YCOfrixq9gj8ArV2lO7DuQ=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "litellm_proxy_master_key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "default_user_id"
+                  }
+                },
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "_get_team_db_check"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "_get_team_db_check"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "_get_team_db_check"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092391482112",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres _get_team_db_check",
+              "parent_span_id": "qJy+E3UxnfM=",
+              "span_id": "Twu1DFi60Ao=",
+              "start_time_unix_nano": "1792109092386425088",
+              "status": {},
+              "trace_id": "YCOfrixq9gj8ArV2lO7DuQ=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "litellm_proxy_master_key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "default_user_id"
+                  }
+                },
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_object_permission"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_object_permission"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_object_permission"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092395060992",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_object_permission",
+              "parent_span_id": "qJy+E3UxnfM=",
+              "span_id": "+WaCfDoGf4Q=",
+              "start_time_unix_nano": "1792109092391644928",
+              "status": {},
+              "trace_id": "YCOfrixq9gj8ArV2lO7DuQ=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092504616960",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_end_user_object",
+              "parent_span_id": "ACTccMOZ14c=",
+              "span_id": "vMRs123jcd0=",
+              "start_time_unix_nano": "1792109092501177088",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_data"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_data"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.table_name",
+                  "value": {
+                    "string_value": "combined_view"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_data"
+                  }
+                },
+                {
+                  "key": "table_name",
+                  "value": {
+                    "string_value": "combined_view"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092512499968",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_data",
+              "parent_span_id": "ACTccMOZ14c=",
+              "span_id": "nojCCG/wP5M=",
+              "start_time_unix_nano": "1792109092505137920",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_object_permission"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_object_permission"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_object_permission"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092516262144",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_object_permission",
+              "parent_span_id": "ACTccMOZ14c=",
+              "span_id": "OldCrMeXqm0=",
+              "start_time_unix_nano": "1792109092512983040",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092531923968",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_end_user_object",
+              "parent_span_id": "ACTccMOZ14c=",
+              "span_id": "gSVllIEGKE0=",
+              "start_time_unix_nano": "1792109092531596800",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "_fetch_team_membership_from_db"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "_fetch_team_membership_from_db"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "_fetch_team_membership_from_db"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092536176896",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres _fetch_team_membership_from_db",
+              "parent_span_id": "ACTccMOZ14c=",
+              "span_id": "IyxTx91phvo=",
+              "start_time_unix_nano": "1792109092532550144",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "end_time_unix_nano": "1792109092635435875",
+              "flags": 256,
+              "kind": "SPAN_KIND_INTERNAL",
+              "name": "auth /v1/chat/completions",
+              "parent_span_id": "+akaPAl2iwg=",
+              "span_id": "ACTccMOZ14c=",
+              "start_time_unix_nano": "1792109092500839417",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.team.id",
+                  "value": {
+                    "string_value": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+                  }
+                },
+                {
+                  "key": "litellm.team.alias",
+                  "value": {
+                    "string_value": "spike-team"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "<redacted-key-hash>"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "spike-user"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_alias",
+                  "value": {
+                    "string_value": "spike-key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_end_user_id",
+                  "value": {
+                    "string_value": "end-user-42"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "string_value": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "string_value": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "string_value": "spike-session-0001"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "string_value": "[{\"role\": \"user\", \"content\": \"hello, my password is hunter2\"}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "string_value": "[{\"content\": \"echo: hello, my password is hunter2\", \"role\": \"assistant\", \"tool_calls\": null, \"function_call\": null, \"provider_specific_fields\": {\"refusal\": null}}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "string_value": "chatcmpl-mock-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "array_value": {
+                      "values": [
+                        {
+                          "string_value": "stop"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "int_value": "15"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "int_value": "8"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "mock-llm"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "9081"
+                  }
+                },
+                {
+                  "key": "litellm.call_id",
+                  "value": {
+                    "string_value": "9520b183-5ac3-4d75-9e48-d995e2726d87"
+                  }
+                },
+                {
+                  "key": "litellm.call_type",
+                  "value": {
+                    "string_value": "acompletion"
+                  }
+                },
+                {
+                  "key": "litellm.provider.model",
+                  "value": {
+                    "string_value": "openai/mock-gpt"
+                  }
+                },
+                {
+                  "key": "litellm.cost.total",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.input",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.output",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.tool_usage",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.original",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.discount_amount",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.discount_percent",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.margin_fixed_amount",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.margin_percent",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.margin_total_amount",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.request.route",
+                  "value": {
+                    "string_value": "/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "string_value": "LLM"
+                  }
+                },
+                {
+                  "key": "llm.model_name",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "llm.provider",
+                  "value": {
+                    "string_value": "openai"
+                  }
+                },
+                {
+                  "key": "llm.token_count.prompt",
+                  "value": {
+                    "int_value": "15"
+                  }
+                },
+                {
+                  "key": "llm.token_count.completion",
+                  "value": {
+                    "int_value": "8"
+                  }
+                },
+                {
+                  "key": "llm.token_count.total",
+                  "value": {
+                    "int_value": "23"
+                  }
+                },
+                {
+                  "key": "llm.input_messages.0.message.role",
+                  "value": {
+                    "string_value": "user"
+                  }
+                },
+                {
+                  "key": "llm.input_messages.0.message.content",
+                  "value": {
+                    "string_value": "hello, my password is hunter2"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "string_value": "[{\"role\": \"user\", \"content\": \"hello, my password is hunter2\"}]"
+                  }
+                },
+                {
+                  "key": "llm.output_messages.0.message.role",
+                  "value": {
+                    "string_value": "assistant"
+                  }
+                },
+                {
+                  "key": "llm.output_messages.0.message.content",
+                  "value": {
+                    "string_value": "echo: hello, my password is hunter2"
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "string_value": "[{\"role\": \"assistant\", \"content\": \"echo: hello, my password is hunter2\"}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "string_value": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.prompt_tokens",
+                  "value": {
+                    "int_value": "15"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.completion_tokens",
+                  "value": {
+                    "int_value": "8"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.total_tokens",
+                  "value": {
+                    "int_value": "23"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092964009984",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "chat mock-gpt",
+              "parent_span_id": "+akaPAl2iwg=",
+              "span_id": "QhDZFOhxUxE=",
+              "start_time_unix_nano": "1792109092678784000",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.team.id",
+                  "value": {
+                    "string_value": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+                  }
+                },
+                {
+                  "key": "litellm.team.alias",
+                  "value": {
+                    "string_value": "spike-team"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "<redacted-key-hash>"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "spike-user"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_alias",
+                  "value": {
+                    "string_value": "spike-key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_end_user_id",
+                  "value": {
+                    "string_value": "end-user-42"
+                  }
+                },
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "batch_write_to_db"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "_PROXY_track_cost_callback"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "_PROXY_track_cost_callback"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "batch_write_to_db"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "_PROXY_track_cost_callback"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092972480000",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "links": [
+                {
+                  "flags": 256,
+                  "span_id": "+akaPAl2iwg=",
+                  "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+                }
+              ],
+              "name": "batch_write_to_db _PROXY_track_cost_callback",
+              "span_id": "s48NdBrK2dQ=",
+              "start_time_unix_nano": "1792109092971100160",
+              "status": {},
+              "trace_id": "hU1axwzkCmbW0jmOb5nWDw=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109093008608000",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_end_user_object",
+              "parent_span_id": "lA+IuiRr/LE=",
+              "span_id": "86pL6mfeuyQ=",
+              "start_time_unix_nano": "1792109093008569088",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "get_end_user_object"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109093014882048",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "postgres get_end_user_object",
+              "parent_span_id": "lA+IuiRr/LE=",
+              "span_id": "4F/sVQ1TZzc=",
+              "start_time_unix_nano": "1792109093014864896",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "end_time_unix_nano": "1792109093015501917",
+              "flags": 256,
+              "kind": "SPAN_KIND_INTERNAL",
+              "name": "auth /v1/chat/completions",
+              "parent_span_id": "Mibcz+GEI7g=",
+              "span_id": "lA+IuiRr/LE=",
+              "start_time_unix_nano": "1792109093008414042",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.team.id",
+                  "value": {
+                    "string_value": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+                  }
+                },
+                {
+                  "key": "litellm.team.alias",
+                  "value": {
+                    "string_value": "spike-team"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "<redacted-key-hash>"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "spike-user"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_alias",
+                  "value": {
+                    "string_value": "spike-key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_end_user_id",
+                  "value": {
+                    "string_value": "end-user-42"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "string_value": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "string_value": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "string_value": "spike-session-0001"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "string_value": "[{\"role\": \"user\", \"content\": \"weather in Reykjavik?\"}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "string_value": "[{\"content\": \"\", \"role\": \"assistant\", \"tool_calls\": [{\"function\": {\"arguments\": \"{\\\"city\\\": \\\"Reykjavik\\\", \\\"unit\\\": \\\"celsius\\\", \\\"api_key\\\": \\\"should-be-redacted\\\"}\", \"name\": \"get_weather\"}, \"id\": \"call_mock_1\", \"type\": \"function\"}], \"function_call\": null}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "string_value": "chatcmpl-mock-stream-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "array_value": {
+                      "values": [
+                        {
+                          "string_value": "tool_calls"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "double_value": 0.13325190544128418
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "int_value": "13"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "int_value": "18"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "mock-llm"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "9081"
+                  }
+                },
+                {
+                  "key": "litellm.call_id",
+                  "value": {
+                    "string_value": "88433b3e-4d43-403b-a6e2-2ac7bd46dfff"
+                  }
+                },
+                {
+                  "key": "litellm.call_type",
+                  "value": {
+                    "string_value": "acompletion"
+                  }
+                },
+                {
+                  "key": "litellm.provider.model",
+                  "value": {
+                    "string_value": "openai/mock-gpt"
+                  }
+                },
+                {
+                  "key": "litellm.cost.total",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.input",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.output",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.tool_usage",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.original",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.discount_amount",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.discount_percent",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.margin_fixed_amount",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.margin_percent",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.cost.margin_total_amount",
+                  "value": {
+                    "double_value": 0.0
+                  }
+                },
+                {
+                  "key": "litellm.request.streaming",
+                  "value": {
+                    "bool_value": true
+                  }
+                },
+                {
+                  "key": "litellm.request.route",
+                  "value": {
+                    "string_value": "/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "litellm.request.tools.declared",
+                  "value": {
+                    "int_value": "1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.0.name",
+                  "value": {
+                    "string_value": "get_weather"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.0.description",
+                  "value": {
+                    "string_value": "Get weather"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.0.parameters",
+                  "value": {
+                    "string_value": "{\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}, \"required\": [\"city\"]}"
+                  }
+                },
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "string_value": "LLM"
+                  }
+                },
+                {
+                  "key": "llm.model_name",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "llm.provider",
+                  "value": {
+                    "string_value": "openai"
+                  }
+                },
+                {
+                  "key": "llm.token_count.prompt",
+                  "value": {
+                    "int_value": "13"
+                  }
+                },
+                {
+                  "key": "llm.token_count.completion",
+                  "value": {
+                    "int_value": "18"
+                  }
+                },
+                {
+                  "key": "llm.token_count.total",
+                  "value": {
+                    "int_value": "31"
+                  }
+                },
+                {
+                  "key": "llm.input_messages.0.message.role",
+                  "value": {
+                    "string_value": "user"
+                  }
+                },
+                {
+                  "key": "llm.input_messages.0.message.content",
+                  "value": {
+                    "string_value": "weather in Reykjavik?"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "string_value": "[{\"role\": \"user\", \"content\": \"weather in Reykjavik?\"}]"
+                  }
+                },
+                {
+                  "key": "llm.output_messages.0.message.role",
+                  "value": {
+                    "string_value": "assistant"
+                  }
+                },
+                {
+                  "key": "llm.output_messages.0.message.content",
+                  "value": {
+                    "string_value": ""
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "string_value": "[{\"role\": \"assistant\", \"content\": \"\"}]"
+                  }
+                },
+                {
+                  "key": "llm.tools.0.tool.name",
+                  "value": {
+                    "string_value": "get_weather"
+                  }
+                },
+                {
+                  "key": "llm.tools.0.tool.description",
+                  "value": {
+                    "string_value": "Get weather"
+                  }
+                },
+                {
+                  "key": "llm.tools.0.tool.json_schema",
+                  "value": {
+                    "string_value": "{\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}, \"required\": [\"city\"]}"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "string_value": "openai"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.prompt_tokens",
+                  "value": {
+                    "int_value": "13"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.completion_tokens",
+                  "value": {
+                    "int_value": "18"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.total_tokens",
+                  "value": {
+                    "int_value": "31"
+                  }
+                },
+                {
+                  "key": "llm.is_streaming",
+                  "value": {
+                    "bool_value": true
+                  }
+                },
+                {
+                  "key": "llm.request.functions.0.name",
+                  "value": {
+                    "string_value": "get_weather"
+                  }
+                },
+                {
+                  "key": "llm.request.functions.0.description",
+                  "value": {
+                    "string_value": "Get weather"
+                  }
+                },
+                {
+                  "key": "llm.request.functions.0.parameters",
+                  "value": {
+                    "string_value": "{\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}, \"unit\": {\"type\": \"string\"}}, \"required\": [\"city\"]}"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109093187158016",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "name": "chat mock-gpt",
+              "parent_span_id": "Mibcz+GEI7g=",
+              "span_id": "8ic+Sl7gdgQ=",
+              "start_time_unix_nano": "1792109093041169920",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "litellm.team.id",
+                  "value": {
+                    "string_value": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+                  }
+                },
+                {
+                  "key": "litellm.team.alias",
+                  "value": {
+                    "string_value": "spike-team"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "<redacted-key-hash>"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "spike-user"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_alias",
+                  "value": {
+                    "string_value": "spike-key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_end_user_id",
+                  "value": {
+                    "string_value": "end-user-42"
+                  }
+                },
+                {
+                  "key": "litellm.service.name",
+                  "value": {
+                    "string_value": "batch_write_to_db"
+                  }
+                },
+                {
+                  "key": "litellm.service.call_type",
+                  "value": {
+                    "string_value": "_PROXY_track_cost_callback"
+                  }
+                },
+                {
+                  "key": "db.system.name",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.system",
+                  "value": {
+                    "string_value": "postgresql"
+                  }
+                },
+                {
+                  "key": "db.operation.name",
+                  "value": {
+                    "string_value": "_PROXY_track_cost_callback"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "string_value": "postgres"
+                  }
+                },
+                {
+                  "key": "server.port",
+                  "value": {
+                    "int_value": "5432"
+                  }
+                },
+                {
+                  "key": "db.namespace",
+                  "value": {
+                    "string_value": "litellm"
+                  }
+                },
+                {
+                  "key": "service",
+                  "value": {
+                    "string_value": "batch_write_to_db"
+                  }
+                },
+                {
+                  "key": "call_type",
+                  "value": {
+                    "string_value": "_PROXY_track_cost_callback"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109093189467904",
+              "flags": 256,
+              "kind": "SPAN_KIND_CLIENT",
+              "links": [
+                {
+                  "flags": 256,
+                  "span_id": "Mibcz+GEI7g=",
+                  "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+                }
+              ],
+              "name": "batch_write_to_db _PROXY_track_cost_callback",
+              "span_id": "Pe0dmYAtsoM=",
+              "start_time_unix_nano": "1792109093188382976",
+              "status": {},
+              "trace_id": "CeWHBQYDNwp5ZlfBXPAexA=="
+            }
+          ]
+        },
+        {
+          "schema_url": "https://opentelemetry.io/schemas/1.11.0",
+          "scope": {
+            "name": "opentelemetry.instrumentation.fastapi",
+            "version": "0.54b1"
+          },
+          "spans": [
+            {
+              "attributes": [
+                {
+                  "key": "http.scheme",
+                  "value": {
+                    "string_value": "http"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "string_value": "172.19.0.8:4000"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "int_value": "4000"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "string_value": "1.1"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "string_value": "/team/new"
+                  }
+                },
+                {
+                  "key": "http.url",
+                  "value": {
+                    "string_value": "http://172.19.0.8:4000/team/new"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "string_value": "POST"
+                  }
+                },
+                {
+                  "key": "http.server_name",
+                  "value": {
+                    "string_value": "127.0.0.1:4000"
+                  }
+                },
+                {
+                  "key": "http.user_agent",
+                  "value": {
+                    "string_value": "curl/8.7.1"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "string_value": "192.168.65.1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "int_value": "28422"
+                  }
+                },
+                {
+                  "key": "http.route",
+                  "value": {
+                    "string_value": "/team/new"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "litellm_proxy_master_key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "default_user_id"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "int_value": "200"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092337604750",
+              "flags": 256,
+              "kind": "SPAN_KIND_SERVER",
+              "name": "POST /team/new",
+              "span_id": "dvqzaL4u+yY=",
+              "start_time_unix_nano": "1792109092176948875",
+              "status": {},
+              "trace_id": "RhnR4uK9wOhnWMaKh+qP6g=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "http.scheme",
+                  "value": {
+                    "string_value": "http"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "string_value": "172.19.0.8:4000"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "int_value": "4000"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "string_value": "1.1"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "string_value": "/key/generate"
+                  }
+                },
+                {
+                  "key": "http.url",
+                  "value": {
+                    "string_value": "http://172.19.0.8:4000/key/generate"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "string_value": "POST"
+                  }
+                },
+                {
+                  "key": "http.server_name",
+                  "value": {
+                    "string_value": "127.0.0.1:4000"
+                  }
+                },
+                {
+                  "key": "http.user_agent",
+                  "value": {
+                    "string_value": "curl/8.7.1"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "string_value": "192.168.65.1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "int_value": "39687"
+                  }
+                },
+                {
+                  "key": "http.route",
+                  "value": {
+                    "string_value": "/key/generate"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "litellm_proxy_master_key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "default_user_id"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "int_value": "200"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092427535500",
+              "flags": 256,
+              "kind": "SPAN_KIND_SERVER",
+              "name": "POST /key/generate",
+              "span_id": "qJy+E3UxnfM=",
+              "start_time_unix_nano": "1792109092368548459",
+              "status": {},
+              "trace_id": "YCOfrixq9gj8ArV2lO7DuQ=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "http.scheme",
+                  "value": {
+                    "string_value": "http"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "string_value": "172.19.0.8:4000"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "int_value": "4000"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "string_value": "1.1"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "string_value": "/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "http.url",
+                  "value": {
+                    "string_value": "http://172.19.0.8:4000/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "string_value": "POST"
+                  }
+                },
+                {
+                  "key": "http.server_name",
+                  "value": {
+                    "string_value": "127.0.0.1:4000"
+                  }
+                },
+                {
+                  "key": "http.user_agent",
+                  "value": {
+                    "string_value": "spike-agent/0.1"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "string_value": "192.168.65.1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "int_value": "64249"
+                  }
+                },
+                {
+                  "key": "http.route",
+                  "value": {
+                    "string_value": "/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "litellm.team.id",
+                  "value": {
+                    "string_value": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+                  }
+                },
+                {
+                  "key": "litellm.team.alias",
+                  "value": {
+                    "string_value": "spike-team"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "<redacted-key-hash>"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "spike-user"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_alias",
+                  "value": {
+                    "string_value": "spike-key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_end_user_id",
+                  "value": {
+                    "string_value": "end-user-42"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "int_value": "200"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109092969102542",
+              "flags": 768,
+              "kind": "SPAN_KIND_SERVER",
+              "name": "POST /v1/chat/completions",
+              "parent_span_id": "APBnqgupArc=",
+              "span_id": "+akaPAl2iwg=",
+              "start_time_unix_nano": "1792109092491935125",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            },
+            {
+              "attributes": [
+                {
+                  "key": "http.scheme",
+                  "value": {
+                    "string_value": "http"
+                  }
+                },
+                {
+                  "key": "http.host",
+                  "value": {
+                    "string_value": "172.19.0.8:4000"
+                  }
+                },
+                {
+                  "key": "net.host.port",
+                  "value": {
+                    "int_value": "4000"
+                  }
+                },
+                {
+                  "key": "http.flavor",
+                  "value": {
+                    "string_value": "1.1"
+                  }
+                },
+                {
+                  "key": "http.target",
+                  "value": {
+                    "string_value": "/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "http.url",
+                  "value": {
+                    "string_value": "http://172.19.0.8:4000/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "http.method",
+                  "value": {
+                    "string_value": "POST"
+                  }
+                },
+                {
+                  "key": "http.server_name",
+                  "value": {
+                    "string_value": "127.0.0.1:4000"
+                  }
+                },
+                {
+                  "key": "http.user_agent",
+                  "value": {
+                    "string_value": "spike-agent/0.1"
+                  }
+                },
+                {
+                  "key": "net.peer.ip",
+                  "value": {
+                    "string_value": "192.168.65.1"
+                  }
+                },
+                {
+                  "key": "net.peer.port",
+                  "value": {
+                    "int_value": "28149"
+                  }
+                },
+                {
+                  "key": "http.route",
+                  "value": {
+                    "string_value": "/v1/chat/completions"
+                  }
+                },
+                {
+                  "key": "litellm.team.id",
+                  "value": {
+                    "string_value": "56d7cf91-60b9-4f70-b6b6-5476d4f098c2"
+                  }
+                },
+                {
+                  "key": "litellm.team.alias",
+                  "value": {
+                    "string_value": "spike-team"
+                  }
+                },
+                {
+                  "key": "litellm.api_key.hash",
+                  "value": {
+                    "string_value": "<redacted-key-hash>"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "string_value": "mock-gpt"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_user_id",
+                  "value": {
+                    "string_value": "spike-user"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_alias",
+                  "value": {
+                    "string_value": "spike-key"
+                  }
+                },
+                {
+                  "key": "litellm.metadata.user_api_key_end_user_id",
+                  "value": {
+                    "string_value": "end-user-42"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "int_value": "200"
+                  }
+                }
+              ],
+              "end_time_unix_nano": "1792109093186938126",
+              "flags": 768,
+              "kind": "SPAN_KIND_SERVER",
+              "name": "POST /v1/chat/completions",
+              "parent_span_id": "APBnqgupArc=",
+              "span_id": "Mibcz+GEI7g=",
+              "start_time_unix_nano": "1792109093008012792",
+              "status": {},
+              "trace_id": "S/kvNXezTaajzpKdDg5HNg=="
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

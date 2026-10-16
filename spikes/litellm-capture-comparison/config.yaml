@@ -1,0 +1,56 @@
+# LiteLLM proxy config for the LiteLLM capture comparison. Both capture paths run on the
+# same process so they see identical traffic:
+#   - dump_logger.handler  -> in-process CustomLogger (path A probe)
+#   - otel                 -> OTel v2 export to the tee -> unmodified bridge (path B probe)
+# Everything points at the mocks in docker-compose.yaml. No real provider is called.
+
+model_list:
+  - model_name: mock-gpt
+    litellm_params:
+      model: openai/mock-gpt
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+  - model_name: mock-embed
+    litellm_params:
+      model: openai/mock-embed
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+  - model_name: mock-big
+    litellm_params:
+      model: openai/mock-big
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+  - model_name: mock-error
+    litellm_params:
+      model: openai/mock-error
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+  - model_name: mock-429
+    litellm_params:
+      model: openai/mock-429
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+
+litellm_settings:
+  callbacks: ["dump_logger.handler", "otel"]
+  request_correlation_in_logs: true
+  drop_params: true
+  num_retries: 0
+
+router_settings:
+  disable_cooldowns: true   # S6 feeds deliberate 500/429s; never cool the mock down
+
+callback_settings:
+  otel:
+    mapper_names: [genai, openinference]
+    excluded_services: [redis, postgres]
+
+mcp_servers:
+  mockmcp:
+    url: http://mock-mcp:9082/mcp
+    transport: http
+
+general_settings:
+  use_x_forwarded_for: true   # trust XFF so requester_ip_address is the client, not the peer
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

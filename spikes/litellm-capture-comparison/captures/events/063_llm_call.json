@@ -1,0 +1,25 @@
+{
+  "body": null,
+  "custom_data": {
+    "duration_ms": 0.390912,
+    "error": null,
+    "event_type": "call",
+    "integration": "envoy-ai-gateway",
+    "model": "mcp-tool-call",
+    "provider": "unknown",
+    "response_model": null,
+    "span_id": "cda0a8829aeec534",
+    "status": "ok",
+    "streaming": null,
+    "trace_id": "25161f561b1bc7442fe9c1e0e30eed73"
+  },
+  "endpoint": "llm://unknown/mcp-tool-call",
+  "headers": null,
+  "method": "llm_call",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:54.984707+00:00",
+  "user_agent": "cerberus-envoy-ai-gateway/0.1.0",
+  "user_id": null
+}

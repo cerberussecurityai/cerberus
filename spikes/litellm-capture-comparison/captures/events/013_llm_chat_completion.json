@@ -1,0 +1,36 @@
+{
+  "body": {
+    "input": [
+      {
+        "content": "boom",
+        "role": "user"
+      }
+    ],
+    "output": null
+  },
+  "custom_data": {
+    "duration_ms": 2.895104,
+    "error": "litellm.InternalServerError: InternalServerError: OpenAIException - mock upstream exploded",
+    "event_type": "chat_completion",
+    "integration": "envoy-ai-gateway",
+    "model": "mock-error",
+    "provider": "openai",
+    "response_model": null,
+    "span_id": "b91f7376aa604772",
+    "status": "error",
+    "streaming": null,
+    "tokens_completion": 0,
+    "tokens_prompt": 0,
+    "tokens_total": 0,
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+  },
+  "endpoint": "llm://openai/mock-error",
+  "headers": null,
+  "method": "llm_chat_completion",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:53.508894+00:00",
+  "user_agent": "cerberus-envoy-ai-gateway/0.1.0",
+  "user_id": null
+}

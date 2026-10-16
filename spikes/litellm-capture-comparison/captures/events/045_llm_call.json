@@ -1,0 +1,26 @@
+{
+  "body": null,
+  "custom_data": {
+    "duration_ms": 37.970292,
+    "error": "tool failed: spike",
+    "event_type": "call",
+    "integration": "envoy-ai-gateway",
+    "model": "mcp-tool-call",
+    "provider": "unknown",
+    "response_model": null,
+    "route_path": "/mcp",
+    "span_id": "bc6bfa8d9014e24e",
+    "status": "error",
+    "streaming": null,
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+  },
+  "endpoint": "llm://unknown/mcp-tool-call",
+  "headers": null,
+  "method": "llm_call",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:54.559010+00:00",
+  "user_agent": "spike-mcp-client/0.1",
+  "user_id": null
+}

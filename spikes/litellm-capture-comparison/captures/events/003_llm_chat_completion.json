@@ -1,0 +1,41 @@
+{
+  "body": {
+    "input": [
+      {
+        "content": "weather in Reykjavik?",
+        "role": "user"
+      }
+    ],
+    "output": [
+      {
+        "content": "",
+        "role": "assistant"
+      }
+    ]
+  },
+  "custom_data": {
+    "duration_ms": 145.988096,
+    "error": null,
+    "event_type": "chat_completion",
+    "integration": "envoy-ai-gateway",
+    "model": "mock-gpt",
+    "provider": "openai",
+    "response_model": "mock-gpt",
+    "span_id": "f2273e4a5ee07604",
+    "status": "ok",
+    "streaming": null,
+    "tokens_completion": 18,
+    "tokens_prompt": 13,
+    "tokens_total": 31,
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+  },
+  "endpoint": "llm://openai/mock-gpt",
+  "headers": null,
+  "method": "llm_chat_completion",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:53.041170+00:00",
+  "user_agent": "cerberus-envoy-ai-gateway/0.1.0",
+  "user_id": "end-user-42"
+}

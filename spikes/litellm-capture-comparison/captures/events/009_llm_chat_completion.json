@@ -1,0 +1,41 @@
+{
+  "body": {
+    "input": [
+      {
+        "content": "summarise this: token=abc123",
+        "role": "user"
+      }
+    ],
+    "output": [
+      {
+        "content": "echo: summarise this: token=abc123",
+        "role": "assistant"
+      }
+    ]
+  },
+  "custom_data": {
+    "duration_ms": 2.085888,
+    "error": null,
+    "event_type": "chat_completion",
+    "integration": "envoy-ai-gateway",
+    "model": "mock-gpt",
+    "provider": "openai",
+    "response_model": "mock-gpt",
+    "span_id": "ea45dba03c784e74",
+    "status": "ok",
+    "streaming": null,
+    "tokens_completion": 8,
+    "tokens_prompt": 7,
+    "tokens_total": 15,
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+  },
+  "endpoint": "llm://openai/mock-gpt",
+  "headers": null,
+  "method": "llm_chat_completion",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:53.404354+00:00",
+  "user_agent": "cerberus-envoy-ai-gateway/0.1.0",
+  "user_id": null
+}

@@ -1,0 +1,26 @@
+{
+  "body": null,
+  "custom_data": {
+    "duration_ms": 99.648833,
+    "error": null,
+    "event_type": "messages",
+    "integration": "envoy-ai-gateway",
+    "model": "mock-gpt",
+    "provider": "unknown",
+    "response_model": null,
+    "route_path": "/v1/messages",
+    "span_id": "0f5ff6017d1c48f6",
+    "status": "ok",
+    "streaming": null,
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+  },
+  "endpoint": "llm://unknown/mock-gpt",
+  "headers": null,
+  "method": "llm_messages",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:53.245717+00:00",
+  "user_agent": "spike-agent/0.1",
+  "user_id": null
+}

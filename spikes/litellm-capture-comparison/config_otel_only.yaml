@@ -1,0 +1,29 @@
+# Overhead baseline for the LiteLLM capture comparison: identical to config.yaml with
+# OTel-only variant: OTel v2 -> tee -> bridge (path B cost), no Python hooks.
+# LITELLM_OTEL_V2=false so the OTel v2 package stays inert too.
+
+model_list:
+  - model_name: mock-gpt
+    litellm_params:
+      model: openai/mock-gpt
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+
+litellm_settings:
+  callbacks: ["otel"]
+  request_correlation_in_logs: true
+  drop_params: true
+  num_retries: 0
+
+router_settings:
+  disable_cooldowns: true
+
+general_settings:
+  use_x_forwarded_for: true
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+callback_settings:
+  otel:
+    mapper_names: [genai, openinference]
+    excluded_services: [redis, postgres]

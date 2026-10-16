@@ -1,0 +1,116 @@
+# LiteLLM capture comparison: LiteLLM proxy with BOTH capture paths wired to the same mocks.
+#
+#   client --> litellm:4000 --+--> dump_logger (in-process)      --> captures/plugin/
+#                             +--> OTel v2 --> otlp-tee:4319      --> captures/otel/
+#                                               \--> bridge:4318 --> stub-ingest --> captures/events/
+#
+# The bridge is today's cerberus-envoy-ai-gateway image, unmodified. The
+# mocks, tee and stub reuse that image because it already has fastapi/httpx/
+# opentelemetry-proto.
+#
+#   docker compose up -d --build && ./drive.sh
+#   docker compose down -v          # ALWAYS before a re-run (postgres state, capture numbering)
+#
+# LOCAL USE ONLY: this stack runs LiteLLM with a known throwaway master key and
+# debug dumping. Every published port is bound to 127.0.0.1; do not expose it.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  mock-llm:
+    build: ../../cerberus-envoy-ai-gateway
+    command: ["python", "/spike/mocks/mock_llm.py"]
+    volumes:
+      - ./:/spike:ro
+    ports:
+      - "127.0.0.1:9081:9081"
+
+  mock-mcp:
+    build: ../../cerberus-envoy-ai-gateway
+    command: ["python", "/spike/mocks/mock_mcp.py"]
+    volumes:
+      - ./:/spike:ro
+    ports:
+      - "127.0.0.1:9082:9082"
+
+  stub-ingest:
+    build: ../../cerberus-envoy-ai-gateway
+    command: ["python", "/spike/stub_ingest.py"]
+    environment:
+      SPIKE_CAPTURE_DIR: /captures/events
+    volumes:
+      - ./:/spike:ro
+      - ./captures:/captures
+    ports:
+      - "127.0.0.1:9089:9089"
+
+  bridge:
+    build: ../../cerberus-envoy-ai-gateway
+    environment:
+      CERBERUS_INGEST_SERVICE: http://stub-ingest:9089
+      CERBERUS_BACKEND_URL: http://stub-ingest:9089
+      CERBERUS_TOKEN: sk_test_playground
+      CERBERUS_USER_ID_ATTRIBUTE: litellm.metadata.user_api_key_end_user_id
+      CERBERUS_CAPTURE_LLM_CONTENT: "true"
+      CERBERUS_DUMP_SPANS: "true"
+      CERBERUS_FLUSH_INTERVAL_MS: "1000"
+      CERBERUS_LOG_LEVEL: debug
+    ports:
+      - "127.0.0.1:4318:4318"
+    depends_on:
+      - stub-ingest
+
+  otlp-tee:
+    build: ../../cerberus-envoy-ai-gateway
+    command: ["python", "/spike/otlp_tee.py"]
+    environment:
+      SPIKE_CAPTURE_DIR: /captures/otel
+      SPIKE_FORWARD_TO: http://bridge:4318/v1/traces
+    volumes:
+      - ./:/spike:ro
+      - ./captures:/captures
+    ports:
+      - "127.0.0.1:4319:4319"
+    depends_on:
+      - bridge
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.105.1
+    command: ["--config", "/app/spike/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: sk-spike-master
+      DATABASE_URL: postgresql://litellm:litellm@postgres:5432/litellm
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_LOG: INFO
+      SPIKE_CAPTURE_DIR: /captures/plugin
+      # OTel v2 -> tee -> bridge
+      LITELLM_OTEL_V2: "true"
+      OTEL_EXPORTER: otlp_http
+      OTEL_ENDPOINT: http://otlp-tee:4319
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: span_only
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      OTEL_SERVICE_NAME: litellm-spike
+    volumes:
+      - ./:/app/spike:ro
+      - ./captures:/captures
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-llm:
+        condition: service_started
+      mock-mcp:
+        condition: service_started
+      otlp-tee:
+        condition: service_started

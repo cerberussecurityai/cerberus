@@ -1,0 +1,23 @@
+# Overhead baseline for the LiteLLM capture comparison: identical to config.yaml with
+# NO Cerberus-relevant callbacks (no dump_logger, no otel). Run with
+# LITELLM_OTEL_V2=false so the OTel v2 package stays inert too.
+
+model_list:
+  - model_name: mock-gpt
+    litellm_params:
+      model: openai/mock-gpt
+      api_base: http://mock-llm:9081/v1
+      api_key: dummy-upstream-key
+
+litellm_settings:
+  request_correlation_in_logs: true
+  drop_params: true
+  num_retries: 0
+
+router_settings:
+  disable_cooldowns: true
+
+general_settings:
+  use_x_forwarded_for: true
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL

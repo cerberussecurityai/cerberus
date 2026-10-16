@@ -1,0 +1,25 @@
+{
+  "body": null,
+  "custom_data": {
+    "duration_ms": 0.550144,
+    "error": null,
+    "event_type": "call",
+    "integration": "envoy-ai-gateway",
+    "model": "mock-gpt",
+    "provider": "unknown",
+    "response_model": null,
+    "span_id": "2d46d660b7aff233",
+    "status": "ok",
+    "streaming": null,
+    "trace_id": "435fb8d5ccbd488a4e187cad5fcfcd1b"
+  },
+  "endpoint": "llm://unknown/mock-gpt",
+  "headers": null,
+  "method": "llm_call",
+  "query_params": null,
+  "remote_addr": "unknown",
+  "scheme": "llm",
+  "timestamp": "2026-10-16T00:04:54.078897+00:00",
+  "user_agent": "cerberus-envoy-ai-gateway/0.1.0",
+  "user_id": null
+}
