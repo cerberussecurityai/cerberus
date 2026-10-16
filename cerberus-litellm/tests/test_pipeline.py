@@ -565,8 +565,8 @@ def test_redact_bounded_only_looks_at_four_times_the_cap():
     assert REDACTION_INPUT_FACTOR == 4
     text = "a" * 40 + " sk-live-abcdef0123456789"
     assert redact_bounded(text, 100).endswith("sk-[REDACTED]")  # inside 400 characters
-    cut = redact_bounded("z" * 10_000, 100)  # only 400 characters were looked at
-    assert cut == "z" * 200 + "...[TRUNCATED]"  # half of them dropped as the boundary margin
+    cut = redact_bounded("z " * 5_000, 100)  # only 400 characters were looked at
+    assert cut == "z " * 100 + "...[TRUNCATED]"  # half of them dropped as the boundary margin
 
 
 def test_an_uncut_text_is_unchanged_by_the_boundary_margin():
@@ -580,8 +580,81 @@ def test_a_large_cut_keeps_the_full_margin():
     from cerberus_litellm.redaction import REDACTION_BOUNDARY_MARGIN, redact_bounded
 
     cap = 2048
-    cut = redact_bounded("z" * 100_000, cap)
+    cut = redact_bounded("z " * 50_000, cap)
     assert len(cut) == cap * 4 - REDACTION_BOUNDARY_MARGIN + len("...[TRUNCATED]")
+
+
+def test_a_cut_slice_never_ends_in_a_partial_token_of_any_length():
+    from cerberus_litellm.redaction import redact_bounded
+
+    # cap 101: a 404-character slice, minus a 202-character margin, keeps 202
+    # characters, which end one character into the 68th "ab" (a partial token).
+    out = redact_bounded("ab " * 300, 101)
+    assert out == "ab " * 67 + "...[TRUNCATED]"  # the partial "a" is gone; ends on a space
+    # An unbroken run of token characters at the end, however long, is dropped.
+    out = redact_bounded("hello " + "Q" * 5_000, 100)
+    assert out == "hello " + "...[TRUNCATED]"
+    blob = "x" * 5_000  # one giant token with nothing to anchor on
+    assert redact_bounded(blob, 100) == "...[TRUNCATED]"
+
+
+def test_an_unterminated_quote_after_a_secret_name_is_still_masked():
+    from cerberus_litellm.redaction import redact_secrets
+
+    assert redact_secrets('password="hunter2') == 'password="[REDACTED]"'
+    assert redact_secrets("token='abc def") == "token='[REDACTED]'"
+    # Only to the end of the line: the next line is not swallowed.
+    assert redact_secrets('password="hunter2\nnext line stays') == (
+        'password="[REDACTED]"\nnext line stays'
+    )
+    # Properly quoted values behave as before.
+    assert redact_secrets('{"api_key": "abc def", "n": 1}') == '{"api_key": "[REDACTED]", "n": 1}'
+    assert redact_secrets("password='p w' and more") == "password='[REDACTED]' and more"
+
+
+def test_prose_with_a_lone_quote_is_not_masked_beyond_the_safe_direction():
+    from cerberus_litellm.redaction import redact_secrets
+
+    assert redact_secrets("it's fine, don't worry about the setup") == (
+        "it's fine, don't worry about the setup"
+    )
+    assert redact_secrets('he said "hello and left') == 'he said "hello and left'
+
+
+def test_a_secret_cut_without_its_closing_quote_at_the_slice_edge_is_masked():
+    from cerberus_litellm.redaction import redact_bounded
+
+    cap = 100  # slice of 400 characters
+    text = "w " * 190 + 'password="hunter2' + " tail" * 400  # the slice ends inside the value
+    out = redact_bounded(text, cap)
+    assert "hunter" not in out
+    assert out.endswith("...[TRUNCATED]")
+
+
+def test_redaction_is_fast_on_adversarial_input():
+    # The suite's only timing assertion: it exists as ReDoS insurance for the
+    # patterns above, with a bound that is generous for any linear-ish matcher
+    # and fails loudly for a catastrophic one.
+    import time
+
+    from cerberus_litellm.redaction import redact_secrets
+
+    hostile = [
+        "a_" * 50_000 + "key",
+        "key" + "=" * 100_000,
+        "key=" + '"' * 100_000,
+        "key=" + "'" * 100_000,
+        '="' * 50_000,
+        "key=" * 25_000,
+        "_key" * 25_000,
+        "password" + " " * 100_000 + "=",
+        "://" + "@" * 100_000,
+        "Bearer " + "a" * 100_000,
+    ]
+    start = time.perf_counter()
+    for text in hostile:
+        redact_secrets(text)
+    assert time.perf_counter() - start < 2.0
 
 
 def test_a_credential_cut_at_the_slice_boundary_leaves_no_fragment_after_heavy_masking(config):

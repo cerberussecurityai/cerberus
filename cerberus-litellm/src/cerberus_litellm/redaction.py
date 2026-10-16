@@ -25,7 +25,10 @@ _PROVIDER_KEYS = re.compile(
 _SECRET_PARAM = re.compile(
     r"(?<![A-Za-z0-9_-])"
     r"([A-Za-z0-9_-]{0,64}(?:key|token|password|secret)[\"']?\s{0,16}[:=]\s{0,16})"
-    r"(\"[^\"]*\"|'[^']*'|[^&\s\"',;]+)",
+    # A quoted value runs to its closing quote; with no closing quote (cut off,
+    # or simply absent) it runs to the end of the line, so an unterminated
+    # ``password="hunter2`` is still masked without swallowing the next lines.
+    r"(\"[^\"]*\"|\"[^\"\n]*|'[^']*'|'[^'\n]*|[^&\s\"',;]+)",
     re.IGNORECASE,
 )
 
@@ -50,6 +53,7 @@ REDACTION_INPUT_FACTOR = 4
 # characters (longer than any credential prefix the patterns can leave), but
 # never more than half of what is left, so a small cap keeps most of its text.
 REDACTION_BOUNDARY_MARGIN = 256
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+/=-")
 TRUNCATION_MARKER = "...[TRUNCATED]"
 
 
@@ -57,15 +61,23 @@ def redact_bounded(text: str, final_cap: int) -> str:
     """``redact_secrets`` over at most ``REDACTION_INPUT_FACTOR * final_cap`` characters.
 
     If the input was longer than that, the result also loses its last
-    ``REDACTION_BOUNDARY_MARGIN`` characters (see above) and ends with the
-    truncation marker, so the caller's own cap and marker logic still applies.
+    ``REDACTION_BOUNDARY_MARGIN`` characters (see above) plus any run of token
+    characters left at the end (a partial token of any length), and ends with
+    the truncation marker, so the caller's own cap and marker logic still
+    applies.
     """
     limit = final_cap * REDACTION_INPUT_FACTOR
     redacted = redact_secrets(text[:limit])
     if len(text) <= limit:
         return redacted
     margin = min(REDACTION_BOUNDARY_MARGIN, len(redacted) // 2)
-    return redacted[: len(redacted) - margin] + TRUNCATION_MARKER
+    kept = redacted[: len(redacted) - margin]
+    # Strip a trailing token run by hand: a regex anchored at the end is
+    # quadratic on a long unbroken run.
+    end = len(kept)
+    while end and kept[end - 1] in _TOKEN_CHARS:
+        end -= 1
+    return kept[:end] + TRUNCATION_MARKER
 
 
 def redact_secrets(text: str) -> str:

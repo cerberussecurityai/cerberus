@@ -82,7 +82,7 @@ that names the variable.
 | `CERBERUS_USER_ID_SOURCE` | `end_user,user_id,key_alias` | Ordered identity fields tried for `user_id`; allowed: `end_user`, `user_id`, `key_alias`, `team_alias`. |
 | `CERBERUS_MCP_SERVER_FALLBACK` | `litellm` | Server name used for a tool whose name carries no server prefix. |
 | `CERBERUS_BATCH_SIZE` | `50` | Events per POST (1 to 1000). |
-| `CERBERUS_FLUSH_INTERVAL_MS` | `2000` | Flush period (100 to 60000). |
+| `CERBERUS_FLUSH_INTERVAL_MS` | `2000` | Flush period (100 to 60000). While the queue holds a backlog and posts succeed, the next flush starts immediately (at most 20 batches of `CERBERUS_BATCH_SIZE` per flush); after a failure, or with an empty queue, it waits the full period. `queue_dropped_full` or `queue_dropped_bytes` in the stats line means the ingest cannot keep up. |
 | `CERBERUS_QUEUE_CAPACITY` | `10000` | Queue bound (100 to 1000000); events beyond it are dropped. |
 | `CERBERUS_QUEUE_MAX_BYTES` | `67108864` | Byte budget for queued events (1048576 to 1073741824); an event that would exceed it is dropped and counted. Together with the count bound this caps the queue's memory inside the proxy process. |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | Per-event size cap (1024 to 63488). |
@@ -204,7 +204,9 @@ tool name.
 
 - **Nothing arrives.** Look for the "cerberus-litellm 0.1.0 loaded" line and the periodic stats
   line in the proxy log. A "disabled" error line names the configuration problem. When the proxy
-  attaches no log handler for the plugin, its lines go to stderr.
+  attaches no log handler for the plugin, its lines go to stderr. The plugin adds that stderr
+  handler to its own logger only when no handler exists anywhere in its chain, so attaching a
+  parent handler later can produce duplicate lines.
 - **`post_failures` is climbing.** A batch the ingest rejects (a 403, for example) is dropped,
   counted and not retried. Check the API key and `CERBERUS_INGEST_SERVICE`; with
   `CERBERUS_LOG_LEVEL=debug` the first 200 characters of the response body are logged.

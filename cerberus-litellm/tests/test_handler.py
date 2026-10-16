@@ -564,8 +564,29 @@ async def test_exit_flush_is_skipped_while_the_event_loop_is_running(config, cap
     plugin._shutdown_flush(client=httpx.Client(transport=transport))
     assert seen == []  # nothing was sent...
     assert len(plugin.queue) == 1  # ...and the queue was left to the running loop
-    assert "event loop still running" in caplog.text
+    skipped = [r for r in caplog.records if "event loop still running" in r.getMessage()]
+    assert [r.levelno for r in skipped] == [logging.WARNING]  # events are left unsent
+    assert "1 queued events left unsent" in skipped[0].getMessage()
     await plugin.sink.close()
+
+    # With nothing queued the skip is only a debug line.
+    caplog.clear()
+    empty = CerberusLogger(replace(config, flush_interval_ms=60000))
+    caplog.set_level(logging.DEBUG, logger="cerberus_litellm")
+    empty.sink = Sink(empty.config, empty.queue, client=httpx.AsyncClient())
+    empty.sink.start()  # binds the sink to this running loop
+    empty._shutdown_flush()
+    quiet = [r for r in caplog.records if "shutdown flush skipped" in r.getMessage()]
+    assert [r.levelno for r in quiet] == [logging.DEBUG]
+    await empty.sink.close()
+
+
+def test_stats_read_queue_drops_from_the_queue_only(config):
+    plugin = CerberusLogger(config)
+    assert "queue_dropped_full" not in plugin._counts
+    assert "queue_dropped_bytes" not in plugin._counts
+    stats = plugin.stats()
+    assert stats["queue_dropped_full"] == 0 and stats["queue_dropped_bytes"] == 0
 
 
 async def test_end_to_end_flush_posts_batch(config):

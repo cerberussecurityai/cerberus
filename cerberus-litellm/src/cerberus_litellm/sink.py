@@ -91,20 +91,31 @@ class Sink:
 
     async def _flush_loop(self) -> None:
         interval = self.config.flush_interval_ms / 1000
+        drain_again = False
         while not self._stop.is_set():
-            # Sleep between ticks but wake immediately on shutdown, so close()
-            # never cancels an in-flight POST (which would drop a batch already
-            # drained from the queue but not yet delivered).
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=interval)
-            except TimeoutError:
-                pass
+            if drain_again:
+                await asyncio.sleep(0)  # let other tasks run between busy ticks
+            else:
+                # Sleep between ticks but wake immediately on shutdown, so close()
+                # never cancels an in-flight POST (which would drop a batch already
+                # drained from the queue but not yet delivered).
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                except TimeoutError:
+                    pass
             if self._stop.is_set():
                 break
+            failures_before = self.post_failures
+            drain_again = False
             try:
                 await self.flush_once()
                 if self._on_tick is not None:
                     self._on_tick()
+                # Keep draining without sleeping while there is a backlog and the
+                # ingest is keeping up (the awaited POSTs pace the loop). After
+                # any failure, or with an empty queue, wait the full interval, so
+                # a slow or failing ingest is never hot-looped.
+                drain_again = len(self.queue) > 0 and self.post_failures == failures_before
             except Exception:
                 logger.exception("Unexpected error during flush")
 

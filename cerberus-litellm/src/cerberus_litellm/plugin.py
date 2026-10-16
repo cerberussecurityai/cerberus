@@ -130,8 +130,6 @@ class CerberusLogger(CustomLogger):
             "skipped_no_payload": 0,
             "deduplicated": 0,
             "sampled_out": 0,
-            "queue_dropped_full": 0,
-            "queue_dropped_bytes": 0,
             "errors": 0,
         }
         self._throttle = LogThrottle()
@@ -277,12 +275,21 @@ class CerberusLogger(CustomLogger):
         blocking drain is skipped rather than racing the flush task.
         """
         try:
-            if self.sink is None or len(self.queue) == 0:
-                return
-            if self.sink.loop_is_running():
-                logger.debug("cerberus-litellm shutdown flush skipped: event loop still running")
+            if self.sink is None:
                 return
             queued = len(self.queue)
+            if self.sink.loop_is_running():
+                if queued:
+                    logger.warning(
+                        "cerberus-litellm shutdown flush skipped: event loop still running; "
+                        "%d queued events left unsent",
+                        queued,
+                    )
+                else:
+                    logger.debug("cerberus-litellm shutdown flush skipped: event loop running")
+                return
+            if queued == 0:
+                return
             sent, left = self.sink.flush_blocking(SHUTDOWN_FLUSH_BUDGET_S, client=client)
             logger.info(
                 "cerberus-litellm shutdown flush: %d queued, %d batch(es) sent, %d left unsent",
@@ -326,10 +333,12 @@ class CerberusLogger(CustomLogger):
 
 
 def _request_headers(kwargs: Mapping[str, Any]) -> dict[str, str]:
-    """The one request header the plugin reads: ``traceparent``.
+    """Read exactly one header from ``kwargs``: ``traceparent``.
 
-    Everything else in ``litellm_params`` (provider key, full request body,
-    every client header) is deliberately never looked at.
+    The session, turn and captured-header values come from the standard
+    logging object, not from here. Everything else in ``litellm_params``
+    (provider key, full request body, every other client header) is
+    deliberately never looked at.
     """
     headers = payload.get(kwargs, "litellm_params", "proxy_server_request", "headers")
     if not isinstance(headers, Mapping):

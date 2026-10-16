@@ -230,6 +230,46 @@ async def test_post_raising_value_error_does_not_end_the_sink_task(config, queue
     assert sink.posted == 1
 
 
+async def test_a_backlog_drains_within_one_interval_when_posts_succeed(config, queue):
+    from cerberus_litellm.sink import MAX_BATCHES_PER_FLUSH
+
+    posted = []
+    transport = httpx.MockTransport(
+        lambda request: posted.append(1) or httpx.Response(200, json={"accepted": 1})
+    )
+    # batch_size 1: one tick posts MAX_BATCHES_PER_FLUSH events; queue 3 ticks' worth.
+    cfg = replace(config, batch_size=1, flush_interval_ms=500)
+    sink = Sink(cfg, queue, client=httpx.AsyncClient(transport=transport))
+    for event in _events(3 * MAX_BATCHES_PER_FLUSH):
+        queue.append(event, 0)
+    sink.start()
+    await asyncio.sleep(0.9)  # one interval to the first tick, then no more sleeping
+    assert len(posted) == 3 * MAX_BATCHES_PER_FLUSH
+    assert len(queue) == 0
+    await sink.close()
+
+
+async def test_after_a_failed_tick_the_loop_waits_the_interval(config, queue):
+    from cerberus_litellm.sink import MAX_BATCHES_PER_FLUSH
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(500)
+
+    cfg = replace(config, batch_size=1, flush_interval_ms=500)
+    sink = Sink(cfg, queue, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    for event in _events(3 * MAX_BATCHES_PER_FLUSH):
+        queue.append(event, 0)
+    sink.start()
+    await asyncio.sleep(0.8)  # the first tick (at 0.5 s) failed: no immediate second tick
+    assert len(calls) == MAX_BATCHES_PER_FLUSH
+    await asyncio.sleep(0.5)  # the second tick comes one interval after the first
+    assert len(calls) == 2 * MAX_BATCHES_PER_FLUSH
+    await sink.close()
+
+
 async def test_persistent_rejection_logs_a_bounded_number_of_warnings(config, queue, caplog):
     caplog.set_level(logging.WARNING, logger="cerberus_litellm.sink")
     sink = Sink(

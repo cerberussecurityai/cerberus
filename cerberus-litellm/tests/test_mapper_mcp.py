@@ -146,6 +146,12 @@ def test_transport_error_keeps_message_when_results_capture_is_off(config):
 
 def test_error_text_obeys_result_cap_when_capture_is_on(config):
     slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_message"] = "x " * 500
+    event = map_mcp_event(slo, replace(config, mcp_result_max_chars=64))
+    assert event["custom_data"]["error"] == "x " * 32 + "...[TRUNCATED]"
+
+    # One unbroken run longer than the redaction slice has no safe place to
+    # end, so only the marker is kept.
     slo["error_information"]["error_message"] = "x" * 1000
     event = map_mcp_event(slo, replace(config, mcp_result_max_chars=64))
-    assert event["custom_data"]["error"] == "x" * 64 + "...[TRUNCATED]"
+    assert event["custom_data"]["error"] == "...[TRUNCATED]"
