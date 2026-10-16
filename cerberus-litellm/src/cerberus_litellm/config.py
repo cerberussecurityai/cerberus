@@ -13,9 +13,9 @@ from urllib.parse import urlsplit
 
 from cerberus_core import SENSITIVE_HEADERS
 
-# The ingest API caps both batch size and per-event size. Stay under both
-# client-side and leave headroom on the per-event cap: identifying fields are
-# added server-side before the limit is applied. Copied from
+# Client-side limits: the plugin sends at most MAX_SERVER_BATCH_SIZE events per
+# batch and caps each event at DEFAULT_MAX_EVENT_BYTES by default; the ingest
+# contract's ceiling for one event is MAX_EVENT_BYTES_CEILING. Copied from
 # cerberus_envoy_ai_gateway/config.py (same numbers; keep them in step).
 MAX_SERVER_BATCH_SIZE = 1000
 DEFAULT_MAX_EVENT_BYTES = 57344  # 56KB

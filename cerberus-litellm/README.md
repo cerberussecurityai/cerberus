@@ -179,9 +179,9 @@ tool name.
   it.
 - **Concurrency.** The queue assumes all access happens on the proxy's single event loop. Do not
   run the callback under a threaded executor.
-- **Sampling is per call.** With `CERBERUS_SAMPLE_RATE` below 1, an MCP tool call and the LLM
-  turn around it are sampled independently, so one can be reported without the other. Tool
-  catalogues are never sampled out.
+- **Sampling.** `CERBERUS_SAMPLE_RATE` applies per event. Keep the default of 1.0 for complete
+  capture, and lower it only to trade completeness for volume. Tool catalogues are never
+  sampled out.
 - **Workers.** Under `uvicorn --reload` or with several workers, each worker process holds its
   own queue, sink and exit flush.
 - **Duplicate suppression is bounded.** LiteLLM can fire a logging hook more than once for one
