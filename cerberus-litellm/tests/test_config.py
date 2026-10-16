@@ -288,7 +288,8 @@ def test_plain_http_to_a_remote_host_is_refused_by_default(monkeypatch):
     with pytest.raises(ConfigError, match="plain http") as info:
         Config.from_env()
     assert "CERBERUS_ALLOW_PLAIN_HTTP=true" in str(info.value)
-    assert "ingest.example.com" in str(info.value).split("(", 1)[1].split(")", 1)[0]
+    # The host is the parenthesised part of the message; compare it exactly.
+    assert str(info.value).partition("host (")[2].partition(")")[0] == "ingest.example.com"
     assert Config.__dataclass_fields__["allow_plain_http"].default is False
 
 
