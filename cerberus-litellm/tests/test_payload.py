@@ -55,6 +55,12 @@ def test_non_finite_durations_are_none():
     assert payload.ttft_ms({"startTime": 0.0, "completionStartTime": float("nan")}) is None
 
 
+def test_oversized_int_timestamps_do_not_raise():
+    assert payload.duration_ms({"startTime": 10**400, "endTime": 1.0}) is None
+    assert payload.duration_ms({"startTime": 1.0, "endTime": 10**400}) is None
+    assert payload.ttft_ms({"startTime": 1.0, "completionStartTime": 10**400}) is None
+
+
 def test_ttft_only_when_completion_start_present():
     slo = dict(_slo("chat_stream_tools"))
     assert payload.ttft_ms(slo) is not None
@@ -87,6 +93,9 @@ def test_user_id_precedence():
 
 def test_session_id_prefers_payload_then_header():
     slo = dict(_slo("chat"))
+    slo["session_id"] = "from-payload"
+    assert payload.session_id(slo, "x-litellm-session-id") == "from-payload"  # beats header
+    slo["session_id"] = 42  # non-string payload value is ignored
     assert payload.session_id(slo, "x-litellm-session-id") == "spike-session-0001"
     slo["session_id"] = None
     assert payload.session_id(slo, "x-litellm-session-id") == "spike-session-0001"  # header

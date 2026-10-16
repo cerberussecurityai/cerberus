@@ -82,7 +82,10 @@ def _delta_ms(slo: Any, start_key: str, end_key: str) -> float | None:
         return None
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
         return None
-    delta = (float(end) - float(start)) * 1000.0
+    try:
+        delta = (float(end) - float(start)) * 1000.0
+    except (OverflowError, ValueError):  # ints too large for a float
+        return None
     # NaN/inf would serialise into the batch and get the whole batch rejected.
     return round(delta, 3) if math.isfinite(delta) else None
 
