@@ -8,6 +8,7 @@ Every accessor tolerates junk (missing keys, wrong types) and returns None
 instead of raising — a logging callback must never take the proxy down.
 """
 
+import math
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -81,7 +82,9 @@ def _delta_ms(slo: Any, start_key: str, end_key: str) -> float | None:
         return None
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
         return None
-    return round((float(end) - float(start)) * 1000.0, 3)
+    delta = (float(end) - float(start)) * 1000.0
+    # NaN/inf would serialise into the batch and get the whole batch rejected.
+    return round(delta, 3) if math.isfinite(delta) else None
 
 
 def duration_ms(slo: Any) -> float | None:

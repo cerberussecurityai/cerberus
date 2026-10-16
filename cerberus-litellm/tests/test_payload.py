@@ -48,6 +48,13 @@ def test_timestamps():
     assert payload.duration_ms({"startTime": "x"}) is None
 
 
+def test_non_finite_durations_are_none():
+    assert payload.duration_ms({"startTime": float("nan"), "endTime": 1.0}) is None
+    assert payload.duration_ms({"startTime": float("inf"), "endTime": 1.0}) is None
+    assert payload.duration_ms({"startTime": 0.0, "endTime": float("inf")}) is None
+    assert payload.ttft_ms({"startTime": 0.0, "completionStartTime": float("nan")}) is None
+
+
 def test_ttft_only_when_completion_start_present():
     slo = dict(_slo("chat_stream_tools"))
     assert payload.ttft_ms(slo) is not None
