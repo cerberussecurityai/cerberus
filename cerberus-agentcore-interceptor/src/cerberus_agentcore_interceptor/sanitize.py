@@ -41,6 +41,16 @@ ALWAYS_DROP: frozenset[str] = frozenset(
     | {name.lower() for name in SESSION_HEADERS}
 )
 
+# A body that echoes the request can carry its credential headers, in wire or
+# WSGI spelling. sanitize_dict matches a key's whole name, ignoring only case.
+ECHOED_HEADER_KEYS: tuple[str, ...] = tuple(
+    sorted(
+        set(SENSITIVE_HEADERS)
+        | {_from_wsgi(name) for name in SENSITIVE_HEADERS}
+        | {"x-amz-security-token"}
+    )
+)
+
 # VPC-endpoint and TLS-negotiation headers the gateway adds to every request.
 DROP_PREFIXES: tuple[str, ...] = ("x-amzn-vpce-", "x-amzn-tls-")
 
