@@ -12,7 +12,7 @@ from typing import Any
 
 from cerberus_core import normalize_ip
 
-from . import __version__
+from . import __version__, response_body
 from . import identity as identity_mod
 from .bounding import (
     DEFAULT_MAX_EVENT_BYTES,
@@ -25,11 +25,15 @@ from .bounding import (
     clip_text,
     fit,
     prune,
+    set_note,
+    size,
 )
 from .envelope import (
     BODY_EMPTY,
     BODY_NOT_OBJECT,
     MCP,
+    REQUEST,
+    RESPONSE,
     Envelope,
     GatewayContext,
     header,
@@ -50,6 +54,12 @@ MAX_USER_ID_CHARS = 255
 MAX_SESSION_ID_CHARS = 255
 MAX_USER_AGENT_CHARS = 1024
 
+RESPONSE_EVENT_SUFFIX = "#response"
+
+# The least room an mcp response event keeps for a response that does not fit
+# whole beside the request side. A cap under twice this splits evenly.
+RESPONSE_FLOOR_BYTES = 8192
+
 
 @dataclass(frozen=True)
 class MapperOptions:
@@ -64,6 +74,16 @@ class MapperOptions:
     version: str = __version__
 
 
+@dataclass(frozen=True)
+class _Caller:
+    """The request side of an event, its notes, and what prune() took out of its body."""
+
+    fields: dict[str, Any]
+    identity: dict[str, Any]
+    body: dict[str, Any]
+    pruned: dict[str, Any] | None
+
+
 def source_event(
     envelope: Envelope,
     context: GatewayContext,
@@ -72,39 +92,69 @@ def source_event(
     chain: dict[str, Any] | None = None,
     body_override: Any = ORIGINAL_BODY,
     deadline: float | None = None,
+    response_expected: bool = False,
 ) -> dict[str, Any] | None:
-    """Build the event for one interception. None when it could not be bounded.
+    """Build the event for one REQUEST interception. None when it could not be bounded.
 
     Raises CaptureDeadlineExceeded once time.monotonic() reaches deadline.
     """
+    caller = _caller(envelope, options, body_override, deadline)
+    event_id = clip_text(context.request_id, MAX_EVENT_ID_CHARS)
+    event = _event(event_id, envelope, context, options, timestamp, REQUEST, caller, chain)
+    event["custom_data"]["agentcore"]["response_expected"] = response_expected
+    return fit(event, options.max_event_bytes, deadline, caller.pruned)
+
+
+def response_event(
+    envelope: Envelope,
+    context: GatewayContext,
+    options: MapperOptions,
+    timestamp: datetime,
+    chain: dict[str, Any] | None = None,
+    deadline: float | None = None,
+) -> dict[str, Any] | None:
+    """Build the event for one RESPONSE interception. None when it could not be bounded.
+
+    An mcp response event also carries the request, which the shape still holds
+    at RESPONSE; an http one has none to carry. Raises CaptureDeadlineExceeded
+    once time.monotonic() reaches deadline.
+    """
+    if options.capture_bodies:
+        value, note = response_body.read(envelope, options.sensitive_keys, deadline)
+    else:
+        value, note = None, response_body.note(envelope, STATE_DISABLED)
+    caller = _caller(envelope, options, ORIGINAL_BODY, deadline) if envelope.kind == MCP else None
+    suffix = RESPONSE_EVENT_SUFFIX
+    event_id = clip_text(context.request_id, MAX_EVENT_ID_CHARS - len(suffix)) + suffix
+    # The request side is fitted beside the longest note the response can end with.
+    widest = note if value is None else {**note, "state": STATE_SHED, "reason": "size"}
+
+    def build() -> dict[str, Any]:
+        event = _event(event_id, envelope, context, options, timestamp, RESPONSE, caller, chain)
+        if envelope.status_code is not None:
+            event["status_code"] = envelope.status_code
+        set_note(event, "response", widest)
+        return event
+
+    cap = options.max_event_bytes
+    event = fit(build(), cap, deadline, None if caller is None else caller.pruned)
+    if event is None:
+        return None
+    floor = min(RESPONSE_FLOOR_BYTES, cap // 2)
+    if caller is not None and value is not None and cap - size(event) < floor:
+        if response_body.fits_whole(event, value, note, cap, deadline):
+            return event
+        event = fit(build(), cap - floor, deadline, caller.pruned) or event
+    return response_body.attach(event, value, note, cap, caller is not None, deadline)
+
+
+def _caller(
+    envelope: Envelope, options: MapperOptions, body_override: Any, deadline: float | None
+) -> _Caller:
     headers = envelope.headers
     who = identity_mod.resolve(options.identity_mode, headers, options.user_id_claim)
     body, body_note, pruned = _body(envelope, options, body_override, deadline)
-
-    event: dict[str, Any] = {
-        "event_id": clip_text(context.request_id, MAX_EVENT_ID_CHARS),
-        "timestamp": _timestamp(timestamp),
-        "method": envelope.method,
-        "endpoint": _endpoint(envelope.path),
-        "host": context.host,
-        "scheme": True,
-        # The source IP the gateway resolved. X-Forwarded-For is caller-controlled
-        # and never read.
-        "remote_addr": normalize_ip(context.source_ip) or "",
-        "custom_data": {
-            "integration": INTEGRATION,
-            "agentcore": {
-                "gateway_id": context.gateway_id,
-                "region": context.region,
-                "account_id": context.account_id,
-                "request_id": context.request_id,
-                "kind": envelope.kind,
-                "identity": who.detail,
-                "body": body_note,
-                "version": options.version,
-            },
-        },
-    }
+    fields: dict[str, Any] = {"method": envelope.method, "endpoint": _endpoint(envelope.path)}
     # Absent rather than empty, following the other integrations' wire shape.
     optional = {
         "headers": capture_headers(headers, options.capture_headers),
@@ -113,12 +163,46 @@ def source_event(
         "session_id": clip_text(session_id(headers), MAX_SESSION_ID_CHARS),
         "body": body,
     }
-    event.update({key: value for key, value in optional.items() if value})
+    fields.update({key: value for key, value in optional.items() if value})
+    return _Caller(fields, who.detail, body_note, pruned)
 
+
+def _event(
+    event_id: str,
+    envelope: Envelope,
+    context: GatewayContext,
+    options: MapperOptions,
+    timestamp: datetime,
+    phase: str,
+    caller: _Caller | None,
+    chain: dict[str, Any] | None,
+) -> dict[str, Any]:
+    agentcore: dict[str, Any] = {
+        "gateway_id": context.gateway_id,
+        "region": context.region,
+        "account_id": context.account_id,
+        "request_id": context.request_id,
+        "kind": envelope.kind,
+        "phase": phase,
+    }
+    event: dict[str, Any] = {
+        "event_id": event_id,
+        "timestamp": _timestamp(timestamp),
+        "host": context.host,
+        "scheme": True,
+        # The source IP the gateway resolved. X-Forwarded-For is caller-controlled
+        # and never read.
+        "remote_addr": normalize_ip(context.source_ip) or "",
+        "custom_data": {"integration": INTEGRATION, "agentcore": agentcore},
+    }
+    if caller is not None:
+        event.update(caller.fields)
+        agentcore["identity"] = caller.identity
+        agentcore["body"] = caller.body
+    agentcore["version"] = options.version
     if chain is not None:
-        event["custom_data"]["agentcore"]["chain"] = chain
-
-    return fit(event, options.max_event_bytes, deadline, pruned)
+        agentcore["chain"] = chain
+    return event
 
 
 def _body(

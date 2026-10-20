@@ -1,0 +1,50 @@
+{
+  "custom_data": {
+    "agentcore": {
+      "account_id": "123456789012",
+      "gateway_id": "example-gateway-abcdefghij",
+      "kind": "http",
+      "phase": "response",
+      "region": "us-west-2",
+      "request_id": "request-id-15",
+      "response": {
+        "content_type": "application/json",
+        "state": "captured"
+      },
+      "version": "0.2.0"
+    },
+    "integration": "agentcore-gateway"
+  },
+  "event_id": "request-id-15#response",
+  "host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+  "remote_addr": "192.0.2.10",
+  "response_body": {
+    "body": "{\"canary\": \"CERBCANARY-passthrough-9d77811411\", \"hello\": \"pt\"}",
+    "body_len": 62,
+    "headers": {
+      "accept": "*/*",
+      "accept-encoding": "gzip, deflate",
+      "authorization": "[REDACTED]",
+      "content-length": "62",
+      "content-type": "application/json",
+      "host": "example-echo-abcdefghij.execute-api.us-west-2.amazonaws.com",
+      "user-agent": "python-requests/2.34.2",
+      "x-amz-content-sha256": "84469d64326235beb4c81ec50e7b61b782bf664d3db5cb786bdfd778bff9b2a0",
+      "x-amz-date": "20260920T062429Z",
+      "x-amz-security-token": "[REDACTED]",
+      "x-amz-source-account": "123456789012",
+      "x-amz-source-arn": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+      "x-amzn-trace-id": "Self=1-6aaf7c1d-0b6b799d748d115843b85057;Root=1-6aaf7c1d-4b11a9c94436d2e7147705de",
+      "x-forwarded-for": "192.0.2.10, 198.51.100.7",
+      "x-forwarded-port": "443",
+      "x-forwarded-proto": "https"
+    },
+    "method": "POST",
+    "origin": "http_echo",
+    "path": "/echo",
+    "query": ""
+  },
+  "scheme": true,
+  "status_code": 200,
+  "timestamp": "2026-09-20T06:24:30.123456+00:00"
+}

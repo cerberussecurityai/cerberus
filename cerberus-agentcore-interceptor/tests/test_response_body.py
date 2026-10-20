@@ -5,11 +5,14 @@ from time import monotonic
 
 import pytest
 from cerberus_core import SENSITIVE_HEADERS
-from helpers import load_case
+from helpers import TIMESTAMP, LambdaContext, load_case, options
 
-from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, response_body
+from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, bounding, response_body
 from cerberus_agentcore_interceptor import envelope as envelope_mod
+from cerberus_agentcore_interceptor.mapper import RESPONSE_FLOOR_BYTES, response_event
 from cerberus_agentcore_interceptor.sanitize import ECHOED_HEADER_KEYS
+
+MAX = bounding.DEFAULT_MAX_EVENT_BYTES
 
 
 def http_input(body, content_type="application/json"):
@@ -33,6 +36,24 @@ def mcp_input(body):
 
 def read(given, keys=()):
     return response_body.read(envelope_mod.parse(given), keys)
+
+
+def event_for(given, case_name="mcp-tools-call-lambda-response", **overrides):
+    case = load_case(case_name)
+    return response_event(
+        envelope_mod.parse(given),
+        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
+        options(case, **overrides),
+        TIMESTAMP,
+    )
+
+
+def note(event):
+    return event["custom_data"]["agentcore"]["response"]
+
+
+def chunk(i):
+    return {"i": i, "echo": {"canary": "c-" + "x" * 40, "stream": True}}
 
 
 def tool_result(*texts, **result):
@@ -154,6 +175,16 @@ def test_mcp_bodies(body, expected):
     want_value, want_note = expected
     assert value == want_value
     assert given == {"state": "omitted" if want_value is None else "captured", **want_note}
+
+
+def test_an_mcp_response_without_a_body_is_absent():
+    given = mcp_input(None)
+    del given["mcp"]["gatewayResponse"]["body"]
+    event = event_for(given)
+    assert "response_body" not in event
+    assert note(event) == {"state": "omitted", "reason": "absent"}
+    assert event["status_code"] == 200
+    assert event["body"]["method"] == "tools/call"
 
 
 def test_sse_frames_are_key_sanitized_and_framing_is_kept():
@@ -285,6 +316,283 @@ def test_non_finite_numbers_become_strings():
 
     value, _ = read(mcp_input(tool_result('{"n": 1e999}')))
     assert value["result"]["content"][0]["text"] == '{"n":"Infinity"}'
+
+
+def test_response_events_serialize_as_strict_json():
+    body = {"jsonrpc": "2.0", "id": 1, "result": {"n": float("inf"), "text": "a\x00b\ud800c"}}
+    event = event_for(mcp_input(body))
+    strict = json.dumps(event, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    result = json.loads(strict)["response_body"]["result"]
+    assert result == {"n": "Infinity", "text": "a\ufffdb\ufffdc"}
+
+
+def test_http_response_events_serialize_as_strict_json():
+    context = load_case("inference-chat-response")["client_context"]
+    context["REQUEST_ID"] = "r\x00\ud800"
+    event = response_event(
+        envelope_mod.parse(http_input(b"{}")),
+        envelope_mod.gateway_context(LambdaContext(context)),
+        options({}),
+        TIMESTAMP,
+    )
+    strict = json.loads(json.dumps(event, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    assert strict["event_id"] == "r\ufffd\ufffd#response"
+    assert strict["custom_data"]["agentcore"]["request_id"] == "r\ufffd\ufffd"
+
+
+def test_a_small_response_is_attached_whole():
+    event = event_for(mcp_input({"jsonrpc": "2.0", "id": 1, "result": {"isError": False}}))
+    assert note(event) == {"state": "captured"}
+    assert event["response_body"]["result"] == {"isError": False}
+
+
+def test_an_mcp_listing_is_reduced_to_what_names_each_item():
+    tools = [
+        {
+            "name": f"t___tool{index}",
+            "title": f"Tool {index}",
+            "description": "d" * 2000,
+            "inputSchema": {"type": "object", "properties": {"x": {"type": "string"}}},
+        }
+        for index in range(100)
+    ]
+    body = {"jsonrpc": "2.0", "id": 1, "result": {"tools": tools, "nextCursor": "page-2"}}
+    event = event_for(mcp_input(body))
+
+    assert note(event) == {"state": "reduced"}
+    result = event["response_body"]["result"]
+    assert [tool["name"] for tool in result["tools"]] == [tool["name"] for tool in tools]
+    assert all(set(tool) == {"name", "title", "description"} for tool in result["tools"])
+    assert {len(tool["description"]) for tool in result["tools"]} == {256}
+    assert result["nextCursor"] == "page-2"
+    assert bounding.size(event) <= MAX
+
+
+@pytest.mark.parametrize(
+    ("key", "item", "kept"),
+    [
+        ("prompts", {"name": "p", "title": "P", "arguments": [{"name": "a"}]}, ("name", "title")),
+        (
+            "resources",
+            {"uri": "file:///r", "name": "r", "mimeType": "text/plain", "size": 10},
+            ("uri", "name", "mimeType"),
+        ),
+        (
+            "resourceTemplates",
+            {"uriTemplate": "file:///{id}", "name": "r", "mimeType": "text/plain", "icons": []},
+            ("uriTemplate", "name", "mimeType"),
+        ),
+    ],
+)
+def test_each_mcp_listing_keeps_what_names_its_items(key, item, kept):
+    items = [{**item, "description": "d" * 2000} for _ in range(100)]
+    event = event_for(mcp_input({"jsonrpc": "2.0", "id": 1, "result": {key: items}}))
+
+    assert note(event) == {"state": "reduced"}
+    expected = {**{name: item[name] for name in kept}, "description": "d" * 256}
+    assert event["response_body"]["result"][key] == [expected] * 100
+
+
+def test_a_json_rpc_batch_is_reduced_message_by_message():
+    batch = [
+        tool_result("x" * 40000),
+        {"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "m" * 40000}},
+    ]
+    event = event_for(mcp_input(batch))
+    assert note(event) == {"state": "reduced"}
+    assert event["response_body"] == [
+        {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "x" * 4096}]}},
+        {"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "m" * 4096}},
+    ]
+
+
+def test_an_mcp_error_is_reduced_to_its_code_and_message():
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32602, "message": "m" * 70000, "data": {"trace": "t" * 70000}},
+    }
+    event = event_for(mcp_input(body))
+    assert note(event) == {"state": "reduced"}
+    assert event["response_body"] == {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32602, "message": "m" * 4096},
+    }
+
+
+def test_an_mcp_tool_result_keeps_its_flag_and_content_types():
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "isError": True,
+            "content": [
+                {"type": "text", "text": "x" * 70000},
+                {"type": "image", "data": "i" * 70000},
+            ],
+            "structuredContent": {"rows": ["r" * 100] * 500},
+        },
+    }
+    event = event_for(mcp_input(body))
+    assert note(event) == {"state": "reduced"}
+    assert event["response_body"]["result"] == {
+        "isError": True,
+        "content": [{"type": "text", "text": "x" * 4096}, {"type": "image"}],
+    }
+
+
+def test_an_mcp_response_reduction_cannot_fit_is_truncated():
+    event = event_for(mcp_input(tool_result(*["y" * 64] * 5000)))
+    assert note(event) == {"state": "truncated"}
+    assert event["response_body"]["head"].startswith('{"jsonrpc":"2.0","id":1,"result"')
+    assert event["response_body"]["tail"].endswith('"}]}}')
+    assert bounding.size(event) <= MAX
+
+
+def test_a_large_json_body_is_truncated_to_a_head_and_a_tail():
+    rows = [{"id": index, "item": "widget", "token": "t"} for index in range(5000)]
+    event = event_for(http_input(json.dumps({"rows": rows}).encode()), "inference-chat-response")
+
+    marker = event["response_body"]
+    text = json.dumps(
+        {"rows": [{**row, "token": "[REDACTED]"} for row in rows]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert note(event) == {"state": "truncated", "content_type": "application/json"}
+    assert marker["body_truncated"] is True
+    assert text.startswith(marker["head"])
+    assert text.endswith(marker["tail"])
+    assert marker["body_bytes_total"] == len(text.encode("utf-8"))
+    assert marker["body_bytes_dropped"] == len(text) - len(marker["head"]) - len(marker["tail"])
+    assert 1.4 < len(marker["head"]) / len(marker["tail"]) < 1.6
+    assert MAX - 64 < bounding.size(event) <= MAX
+
+
+def test_truncation_measures_escaped_text_and_counts_utf8_bytes():
+    text = "é🙂" * 40000
+    event = event_for(
+        http_input(json.dumps({"t": text}, ensure_ascii=False).encode()), "inference-chat-response"
+    )
+
+    marker = event["response_body"]
+    whole = json.dumps({"t": text}, ensure_ascii=False, separators=(",", ":"))
+    assert note(event)["state"] == "truncated"
+    assert marker["body_bytes_total"] == len(whole.encode("utf-8"))
+    kept = len(marker["head"].encode("utf-8")) + len(marker["tail"].encode("utf-8"))
+    assert marker["body_bytes_dropped"] == marker["body_bytes_total"] - kept
+    assert whole.endswith(marker["tail"])
+    assert bounding.size(event) <= MAX
+
+
+def test_an_event_stream_is_truncated_never_reduced():
+    stream = "".join(f"data: {json.dumps(chunk(index))}\n\n" for index in range(2000))
+    event = event_for(http_input(stream.encode(), "text/event-stream"), "inference-chat-response")
+    marker = event["response_body"]
+    assert note(event)["state"] == "truncated"
+    assert marker["head"].startswith('data: {"i":0,')
+    assert marker["tail"].endswith('"stream":true}}\n\n')
+    assert bounding.size(event) <= MAX
+
+
+@pytest.mark.parametrize("body", [b'{"a": "' + b"z" * 2000 + b'"}', gzip.compress(b"{}")])
+def test_a_response_with_no_room_is_shed(body):
+    event = event_for(http_input(body), "inference-chat-response", max_event_bytes=560)
+    assert "response_body" not in event
+    assert note(event) == {"state": "shed", "reason": "size", "content_type": "application/json"}
+    assert event["status_code"] == 200
+    assert bounding.size(event) <= 560
+
+
+@pytest.mark.parametrize("cap", [1024, 2048, 4096, 8192, 16384, MAX])
+@pytest.mark.parametrize("kind", ["mcp", "json", "sse"])
+def test_every_response_event_fits_the_cap(cap, kind):
+    if kind == "mcp":
+        given = mcp_input(tool_result("é" * 90000))
+    elif kind == "json":
+        given = http_input(json.dumps({"rows": [chunk(index) for index in range(3000)]}).encode())
+    else:
+        stream = "".join(f"data: {json.dumps(chunk(index))}\n\n" for index in range(3000))
+        given = http_input(stream.encode(), "text/event-stream")
+    event = event_for(given, max_event_bytes=cap)
+    assert event is not None
+    assert bounding.size(event) <= cap
+
+
+def large_request_input(response, arguments=None):
+    given = mcp_input(response)
+    request = given["mcp"]["gatewayRequest"]
+    if arguments is None:
+        arguments = {f"blob{index}": "a" * 7000 for index in range(7)}
+    request["body"]["params"]["arguments"] = arguments
+    given["mcp"]["rawGatewayRequest"] = {"body": json.dumps(request["body"])}
+    return given
+
+
+def test_a_large_request_leaves_the_response_its_floor():
+    response = tool_result("r" * 20000)
+    event = event_for(large_request_input(response))
+
+    agentcore = event["custom_data"]["agentcore"]
+    assert agentcore["body"]["state"] == "reduced"
+    assert agentcore["response"] == {"state": "captured"}
+    assert event["response_body"] == response
+    assert bounding.size(event) <= MAX
+
+
+def test_the_request_side_keeps_its_room_when_the_response_is_omitted():
+    event = event_for(large_request_input(None))
+    assert event["custom_data"]["agentcore"]["body"] == {"state": "captured"}
+    assert note(event)["reason"] == "absent"
+
+
+def test_the_response_room_is_at_least_the_floor_after_a_refit():
+    event = event_for(large_request_input(tool_result("r" * 90000)))
+    del event["response_body"]
+    assert MAX - bounding.size(event) >= RESPONSE_FLOOR_BYTES
+
+
+def test_a_response_that_fits_beside_a_large_request_leaves_it_whole():
+    response = tool_result("ok")
+    event = event_for(large_request_input(response))
+
+    agentcore = event["custom_data"]["agentcore"]
+    assert agentcore["body"] == {"state": "captured"}
+    assert agentcore["response"] == {"state": "captured"}
+    assert event["response_body"] == response
+    del event["response_body"]
+    assert MAX - bounding.size(event) < RESPONSE_FLOOR_BYTES
+
+
+def test_a_cap_under_twice_the_floor_splits_it_evenly():
+    cap = 12288
+    given = large_request_input(tool_result("r" * 20000), {"a": "a" * 6000})
+    event = event_for(given, max_event_bytes=cap)
+    del event["response_body"]
+    assert cap - RESPONSE_FLOOR_BYTES < bounding.size(event) <= cap // 2
+
+
+@pytest.mark.parametrize("length", range(0, 200, 3))
+def test_an_mcp_event_at_the_smallest_cap_survives_its_response(length):
+    given = mcp_input(tool_result("r" * 5000))
+    given["mcp"]["gatewayRequest"]["body"]["params"]["arguments"] = {"a": "x" * length}
+    event = event_for(given, max_event_bytes=1024)
+    assert event is not None
+    assert bounding.size(event) <= 1024
+
+
+def test_capture_bodies_off_sends_status_and_notes_only():
+    event = event_for(mcp_input({"jsonrpc": "2.0", "id": 1, "result": {}}), capture_bodies=False)
+    assert "response_body" not in event
+    assert "body" not in event
+    assert note(event) == {"state": "disabled"}
+    assert event["custom_data"]["agentcore"]["body"] == {"state": "disabled"}
+    assert event["status_code"] == 200
+
+    event = event_for(http_input(b"{}"), "inference-chat-response", capture_bodies=False)
+    assert note(event) == {"state": "disabled", "content_type": "application/json"}
+    assert event["status_code"] == 200
 
 
 def test_a_passed_deadline_stops_the_response_ladder():
