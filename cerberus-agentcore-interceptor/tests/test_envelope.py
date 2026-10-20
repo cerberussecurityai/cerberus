@@ -129,9 +129,41 @@ def test_mcp_body_falls_back_to_the_raw_body():
     assert body["method"] == "ping"
 
 
-def test_response_phase_has_no_request_body():
-    parsed = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
+def test_mcp_request_body_is_read_at_both_phases():
+    request = env.parse(load_case("mcp-tools-call-lambda")["input"])
+    response = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
+    assert env.request_body(response) == env.request_body(request)
+    assert env.request_body(response)[0]["method"] == "tools/call"
+
+
+def test_http_response_phase_has_no_request_body():
+    parsed = env.parse(load_case("inference-chat-sigv4-response")["input"])
     assert env.request_body(parsed) == (None, env.BODY_EMPTY)
+    assert env.request_body_size(parsed) is None
+
+
+def test_response_accessors():
+    mcp = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
+    assert mcp.status_code == 200
+    assert mcp.response_body["result"]["isError"] is False
+    assert mcp.content_type == ""
+
+    http = env.parse(load_case("inference-chat-response")["input"])
+    assert http.status_code == 200
+    assert isinstance(http.response_body, str)
+    assert http.content_type == "application/json"
+
+
+def test_status_code_is_an_int_or_none():
+    def status(value):
+        return env.parse(
+            {"interceptorInputVersion": "1.0", "http": {"gatewayResponse": {"statusCode": value}}}
+        ).status_code
+
+    assert status(502) == 502
+    for value in (None, "200", 200.0, True):
+        assert status(value) is None
+    assert env.parse(load_case("inference-chat")["input"]).status_code is None
 
 
 def test_request_body_size_comes_from_the_text_as_sent():
@@ -143,7 +175,7 @@ def test_request_body_size_comes_from_the_text_as_sent():
     assert len(sent) <= env.request_body_size(http) <= len(sent) + 2
 
     response = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
-    assert env.request_body_size(response) is None
+    assert env.request_body_size(response) == len(response.raw_body)
 
 
 def test_a_body_nested_past_the_parser_is_not_json():
