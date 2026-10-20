@@ -1,0 +1,24 @@
+{
+  "name": "runtime-sse-response",
+  "options": {
+    "identity_mode": "sigv4"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-13",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "http": {
+      "gatewayRequest": null,
+      "gatewayResponse": {
+        "statusCode": 200,
+        "headers": null,
+        "body": "ZGF0YTogeyJpIjogMCwgImVjaG8iOiB7ImNhbmFyeSI6ICJDRVJCQ0FOQVJZLXJ1bnRpbWVzc2UtNWEwNDk2MzA1MyIsICJzdHJlYW0iOiB0cnVlfX0KCmRhdGE6IHsiaSI6IDEsICJlY2hvIjogeyJjYW5hcnkiOiAiQ0VSQkNBTkFSWS1ydW50aW1lc3NlLTVhMDQ5NjMwNTMiLCAic3RyZWFtIjogdHJ1ZX19CgpkYXRhOiB7ImkiOiAyLCAiZWNobyI6IHsiY2FuYXJ5IjogIkNFUkJDQU5BUlktcnVudGltZXNzZS01YTA0OTYzMDUzIiwgInN0cmVhbSI6IHRydWV9fQoKZGF0YTogeyJpIjogMywgImVjaG8iOiB7ImNhbmFyeSI6ICJDRVJCQ0FOQVJZLXJ1bnRpbWVzc2UtNWEwNDk2MzA1MyIsICJzdHJlYW0iOiB0cnVlfX0KCmRhdGE6IHsiaSI6IDQsICJlY2hvIjogeyJjYW5hcnkiOiAiQ0VSQkNBTkFSWS1ydW50aW1lc3NlLTVhMDQ5NjMwNTMiLCAic3RyZWFtIjogdHJ1ZX19CgpkYXRhOiB7ImkiOiA1LCAiZWNobyI6IHsiY2FuYXJ5IjogIkNFUkJDQU5BUlktcnVudGltZXNzZS01YTA0OTYzMDUzIiwgInN0cmVhbSI6IHRydWV9fQoKZGF0YTogeyJpIjogNiwgImVjaG8iOiB7ImNhbmFyeSI6ICJDRVJCQ0FOQVJZLXJ1bnRpbWVzc2UtNWEwNDk2MzA1MyIsICJzdHJlYW0iOiB0cnVlfX0KCmRhdGE6IHsiaSI6IDcsICJlY2hvIjogeyJjYW5hcnkiOiAiQ0VSQkNBTkFSWS1ydW50aW1lc3NlLTVhMDQ5NjMwNTMiLCAic3RyZWFtIjogdHJ1ZX19CgpkYXRhOiB7ImkiOiA4LCAiZWNobyI6IHsiY2FuYXJ5IjogIkNFUkJDQU5BUlktcnVudGltZXNzZS01YTA0OTYzMDUzIiwgInN0cmVhbSI6IHRydWV9fQoKZGF0YTogeyJpIjogOSwgImVjaG8iOiB7ImNhbmFyeSI6ICJDRVJCQ0FOQVJZLXJ1bnRpbWVzc2UtNWEwNDk2MzA1MyIsICJzdHJlYW0iOiB0cnVlfX0KCmRhdGE6IHsiaSI6IDEwLCAiZWNobyI6IHsiY2FuYXJ5IjogIkNFUkJDQU5BUlktcnVudGltZXNzZS01YTA0OTYzMDUzIiwgInN0cmVhbSI6IHRydWV9fQoKZGF0YTogeyJpIjogMTEsICJlY2hvIjogeyJjYW5hcnkiOiAiQ0VSQkNBTkFSWS1ydW50aW1lc3NlLTVhMDQ5NjMwNTMiLCAic3RyZWFtIjogdHJ1ZX19Cgo=",
+        "contentType": "text/event-stream"
+      }
+    }
+  }
+}

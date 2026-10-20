@@ -1,0 +1,24 @@
+{
+  "name": "passthrough-echo-response",
+  "options": {
+    "identity_mode": "sigv4"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-15",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "http": {
+      "gatewayRequest": null,
+      "gatewayResponse": {
+        "statusCode": 200,
+        "headers": null,
+        "body": "eyJvcmlnaW4iOiAiaHR0cF9lY2hvIiwgInBhdGgiOiAiL2VjaG8iLCAibWV0aG9kIjogIlBPU1QiLCAicXVlcnkiOiAiIiwgImhlYWRlcnMiOiB7ImFjY2VwdCI6ICIqLyoiLCAiYWNjZXB0LWVuY29kaW5nIjogImd6aXAsIGRlZmxhdGUiLCAiYXV0aG9yaXphdGlvbiI6ICJBV1M0LUhNQUMtU0hBMjU2IENyZWRlbnRpYWw9RVhBTVBMRS8yMDI2MDkyMC91cy13ZXN0LTIvZXhlY3V0ZS1hcGkvYXdzNF9yZXF1ZXN0LCBTaWduZWRIZWFkZXJzPWFjY2VwdDthY2NlcHQtZW5jb2Rpbmc7Y29udGVudC1sZW5ndGg7Y29udGVudC10eXBlO2hvc3Q7eC1hbXotY29udGVudC1zaGEyNTY7eC1hbXotZGF0ZTt4LWFtei1zZWN1cml0eS10b2tlbjt4LWFtei1zb3VyY2UtYWNjb3VudDt4LWFtei1zb3VyY2UtYXJuLCBTaWduYXR1cmU9UkVNT1ZFRCIsICJjb250ZW50LWxlbmd0aCI6ICI2MiIsICJjb250ZW50LXR5cGUiOiAiYXBwbGljYXRpb24vanNvbiIsICJob3N0IjogImV4YW1wbGUtZWNoby1hYmNkZWZnaGlqLmV4ZWN1dGUtYXBpLnVzLXdlc3QtMi5hbWF6b25hd3MuY29tIiwgInVzZXItYWdlbnQiOiAicHl0aG9uLXJlcXVlc3RzLzIuMzQuMiIsICJ4LWFtei1jb250ZW50LXNoYTI1NiI6ICI4NDQ2OWQ2NDMyNjIzNWJlYjRjODFlYzUwZTdiNjFiNzgyYmY2NjRkM2RiNWNiNzg2YmRmZDc3OGJmZjliMmEwIiwgIngtYW16LWRhdGUiOiAiMjAyNjA5MjBUMDYyNDI5WiIsICJ4LWFtei1zZWN1cml0eS10b2tlbiI6ICJSRU1PVkVEIiwgIngtYW16LXNvdXJjZS1hY2NvdW50IjogIjEyMzQ1Njc4OTAxMiIsICJ4LWFtei1zb3VyY2UtYXJuIjogImFybjphd3M6YmVkcm9jay1hZ2VudGNvcmU6dXMtd2VzdC0yOjEyMzQ1Njc4OTAxMjpnYXRld2F5L2V4YW1wbGUtZ2F0ZXdheS1hYmNkZWZnaGlqIiwgIngtYW16bi10cmFjZS1pZCI6ICJTZWxmPTEtNmFhZjdjMWQtMGI2Yjc5OWQ3NDhkMTE1ODQzYjg1MDU3O1Jvb3Q9MS02YWFmN2MxZC00YjExYTljOTQ0MzZkMmU3MTQ3NzA1ZGUiLCAieC1mb3J3YXJkZWQtZm9yIjogIjE5Mi4wLjIuMTAsIDE5OC41MS4xMDAuNyIsICJ4LWZvcndhcmRlZC1wb3J0IjogIjQ0MyIsICJ4LWZvcndhcmRlZC1wcm90byI6ICJodHRwcyJ9LCAiYm9keSI6ICJ7XCJjYW5hcnlcIjogXCJDRVJCQ0FOQVJZLXBhc3N0aHJvdWdoLTlkNzc4MTE0MTFcIiwgXCJoZWxsb1wiOiBcInB0XCJ9IiwgImJvZHlfbGVuIjogNjJ9",
+        "contentType": "application/json"
+      }
+    }
+  }
+}

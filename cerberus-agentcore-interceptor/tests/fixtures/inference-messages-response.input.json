@@ -1,0 +1,24 @@
+{
+  "name": "inference-messages-response",
+  "options": {
+    "identity_mode": "jwt"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-09",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "http": {
+      "gatewayRequest": null,
+      "gatewayResponse": {
+        "statusCode": 200,
+        "headers": null,
+        "body": "eyJtb2RlbCI6ImNsYXVkZS1oYWlrdS00LTUtMjAyNTEwMDEiLCJpZCI6Im1zZ19iZHJrX2V4YW1wbGUiLCJ0eXBlIjoibWVzc2FnZSIsInJvbGUiOiJhc3Npc3RhbnQiLCJjb250ZW50IjpbeyJ0eXBlIjoidGV4dCIsInRleHQiOiJPSyJ9XSwic3RvcF9yZWFzb24iOiJlbmRfdHVybiIsInN0b3Bfc2VxdWVuY2UiOm51bGwsInN0b3BfZGV0YWlscyI6bnVsbCwidXNhZ2UiOnsiaW5wdXRfdG9rZW5zIjoyOSwiY2FjaGVfY3JlYXRpb25faW5wdXRfdG9rZW5zIjowLCJjYWNoZV9yZWFkX2lucHV0X3Rva2VucyI6MCwiY2FjaGVfY3JlYXRpb24iOnsiZXBoZW1lcmFsXzVtX2lucHV0X3Rva2VucyI6MCwiZXBoZW1lcmFsXzFoX2lucHV0X3Rva2VucyI6MH0sIm91dHB1dF90b2tlbnMiOjQsInNlcnZpY2VfdGllciI6InN0YW5kYXJkIn19",
+        "contentType": "application/json"
+      }
+    }
+  }
+}
