@@ -29,12 +29,12 @@ def test_phase_is_read_from_the_response_value_not_the_key():
     assert request.shape["gatewayResponse"] is None
     assert request.phase == env.REQUEST
 
-    response = env.parse(load_case("mcp-tools-call-response-phase")["input"])
+    response = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
     assert response.phase == env.RESPONSE
 
 
 def test_http_response_phase_has_no_request():
-    parsed = env.parse(load_case("inference-chat-response-phase")["input"])
+    parsed = env.parse(load_case("inference-chat-sigv4-response")["input"])
     assert parsed.phase == env.RESPONSE
     assert parsed.request is None
     assert parsed.headers == {}
@@ -130,7 +130,7 @@ def test_mcp_body_falls_back_to_the_raw_body():
 
 
 def test_response_phase_has_no_request_body():
-    parsed = env.parse(load_case("mcp-tools-call-response-phase")["input"])
+    parsed = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
     assert env.request_body(parsed) == (None, env.BODY_EMPTY)
 
 
@@ -142,7 +142,7 @@ def test_request_body_size_comes_from_the_text_as_sent():
     sent = base64.b64decode(http.request["body"])
     assert len(sent) <= env.request_body_size(http) <= len(sent) + 2
 
-    response = env.parse(load_case("mcp-tools-call-response-phase")["input"])
+    response = env.parse(load_case("mcp-tools-call-lambda-response")["input"])
     assert env.request_body_size(response) is None
 
 

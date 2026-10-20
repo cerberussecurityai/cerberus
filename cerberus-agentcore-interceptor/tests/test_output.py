@@ -44,7 +44,7 @@ def test_http_passes_through_empty():
 
 
 def test_http_response_phase_passes_through_empty():
-    assert out("inference-chat-response-phase") == {
+    assert out("inference-chat-sigv4-response") == {
         "interceptorOutputVersion": OUTPUT_VERSION,
         "http": {},
     }
@@ -60,8 +60,8 @@ def test_mcp_echoes_the_request_body():
 
 
 def test_mcp_echoes_the_response_body_at_response_phase():
-    response = load_case("mcp-tools-call-response-phase")["input"]["mcp"]["gatewayResponse"]
-    assert out("mcp-tools-call-response-phase") == {
+    response = load_case("mcp-tools-call-lambda-response")["input"]["mcp"]["gatewayResponse"]
+    assert out("mcp-tools-call-lambda-response") == {
         "interceptorOutputVersion": OUTPUT_VERSION,
         "mcp": {
             "transformedGatewayResponse": {

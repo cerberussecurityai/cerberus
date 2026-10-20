@@ -135,8 +135,8 @@ def test_an_echoed_lone_surrogate_survives_the_runtime_encode(sink):
 
 
 def test_response_phase_captures_nothing_and_echoes_the_response(sink, counted):
-    response = load_case("mcp-tools-call-response-phase")["input"]["mcp"]["gatewayResponse"]
-    result = invoke("mcp-tools-call-response-phase")
+    response = load_case("mcp-tools-call-lambda-response")["input"]["mcp"]["gatewayResponse"]
+    result = invoke("mcp-tools-call-lambda-response")
 
     assert result["mcp"]["transformedGatewayResponse"] == {
         "body": response["body"],
