@@ -349,6 +349,17 @@ def test_a_lone_surrogate_is_forwarded_escaped():
     assert json.loads(fake.calls[0]["Payload"]) == event
 
 
+def test_an_infinity_is_forwarded_as_a_string():
+    chain, fake = client(mcp_output({}), pass_headers=True)
+    event = event_with_arguments({"big": float("inf"), "message": "Party \ud83c"})
+    assert not chain.invoke(event, context(), parsed()).failed
+
+    payload = fake.calls[0]["Payload"]
+    assert b"Infinity" in payload and b"Party \\ud83c" in payload
+    forwarded = json.loads(payload, parse_constant=lambda token: pytest.fail(token))
+    assert forwarded["mcp"]["gatewayRequest"]["body"]["params"]["arguments"]["big"] == "Infinity"
+
+
 @pytest.mark.parametrize("name", ["mcp-tools-call-lambda", "inference-chat"])
 def test_without_pass_headers_the_chained_function_gets_no_headers(name):
     chain, fake = client(mcp_output({}))
@@ -535,6 +546,11 @@ def test_the_chained_output_is_returned_unchanged(chained):
     answer = mcp_output({"jsonrpc": "2.0", "method": "tools/call", "id": 99})
     chained(answer)
     assert invoke() == answer
+
+
+def test_an_infinity_in_the_chained_answer_is_returned_as_a_string(chained):
+    chained(raw=json.dumps(mcp_output({"id": 1, "n": float("inf")})).encode())
+    assert invoke()["mcp"]["transformedGatewayRequest"]["body"] == {"id": 1, "n": "Infinity"}
 
 
 def test_the_transformed_body_is_what_gets_captured(chained):

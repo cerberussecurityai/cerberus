@@ -18,7 +18,7 @@ from time import monotonic
 from typing import Any
 
 from .envelope import Envelope
-from .output import encodable, is_valid_output
+from .output import encodable, finite, is_valid_output
 
 logger = logging.getLogger(__name__)
 
@@ -213,10 +213,19 @@ def _payload(response: dict[str, Any]) -> Any:
 def _serialized(event: Any) -> bytes:
     """event as compact UTF-8 JSON, about the size of the invoke the gateway made."""
     try:
-        return json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return _json(event, ensure_ascii=False)
     except UnicodeEncodeError:
         # A lone surrogate has no UTF-8 form; escaped, it arrives as it reached us.
-        return json.dumps(event, separators=(",", ":")).encode("utf-8")
+        return _json(event, ensure_ascii=True)
+
+
+def _json(event: Any, ensure_ascii: bool) -> bytes:
+    try:
+        text = json.dumps(event, ensure_ascii=ensure_ascii, separators=(",", ":"), allow_nan=False)
+    except ValueError:
+        # A bare Infinity is not JSON, and the chained function may parse strictly.
+        text = json.dumps(finite(event), ensure_ascii=ensure_ascii, separators=(",", ":"))
+    return text.encode("utf-8")
 
 
 def _without_headers(value: Any, levels: int = 3) -> Any:
