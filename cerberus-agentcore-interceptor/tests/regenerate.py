@@ -18,7 +18,7 @@ def main() -> None:
     for name in case_names():
         parsed = env.parse(load_case(name)["input"])
         golden = FIXTURES / f"{name}.event.json"
-        if parsed.phase != env.REQUEST or not parsed.supported_version:
+        if not parsed.supported_version:
             golden.unlink(missing_ok=True)
             continue
         golden.write_text(json.dumps(map_case(name), indent=2, sort_keys=True) + "\n")
