@@ -225,9 +225,10 @@ def _sse_event(
         payload = "\n".join(_sse_payload(lines[index][0]) for index in data)
         joined = _sse_json(payload, keys, deadline)
         if joined is not None:
-            first, rest = data[0], set(data[1:])
+            # The last data line's ending is the one that closes the event.
+            last, rest = data[-1], set(data[:-1])
             return [
-                f"data: {joined}{ending}" if index == first else line + ending
+                f"data: {joined}{ending}" if index == last else line + ending
                 for index, (line, ending) in enumerate(lines)
                 if index not in rest
             ]

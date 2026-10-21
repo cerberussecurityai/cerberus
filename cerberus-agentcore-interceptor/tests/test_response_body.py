@@ -215,6 +215,17 @@ def test_an_sse_event_split_over_data_lines_is_sanitized_whole():
     )
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ('data: {"a":\rdata: 1}\n\ndata: {"ok":2}\n\n', 'data: {"a":1}\n\ndata: {"ok":2}\n\n'),
+        ("data: {\n: c\rdata: }\n\n", ": c\rdata: {}\n\n"),
+    ],
+)
+def test_a_joined_event_keeps_its_blank_line_when_line_endings_are_mixed(text, expected):
+    assert response_body.sanitize_sse(text, ()) == expected
+
+
 def test_data_lines_that_are_not_json_together_are_sanitized_one_by_one():
     text = 'data: {"token":"t"}\ndata: {"n":1}\n\n'
     assert response_body.sanitize_sse(text, ()) == 'data: {"token":"[REDACTED]"}\ndata: {"n":1}\n\n'
