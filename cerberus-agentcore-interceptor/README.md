@@ -94,17 +94,20 @@ and the caller gets a JSON-RPC parse error. `{"http": {}}` is a true
 pass-through. This package's golden fixtures pin the echo form for exactly that
 reason.
 
-The echo changes one thing: an unpaired UTF-16 surrogate, which the Lambda
-runtime cannot encode, comes back as U+FFFD.
+The echo changes two things. An unpaired UTF-16 surrogate, which the Lambda
+runtime cannot encode, comes back as U+FFFD. A number outside the double range,
+such as `1e999`, comes back as the string `"Infinity"` or `"-Infinity"`, which
+is what the gateway hands the target when no interceptor is attached.
 
 ## Chaining
 
 A gateway has one REQUEST interceptor slot. If yours is taken, point this
 function at the one that is already there: it runs first on the gateway's
-input, its answer is returned to the gateway unchanged but for the surrogate
-replacement above, and our own failures can neither skip it nor alter what it
-decided. If we cannot get its answer, or the answer is not a JSON object, the
-request is refused rather than served without it.
+input, with numbers outside the double range written as strings as above. Its
+answer is returned to the gateway unchanged but for the two replacements above,
+and our own failures can neither skip it nor alter what it decided. If we
+cannot get its answer, or the answer is not a JSON object, the request is
+refused rather than served without it.
 
 Only the REQUEST point chains. If your interceptor is attached at both REQUEST
 and RESPONSE in one configuration entry, split it: this function at REQUEST,
