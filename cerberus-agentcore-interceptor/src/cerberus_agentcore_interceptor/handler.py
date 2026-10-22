@@ -1,8 +1,8 @@
-"""The Lambda entry point.
+"""The Lambda entry point, at REQUEST and, with response capture on, at RESPONSE.
 
 The gateway fails closed on interceptor failure, so every step that builds a
 capture runs under its own guard, and capture gives up short of the function's
-timeout: whatever goes wrong here, the caller's request is returned unchanged.
+timeout: whatever goes wrong here, the gateway gets its payload back unchanged.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from . import __version__, metrics, output
 from .bounding import CaptureDeadlineExceeded
 from .chain import OUTCOME_ERROR, ChainClient, ChainResult
 from .config import Config
-from .envelope import REQUEST, Envelope, GatewayContext, gateway_context, parse
-from .mapper import ORIGINAL_BODY, source_event
+from .envelope import REQUEST, RESPONSE, Envelope, GatewayContext, gateway_context, parse
+from .mapper import ORIGINAL_BODY, response_event, source_event
 from .sink import FirehoseSink
 
 # What capture leaves of the function's timeout for answering the gateway.
@@ -46,28 +46,28 @@ if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
 
 
 class InterceptorError(RuntimeError):
-    """Raised when the request must not be served. Its text can reach callers."""
+    """Raised when the call must not go on. Its text can reach callers."""
 
 
 def handler(event: Any, context: Any = None) -> dict[str, Any]:
-    """Capture one interception and return the caller's payload unchanged."""
+    """Capture one interception and hand the gateway its payload back unchanged."""
     envelope = _parse(event)
     gateway = _gateway(context)
     if envelope is None:
         # Nothing to capture, but a chained interceptor still has to run.
-        unread = Envelope()
-        return _answer(unread, _chain(event, context, unread, gateway))
+        return _answer(event, None, _chain(event, context, Envelope(), gateway))
 
-    if envelope.phase != REQUEST:
-        # This version is a REQUEST interceptor. Attached at RESPONSE it captures
-        # nothing and hands the response straight back, unless it chains: then
-        # the slot may have held their interceptor, which we would be skipping.
+    chain = None
+    if envelope.phase == REQUEST:
+        chain = _chain(event, context, envelope, gateway)
+    elif CHAIN is not None:
+        # Only REQUEST is chained. The RESPONSE slot may have held their
+        # interceptor, which we would be skipping.
         metrics.count(metrics.UNEXPECTED_PHASE)
-        if CHAIN is not None:
-            raise InterceptorError("interceptor is not configured for the response phase")
-        return _output(envelope)
-
-    chain = _chain(event, context, envelope, gateway)
+        raise InterceptorError("interceptor is not configured for the response phase")
+    elif not CONFIG.response_capture:
+        metrics.count(metrics.UNEXPECTED_PHASE)
+        return _output(event, envelope)
 
     if envelope.supported_version:
         if not envelope.kind:
@@ -76,7 +76,7 @@ def handler(event: Any, context: Any = None) -> dict[str, Any]:
     else:
         metrics.count(metrics.UNKNOWN_INPUT_VERSION, version=envelope.version)
 
-    return _answer(envelope, chain)
+    return _answer(event, envelope, chain)
 
 
 def _parse(event: Any) -> Envelope | None:
@@ -123,34 +123,47 @@ def _chain(
 def _capture(
     envelope: Envelope, gateway: GatewayContext, chain: ChainResult | None, context: Any
 ) -> None:
+    phase = envelope.phase
     if not CONFIG.capturing:
-        metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)
+        metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG, phase=phase)
         return
     request_id = gateway.request_id
     try:
         deadline = _deadline(context)
-        event = source_event(
-            envelope,
-            gateway,
-            OPTIONS,
-            datetime.now(UTC),
-            chain=chain.note if chain is not None else None,
-            body_override=chain.body if chain is not None and chain.transformed else ORIGINAL_BODY,
-            deadline=deadline,
-        )
+        event = _event(envelope, gateway, chain, deadline)
         if event is None:
-            metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_OVERSIZE)
+            metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_OVERSIZE, phase=phase)
             return
         reason = SINK.put(event, gateway.gateway_arn or gateway.request_id, deadline)
         if reason:
-            metrics.count(metrics.CAPTURE_DROPPED, reason, request_id=request_id)
+            metrics.count(metrics.CAPTURE_DROPPED, reason, phase=phase, request_id=request_id)
             return
-        metrics.count(metrics.CAPTURED)
+        metrics.count(metrics.CAPTURED, phase=phase)
     except CaptureDeadlineExceeded:
-        metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, request_id=request_id)
+        metrics.count(
+            metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, phase=phase, request_id=request_id
+        )
     except Exception as exc:
         _log_failure("capture failed", exc)
-        metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER)
+        metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER, phase=phase)
+
+
+def _event(
+    envelope: Envelope, gateway: GatewayContext, chain: ChainResult | None, deadline: float | None
+) -> dict[str, Any] | None:
+    now = datetime.now(UTC)
+    if envelope.phase == RESPONSE:
+        return response_event(envelope, gateway, OPTIONS, now, deadline=deadline)
+    return source_event(
+        envelope,
+        gateway,
+        OPTIONS,
+        now,
+        chain=chain.note if chain is not None else None,
+        body_override=chain.body if chain is not None and chain.transformed else ORIGINAL_BODY,
+        deadline=deadline,
+        response_expected=CONFIG.response_capture,
+    )
 
 
 def _deadline(context: Any) -> float | None:
@@ -161,9 +174,9 @@ def _deadline(context: Any) -> float | None:
     return monotonic() + (float(remaining()) - ANSWER_MARGIN_MS) / 1000
 
 
-def _answer(envelope: Envelope, chain: ChainResult | None) -> dict[str, Any]:
+def _answer(event: Any, envelope: Envelope | None, chain: ChainResult | None) -> dict[str, Any]:
     if chain is None:
-        return _output(envelope)
+        return _output(event, envelope)
     if chain.failed:
         raise InterceptorError("upstream interceptor did not answer")
     if not isinstance(chain.output, dict):
@@ -173,12 +186,25 @@ def _answer(envelope: Envelope, chain: ChainResult | None) -> dict[str, Any]:
     return chain.output
 
 
-def _output(envelope: Envelope) -> dict[str, Any]:
+def _output(event: Any, envelope: Envelope | None) -> dict[str, Any]:
+    if envelope is not None:
+        try:
+            return output.passthrough(envelope)
+        except Exception as exc:
+            _log_failure("output could not be built", exc)
     try:
-        return output.passthrough(envelope)
+        response = output.mcp_response(event)
     except Exception as exc:
-        _log_failure("output could not be built", exc)
+        _log_failure("raw input could not be read", exc)
+        response = None
+    if response is None:
+        # The http form passes through anything not known to be an mcp RESPONSE.
         return output.http_passthrough()
+    try:
+        return output.response_echo(response)
+    except Exception as exc:
+        _log_failure("pass-through could not be built", exc)
+        raise InterceptorError("interceptor could not return the response") from None
 
 
 def _log_failure(what: str, exc: Exception) -> None:

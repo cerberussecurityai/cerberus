@@ -289,6 +289,31 @@ def test_metrics_without_a_reason_have_no_dimension(capsys):
     assert "Reason" not in record
 
 
+def test_a_phase_is_a_dimension_set_of_its_own(capsys):
+    metrics.count(metrics.CAPTURED, phase="response")
+    record = json.loads(capsys.readouterr().out.strip())
+    assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[], ["Phase"]]
+    assert record["Phase"] == "response"
+
+
+def test_a_drop_is_published_by_reason_and_by_phase(capsys):
+    metrics.count(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, phase="request")
+    record = json.loads(capsys.readouterr().out.strip())
+    assert record["_aws"]["CloudWatchMetrics"][0]["Dimensions"] == [[], ["Reason"], ["Phase"]]
+    assert (record["Reason"], record["Phase"]) == (metrics.REASON_DEADLINE, "request")
+
+
+@pytest.mark.parametrize("reason", ["", metrics.REASON_SINK])
+@pytest.mark.parametrize("phase", ["", "request", "response"])
+def test_every_dimension_a_line_names_is_a_field_of_it(capsys, reason, phase):
+    metrics.count(metrics.CAPTURE_DROPPED, reason, phase=phase)
+    record = json.loads(capsys.readouterr().out.strip())
+    for dimensions in record["_aws"]["CloudWatchMetrics"][0]["Dimensions"]:
+        for name in dimensions:
+            assert record[name]
+    assert ("Phase" in record) == bool(phase)
+
+
 RFC_3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})")
 
 
@@ -317,8 +342,10 @@ def test_a_field_cannot_replace_what_the_metric_line_needs(capsys):
     metrics.count(
         metrics.CAPTURE_DROPPED,
         metrics.REASON_SINK,
+        phase="response",
         level="INFO",
         Reason="other",
+        Phase="other",
         CaptureDropped=5,
         _aws={},
     )
@@ -326,6 +353,7 @@ def test_a_field_cannot_replace_what_the_metric_line_needs(capsys):
 
     assert record["level"] == "WARN"
     assert record["Reason"] == metrics.REASON_SINK
+    assert record["Phase"] == "response"
     assert record[metrics.CAPTURE_DROPPED] == 1
     assert record["_aws"]["CloudWatchMetrics"][0]["Namespace"] == metrics.NAMESPACE
 

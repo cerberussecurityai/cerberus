@@ -1,17 +1,19 @@
-"""Interceptor outputs that hand the caller's payload back to the gateway.
+"""Interceptor outputs that hand the gateway its payload back.
 
 The `mcp` shape has no empty pass-through: `{"mcp": {}}` is accepted, answers
 HTTP 200 and replaces the payload. An `mcp` output has to echo the body back.
-`{"http": {}}` is a true pass-through in both phases.
+`{"http": {}}` is a true pass-through everywhere except an `mcp` RESPONSE, where
+the caller receives `{}`.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
-from .envelope import HTTP, REQUEST, RESPONSE, Envelope
+from .envelope import HTTP, MCP, REQUEST, RESPONSE, Envelope
 
 OUTPUT_VERSION = "1.0"
 
@@ -20,6 +22,10 @@ _LONE_SURROGATE_ESCAPE = re.compile(
     r"\\u[dD](?:[89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F])"
     r"|[c-fC-F](?<!\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F]))"
 )
+
+# A JSON number can only overflow a double with a three-digit exponent or a
+# mantissa of 309 digits. Matching more than that only costs a full check.
+_OVERFLOWING_NUMBER = re.compile(r"\d[eE]\+?\d{3}|\d{309}")
 
 
 def http_passthrough() -> dict[str, Any]:
@@ -37,17 +43,7 @@ def passthrough(envelope: Envelope) -> dict[str, Any]:
     key = envelope.shape_key
     if envelope.phase == RESPONSE:
         response = envelope.response or {}
-        body = response.get("body")
-        if body is None:
-            return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
-        transformed: dict[str, Any] = {"body": encodable(body)}
-        status = response.get("statusCode")
-        if status is not None:
-            transformed["statusCode"] = status
-        return {
-            "interceptorOutputVersion": OUTPUT_VERSION,
-            key: {"transformedGatewayResponse": transformed},
-        }
+        return _response_echo(key, encodable(response.get("body")), response.get("statusCode"))
 
     body = _request_body(envelope)
     if body is None:
@@ -58,21 +54,42 @@ def passthrough(envelope: Envelope) -> dict[str, Any]:
     }
 
 
+def mcp_response(event: Any) -> dict[str, Any] | None:
+    """The raw gatewayResponse of an `mcp` RESPONSE event, or None for any other event."""
+    shape = event.get(MCP) if isinstance(event, dict) else None
+    response = shape.get("gatewayResponse") if isinstance(shape, dict) else None
+    return response if isinstance(response, dict) else None
+
+
+def response_echo(response: dict[str, Any]) -> dict[str, Any]:
+    """An `mcp` output echoing a raw gatewayResponse, for when parse() or passthrough() fails.
+
+    The body comes back as given, without repair, and the status code only
+    when it is an int.
+    """
+    status = response.get("statusCode")
+    if isinstance(status, bool) or not isinstance(status, int):
+        status = None
+    return _response_echo(MCP, response.get("body"), status)
+
+
 def is_valid_output(value: Any) -> bool:
     """True when a value is an interceptor output the gateway will accept."""
     return isinstance(value, dict) and value.get("interceptorOutputVersion") == OUTPUT_VERSION
 
 
 def encodable(value: Any, source: str | None = None) -> Any:
-    """value, or a copy with each lone UTF-16 surrogate replaced by U+FFFD.
+    """value, or a copy the Lambda runtime encodes and the gateway accepts.
 
-    The Lambda runtime encodes the answer as UTF-8 after the handler returns, and
-    a lone surrogate there ends the process, which the gateway takes as a
-    failure. Pass source, the JSON text value was decoded from, so a text that
-    cannot hold one skips encoding value.
+    A lone UTF-16 surrogate ends the runtime when it encodes the answer, so it
+    becomes U+FFFD. A number outside the double range decodes as an infinity,
+    which the runtime writes as a bare token the gateway refuses, so it becomes
+    the string "Infinity" or "-Infinity", as the gateway hands it to a target
+    on its own. Pass source, the JSON text value was decoded from, so a text
+    that cannot hold either skips encoding value.
     """
     try:
-        if source is not None and not _may_hold_lone_surrogate(source):
+        if source is not None and not _may_need_repair(source):
             return value
         if _encodes(value):
             return value
@@ -80,6 +97,34 @@ def encodable(value: Any, source: str | None = None) -> Any:
     except Exception:
         # Too deep to walk: the runtime may still encode it as it is.
         return value
+
+
+def finite(value: Any) -> Any:
+    """value with NaN and the infinities written as strings, as encodable writes them."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return _non_finite_text(value)
+    if isinstance(value, dict):
+        return {key: finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [finite(item) for item in value]
+    return value
+
+
+def _response_echo(key: str, body: Any, status: Any) -> dict[str, Any]:
+    if body is None:
+        return _bodyless_response(key)
+    transformed: dict[str, Any] = {"body": body}
+    if status is not None:
+        transformed["statusCode"] = status
+    return {
+        "interceptorOutputVersion": OUTPUT_VERSION,
+        key: {"transformedGatewayResponse": transformed},
+    }
+
+
+def _bodyless_response(key: str) -> dict[str, Any]:
+    """The answer to a response with no body to echo."""
+    return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
 
 
 def _request_body(envelope: Envelope) -> Any:
@@ -104,6 +149,15 @@ def _parsed(text: str) -> Any:
         return None
 
 
+def _may_need_repair(text: str) -> bool:
+    return _may_hold_non_finite(text) or _may_hold_lone_surrogate(text)
+
+
+def _may_hold_non_finite(text: str) -> bool:
+    # Python's decoder also accepts the NaN and Infinity tokens.
+    return "NaN" in text or "Infinity" in text or _OVERFLOWING_NUMBER.search(text) is not None
+
+
 def _may_hold_lone_surrogate(text: str) -> bool:
     # The regex cannot tell an escaped backslash followed by u from an escape,
     # so text holding one is left to the encoding check.
@@ -116,10 +170,10 @@ def _may_hold_lone_surrogate(text: str) -> bool:
 
 
 def _encodes(value: Any) -> bool:
-    """True when the runtime's own encoding of value succeeds."""
+    """True when the runtime's own encoding of value succeeds and is valid JSON."""
     try:
-        json.dumps(value, ensure_ascii=False).encode("utf-8")
-    except UnicodeEncodeError:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (UnicodeEncodeError, ValueError):
         return False
     return True
 
@@ -127,6 +181,8 @@ def _encodes(value: Any) -> bool:
 def _repaired(value: Any) -> Any:
     if isinstance(value, str):
         return _repaired_text(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return _non_finite_text(value)
     if isinstance(value, dict):
         return {_repaired(key): _repaired(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -139,6 +195,12 @@ def _repaired_text(text: str) -> str:
         return text
     # Joins a pair held as two code points; a lone half becomes U+FFFD.
     return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
+def _non_finite_text(number: float) -> str:
+    if math.isnan(number):
+        return "NaN"
+    return "Infinity" if number > 0 else "-Infinity"
 
 
 def _utf8_encodable(text: str) -> bool:

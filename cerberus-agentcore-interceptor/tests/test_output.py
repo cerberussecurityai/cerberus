@@ -10,7 +10,9 @@ from cerberus_agentcore_interceptor.output import (
     OUTPUT_VERSION,
     encodable,
     is_valid_output,
+    mcp_response,
     passthrough,
+    response_echo,
 )
 
 LONE_SURROGATE_CALL = (
@@ -173,6 +175,53 @@ def test_is_valid_output_rejects_the_wrong_version_and_shape():
     assert not is_valid_output(None)
 
 
+@pytest.mark.parametrize(
+    "event",
+    [
+        None,
+        "text",
+        {"interceptorInputVersion": "1.0", "mcp": [1]},
+        {"interceptorInputVersion": "1.0", "mcp": {"gatewayRequest": {}, "gatewayResponse": None}},
+        {"interceptorInputVersion": "1.0", "mcp": {"gatewayResponse": "text"}},
+        {"interceptorInputVersion": "1.0", "http": {"gatewayResponse": {"body": "e30="}}},
+        {"interceptorInputVersion": "1.0", "grpc": {"gatewayResponse": {"body": {}}}},
+    ],
+    ids=["none", "text", "mcp-list", "mcp-request", "mcp-text-response", "http", "unknown-shape"],
+)
+def test_only_an_mcp_response_has_a_raw_response_to_echo(event):
+    assert mcp_response(event) is None
+
+
+def test_the_raw_response_is_read_from_an_mcp_response():
+    response = {"body": {"result": {}}, "statusCode": 200}
+    assert mcp_response({"mcp": {"gatewayRequest": {}, "gatewayResponse": response}}) is response
+
+
+def test_the_raw_echo_hands_the_body_back_as_given():
+    body = {"result": {"text": "cut \ud83c", "n": float("inf")}}
+    result = response_echo({"body": body, "statusCode": 200})
+
+    assert result == {
+        "interceptorOutputVersion": OUTPUT_VERSION,
+        "mcp": {"transformedGatewayResponse": {"body": body, "statusCode": 200}},
+    }
+    assert result["mcp"]["transformedGatewayResponse"]["body"] is body
+
+
+@pytest.mark.parametrize("response", [{"statusCode": 200}, {"body": None, "statusCode": 200}])
+def test_the_raw_echo_of_a_bodyless_response_is_the_empty_form(response):
+    assert response_echo(response) == {"interceptorOutputVersion": OUTPUT_VERSION, "mcp": {}}
+
+
+@pytest.mark.parametrize(
+    ("status", "kept"), [(200, True), (502, True), (True, False), ("200", False), (200.0, False)]
+)
+def test_the_raw_echo_keeps_only_an_int_status_code(status, kept):
+    result = response_echo({"body": {}, "statusCode": status})
+    expected = {"body": {}, "statusCode": status} if kept else {"body": {}}
+    assert result["mcp"]["transformedGatewayResponse"] == expected
+
+
 def test_a_string_body_too_deep_to_parse_echoes_like_any_unparseable_one():
     def echo(text):
         envelope = {
@@ -239,6 +288,76 @@ def test_the_response_echo_replaces_a_lone_surrogate():
 
     assert result["mcp"]["transformedGatewayResponse"]["body"] == {"result": {"text": "cut \ufffd"}}
     runtime_encode(result)
+
+
+def strict_json(data: bytes) -> Any:
+    def refuse(token: str) -> Any:
+        raise AssertionError(f"{token} is not JSON")
+
+    return json.loads(data, parse_constant=refuse)
+
+
+OVERFLOWING_CALL = (
+    '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "t", '
+    '"arguments": {"big": 1e999, "small": -1E+400, "long": 1' + "0" * 400 + ".5}}}"
+)
+
+
+@pytest.mark.parametrize("carried", ["string body", "raw body only", "parsed body only"])
+def test_an_overflowing_number_is_echoed_as_the_gateway_writes_it(carried):
+    envelope = mcp_request(OVERFLOWING_CALL)
+    mcp = envelope["mcp"]
+    if carried == "string body":
+        mcp["gatewayRequest"]["body"] = OVERFLOWING_CALL
+        del mcp["rawGatewayRequest"]
+    elif carried == "raw body only":
+        mcp["gatewayRequest"]["body"] = None
+    else:
+        del mcp["rawGatewayRequest"]
+
+    result = passthrough(env.parse(envelope))
+
+    assert echoed(result)["params"]["arguments"] == {
+        "big": "Infinity",
+        "small": "-Infinity",
+        "long": "Infinity",
+    }
+    strict_json(runtime_encode(result))
+
+
+def test_a_nan_token_is_echoed_as_a_string():
+    result = passthrough(env.parse(mcp_request('{"id": 1, "params": {"n": NaN}}')))
+    assert echoed(result)["params"] == {"n": "NaN"}
+    strict_json(runtime_encode(result))
+
+
+def test_the_response_echo_writes_an_infinity_as_a_string():
+    envelope = {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": None,
+            "gatewayResponse": {"body": {"result": {"n": float("-inf")}}, "statusCode": 200},
+        },
+    }
+    result = passthrough(env.parse(envelope))
+
+    assert result["mcp"]["transformedGatewayResponse"]["body"] == {"result": {"n": "-Infinity"}}
+    strict_json(runtime_encode(result))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"id": 1, "params": {"n": 1e308, "m": 1e-999, "k": 12345678901234567890}}',
+        '{"id": 1, "params": {"note": "e100 and 9e123"}}',
+    ],
+)
+def test_a_finite_number_is_echoed_as_it_is(raw):
+    envelope = mcp_request(raw)
+    result = passthrough(env.parse(envelope))
+
+    assert echoed(result) is envelope["mcp"]["gatewayRequest"]["body"]
+    strict_json(runtime_encode(result))
 
 
 @pytest.mark.parametrize(

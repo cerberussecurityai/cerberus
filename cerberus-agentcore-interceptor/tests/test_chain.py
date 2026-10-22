@@ -349,6 +349,17 @@ def test_a_lone_surrogate_is_forwarded_escaped():
     assert json.loads(fake.calls[0]["Payload"]) == event
 
 
+def test_an_infinity_is_forwarded_as_a_string():
+    chain, fake = client(mcp_output({}), pass_headers=True)
+    event = event_with_arguments({"big": float("inf"), "message": "Party \ud83c"})
+    assert not chain.invoke(event, context(), parsed()).failed
+
+    payload = fake.calls[0]["Payload"]
+    assert b"Infinity" in payload and b"Party \\ud83c" in payload
+    forwarded = json.loads(payload, parse_constant=lambda token: pytest.fail(token))
+    assert forwarded["mcp"]["gatewayRequest"]["body"]["params"]["arguments"]["big"] == "Infinity"
+
+
 @pytest.mark.parametrize("name", ["mcp-tools-call-lambda", "inference-chat"])
 def test_without_pass_headers_the_chained_function_gets_no_headers(name):
     chain, fake = client(mcp_output({}))
@@ -475,6 +486,16 @@ def test_empty_chain_settings_do_not_count_as_set():
     assert config.capturing
 
 
+def test_response_capture_is_unavailable_beside_a_chain(caplog):
+    config = Config.from_env(chain_env(CERBERUS_RESPONSE_CAPTURE="true"))
+    assert config.response_capture is False
+    assert config.chain_arn == CHAIN_ARN
+    assert config.capturing
+    messages = [record.getMessage() for record in caplog.records if record.levelno == logging.ERROR]
+    assert any("CERBERUS_RESPONSE_CAPTURE" in message for message in messages)
+    assert not any(CHAIN_ARN in message for message in messages)
+
+
 def test_a_gateway_arn_is_read_as_its_id():
     config = Config.from_env(chain_env(f"{GATEWAY_ARN}, {GATEWAY_ID}, other-gateway"))
     assert config.gateway_ids == (GATEWAY_ID, "other-gateway")
@@ -535,6 +556,11 @@ def test_the_chained_output_is_returned_unchanged(chained):
     answer = mcp_output({"jsonrpc": "2.0", "method": "tools/call", "id": 99})
     chained(answer)
     assert invoke() == answer
+
+
+def test_an_infinity_in_the_chained_answer_is_returned_as_a_string(chained):
+    chained(raw=json.dumps(mcp_output({"id": 1, "n": float("inf")})).encode())
+    assert invoke()["mcp"]["transformedGatewayRequest"]["body"] == {"id": 1, "n": "Infinity"}
 
 
 def test_the_transformed_body_is_what_gets_captured(chained):
@@ -706,6 +732,37 @@ def test_the_response_phase_is_refused_when_chaining(chained, name):
         invoke(name)
     assert fake.calls == []
     assert chained.sink.events == []
+
+
+@pytest.mark.parametrize(
+    "name", ["mcp-tools-call-lambda-response", "inference-chat-sigv4-response"]
+)
+def test_with_response_capture_set_a_chained_function_still_refuses_responses(
+    chained, monkeypatch, name
+):
+    fake = chained(mcp_output({}))
+    monkeypatch.setattr(
+        handler_mod, "CONFIG", Config.from_env(chain_env(CERBERUS_RESPONSE_CAPTURE="true"))
+    )
+    counts = []
+    monkeypatch.setattr(
+        handler_mod.metrics, "count", lambda metric, reason="", **_: counts.append(metric)
+    )
+
+    with pytest.raises(handler_mod.InterceptorError):
+        invoke(name)
+    assert fake.calls == []
+    assert chained.sink.events == []
+    assert counts == [metrics.UNEXPECTED_PHASE]
+
+
+def test_with_response_capture_set_a_chained_request_expects_no_response(chained, monkeypatch):
+    chained(mcp_output({}))
+    monkeypatch.setattr(
+        handler_mod, "CONFIG", Config.from_env(chain_env(CERBERUS_RESPONSE_CAPTURE="true"))
+    )
+    invoke()
+    assert chained.sink.events[0]["custom_data"]["agentcore"]["response_expected"] is False
 
 
 def test_an_invalid_chained_output_is_handed_back_as_it_came(chained):
