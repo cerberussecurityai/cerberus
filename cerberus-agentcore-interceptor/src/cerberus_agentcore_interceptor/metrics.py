@@ -29,10 +29,19 @@ REASON_HANDLER = "handler_error"
 REASON_CONFIG = "config_invalid"
 
 
-def count(metric: str, reason: str = "", **fields: Any) -> None:
-    """Emit one count of a metric. Never raises; a metric is not worth a request."""
+def count(metric: str, reason: str = "", phase: str = "", **fields: Any) -> None:
+    """Emit one count of a metric. Never raises; a metric is not worth a request.
+
+    A reason and a phase each add a dimension set of their own.
+    """
     try:
         now = datetime.now(UTC)
+        # The dimensionless series sums every reason and phase, so one alarm covers them.
+        dimensions: list[list[str]] = [[]]
+        if reason:
+            dimensions.append(["Reason"])
+        if phase:
+            dimensions.append(["Phase"])
         record: dict[str, Any] = {
             **fields,
             "_aws": {
@@ -40,8 +49,7 @@ def count(metric: str, reason: str = "", **fields: Any) -> None:
                 "CloudWatchMetrics": [
                     {
                         "Namespace": NAMESPACE,
-                        # The dimensionless series sums every reason, so one alarm covers them.
-                        "Dimensions": [[], ["Reason"]] if reason else [[]],
+                        "Dimensions": dimensions,
                         "Metrics": [{"Name": metric, "Unit": "Count"}],
                     }
                 ],
@@ -54,6 +62,8 @@ def count(metric: str, reason: str = "", **fields: Any) -> None:
         }
         if reason:
             record["Reason"] = reason
+        if phase:
+            record["Phase"] = phase
         # A line still buffered when the function times out is never logged.
         print(json.dumps(record, default=str), file=sys.stdout, flush=True)
     except Exception:
