@@ -2,14 +2,15 @@
 
 A Lambda interceptor for [Amazon Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-interceptors.html).
 It runs in your account, turns each call the gateway handles into a Cerberus
-event, and passes the caller's request through to its target.
+event, and passes the caller's request through to its target. With response
+capture on, it does the same for the response on its way back.
 
 Everything the gateway fronts is covered: MCP targets, inference connectors and
 generic providers, AgentCore Runtime targets and HTTP passthrough targets.
 
 ```
 caller ──► AgentCore Gateway ──► target
-               │ REQUEST interceptor
+               │ REQUEST interceptor, and RESPONSE with response capture on
                ▼
       cerberus-agentcore-interceptor (your account)
                │
@@ -24,11 +25,12 @@ stream's HTTP endpoint holds the ingest key.
 ## Read this before you attach it
 
 **AgentCore Gateway fails closed on interceptor failure.** If the function
-cannot answer, the caller gets an error and the target never runs. That is the
-platform's behaviour, not a choice this package makes, and it is why the
-handler treats availability as the first requirement: every step that builds a
-capture runs under its own guard, so a capture that cannot be built is dropped
-while the request goes through untouched.
+cannot answer, the caller gets an error. At REQUEST the target then never runs.
+At RESPONSE it already has, so the caller gets an error for a call the target
+executed. That is the platform's behaviour, not a choice this package makes,
+and it is why the handler treats availability as the first requirement: every
+step that builds a capture runs under its own guard, so a capture that cannot
+be built is dropped while the call goes through untouched.
 
 The interceptor is therefore part of your gateway's availability. Alarm on the
 function's `Errors` and on its `Throttles`: the gateway refuses a throttled
@@ -48,6 +50,10 @@ call. While the chained function is throttled, each request holds this one for
 up to 2 s more, so give one of the two reserved concurrency: that wait should
 not draw on the pool the throttled function needs.
 
+With response capture on, each call is two invocations, one at each point, so
+need roughly doubles, and with it any provisioned or reserved concurrency sized
+from it.
+
 ## What it captures
 
 One event per intercepted request: method, path, the gateway host, the caller's
@@ -58,7 +64,9 @@ than dropped outright. Every event is portable JSON: U+0000 and unpaired
 surrogates in captured text become U+FFFD, and NaN and infinite numbers become
 the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
 
-Responses are not captured in this version.
+Each request event's `custom_data.agentcore` carries `phase`, `"request"`, and
+`response_expected`: true when this function also intercepts this call's
+response.
 
 ### Identity
 
@@ -85,19 +93,88 @@ Credential-bearing headers are dropped whatever the allowlist says:
 gateway's own `x-amzn-vpce-*` and `x-amzn-tls-*` headers. Session ids travel in
 the event's `session_id` field instead of the header map.
 
+### Responses
+
+With response capture on, each RESPONSE invocation is an event of its own, with
+`phase` `"response"` and the request's `event_id` followed by `#response`. Beside
+the gateway host and source address it carries:
+
+- `status_code`, when the gateway gives an integer one
+- `response_body`, when the body is kept
+- `custom_data.agentcore.response`, a note of what happened to the body: its
+  `state`, a `reason` when it was not kept, and on `http` the response's
+  `content_type`
+
+An `mcp` response event also carries the request, which the gateway still hands
+over at RESPONSE, handled as on a request event. An `http` response event has no
+request to carry: no method, path, headers or caller identity.
+
+JSON bodies are sanitized as request bodies are, JSON inside an MCP result's
+text included, and credential header names are redacted as keys too, since a
+body can echo the request's headers. Event streams are sanitized event by event.
+A gzip body is recorded as `{"body_skipped_encoding": "gzip"}`. A body that is
+absent, empty or unreadable, or of another content type, is not kept, and the
+note's `reason` says which. One that does not fit whole is reduced on `mcp` to
+its JSON-RPC id, error and the result's names and clipped text, then cut to the
+head and tail of its text, then shed. On `mcp` the request and the response
+share one event's cap.
+
+With `CERBERUS_CAPTURE_BODIES=false`, the response side is only the status code
+and a `disabled` note.
+
+## Response capture
+
+Off by default. To turn it on, set `CERBERUS_RESPONSE_CAPTURE=true` and attach
+this function at both points, in one interceptor configuration entry with
+`["REQUEST", "RESPONSE"]`. Its request events then say a response event follows,
+so set the variable only on a function attached at both points. Response
+capture needs `enableResponseStreaming` off on the gateway.
+
+A RESPONSE attachment changes how the gateway serves every call on it, whatever
+this function does:
+
+- The gateway holds each streamed response until it is complete and delivers it
+  whole, so a streaming caller sees no output until the call has finished.
+  Attach RESPONSE only on a gateway whose callers can take responses in one
+  piece.
+- The MCP request size limit falls to about 2.0 to 2.5 MB. An MCP interceptor's
+  input holds the request twice, as sent and parsed, and at RESPONSE the
+  response beside it, all within Lambda's 6 MB invoke limit. A request over the
+  limit can pass REQUEST and then fail at RESPONSE, after the target has run.
+  `payloadFilter` takes effect on `http` payloads only, so it does not shrink
+  that input.
+- Each call is two invocations and two Firehose records, and a RESPONSE
+  invocation that fails or is throttled fails the call after the target has
+  run.
+
+Response capture is not available on a function that chains a REQUEST
+interceptor; see Chaining.
+
+Settings are read at init, and none of them can undo what the attachment does to
+the gateway. To stop response capture quickly, detach the RESPONSE point, or the
+function. Then set `CERBERUS_RESPONSE_CAPTURE` to false on a new version and
+move the alias, so request events stop saying a response follows.
+`UpdateGateway` replaces the gateway's whole configuration, so resend every
+field you are not changing.
+
 ## A note on the `mcp` output shape
 
 An interceptor on an MCP-protocol gateway must **echo the payload back**. An
 output of `{"interceptorOutputVersion": "1.0", "mcp": {}}` is accepted and
 answers HTTP 200, but it replaces the payload: at REQUEST the target never runs
-and the caller gets a JSON-RPC parse error. `{"http": {}}` is a true
-pass-through. This package's golden fixtures pin the echo form for exactly that
-reason.
+and the caller gets a JSON-RPC parse error, and at RESPONSE the caller gets
+`{}`. `{"http": {}}` is a true pass-through, except at an `mcp` RESPONSE, where
+the caller also gets `{}`. This package's golden fixtures pin the echo form for
+exactly that reason.
 
 The echo changes two things. An unpaired UTF-16 surrogate, which the Lambda
 runtime cannot encode, comes back as U+FFFD. A number outside the double range,
 such as `1e999`, comes back as the string `"Infinity"` or `"-Infinity"`, which
 is what the gateway hands the target when no interceptor is attached.
+
+At RESPONSE the echo carries the response body and status code back. A
+response with no body has nothing to echo and is answered `{"mcp": {}}`, so
+its caller gets `{}` where the target sent no body.
 
 ## Chaining
 
@@ -113,7 +190,10 @@ Only the REQUEST point chains. If your interceptor is attached at both REQUEST
 and RESPONSE in one configuration entry, split it: this function at REQUEST,
 chaining to yours, and yours alone at RESPONSE. With a chain set, this
 function refuses every RESPONSE invocation, so an attachment left there fails
-closed instead of skipping your response logic.
+closed instead of skipping your response logic. Response capture is therefore
+not available on a function that chains: with `CERBERUS_RESPONSE_CAPTURE` on as
+well, init logs that it is unavailable and leaves it off, and request capture
+and the chain are unaffected.
 
 Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
 to the ids or ARNs of the gateways this function serves, and
@@ -150,6 +230,7 @@ its status code (a refused request is still a captured attempt),
 | `CERBERUS_USER_ID_CLAIM` | `sub` | Which JWT claim identifies the caller |
 | `CERBERUS_CAPTURE_HEADERS` | the list above | Comma-separated |
 | `CERBERUS_CAPTURE_BODIES` | `true` | `false` captures metadata and identity only |
+| `CERBERUS_RESPONSE_CAPTURE` | `false` | `true` captures responses as well; see Response capture |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
 | `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
@@ -164,7 +245,9 @@ A number out of range is clamped to the nearest bound, and an unknown log level
 becomes `INFO`, each with a warning in the function's log. Any other value that
 cannot be used turns capture off rather than failing the function: it logs an
 `ERROR` naming the variable, passes every request through unchanged, and counts
-`CaptureDropped` with reason `config_invalid`. A chaining setting that cannot be
+`CaptureDropped` with reason `config_invalid`. An unusable
+`CERBERUS_RESPONSE_CAPTURE` is logged and turns off response capture alone;
+request capture is unaffected. A chaining setting that cannot be
 used does fail the function at init, since no request may be served without the
 chained interceptor. So does any `CERBERUS_CHAIN_*` or `CERBERUS_GATEWAY_IDS`
 value set without `CERBERUS_CHAIN_REQUEST_ARN`: the function would otherwise hold
@@ -181,22 +264,22 @@ environment variables at 4 KB together.
 |---|---|
 | Handler | `cerberus_agentcore_interceptor.handler.handler` |
 | Runtime | `python3.13`, `arm64` |
-| Memory | 512 MB to start; raise it from your own worst-case body sizes |
+| Memory | 512 MB to start; raise it from your own worst-case request and response body sizes |
 | Timeout | 3 s; longer with a chain, see Chaining |
 | Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
-| Interception points | `["REQUEST"]` only |
-
-Do not attach it at RESPONSE. It captures nothing there, and the attachment
-makes the gateway buffer streamed responses whole, lowers its MCP request size
-limit to about 2 MB, and adds a point that fails closed after the target has
-run.
+| Interception points | `["REQUEST"]`, or `["REQUEST", "RESPONSE"]` with response capture on |
 
 Capture gives up 500 ms before the function's timeout, and skips the Firehose
 write when the time left cannot cover `CERBERUS_FIREHOSE_CONNECT_MS` plus
-`CERBERUS_FIREHOSE_READ_MS`. Either way the request goes through unchanged and
+`CERBERUS_FIREHOSE_READ_MS`. Either way the call goes through unchanged and
 `CaptureDropped` counts reason `deadline`. Those two timeouts add up to at most
 1.5 s, so one write stays well inside the 3 s timeout. Do not go lower: with a
 timeout under 500 ms plus the two, 1.25 s by default, every write is skipped.
+
+The same holds at RESPONSE, where the 500 ms left also covers echoing the
+response back, up to several megabytes on `mcp`. Memory sets the function's CPU
+too, so raise it until your largest responses are answered well inside the
+timeout.
 
 The gateway's role needs `lambda:InvokeFunction` on `function:<name>:*` — a
 grant on the unqualified ARN does not cover an alias, and permission edits take
@@ -214,7 +297,8 @@ aws lambda invoke --function-name <name>:<version> \
 ```
 
 The invoke captures nothing and counts one `UnknownInputVersion`. An `ERROR`
-line in its log means capture is off until the setting is fixed. With a chain
+line in its log means capture is off until the setting is fixed; a line naming
+`CERBERUS_RESPONSE_CAPTURE` means only response capture is. With a chain
 set, the invoke is refused instead, as from an unlisted gateway, and its log
 names gateway `''`. That line is expected; the test invoke never reaches the
 chained function.
@@ -249,6 +333,11 @@ published once without a dimension, summing every reason, and once by
 `Reason`: `throttle`, `timeout`, `deadline`, `oversize`, `sink_error`,
 `handler_error`, `config_invalid`.
 
+`Captured` and `CaptureDropped` are also published by `Phase`, `request` or
+`response`, since Lambda's own `Errors`, `Throttles` and `Duration` cannot tell
+the two points apart. A drop counted before the phase is known, such as an input
+that cannot be read, has no `Phase`.
+
 `Captured` is logged at `INFO` and every other metric at `WARN`, so a Lambda
 `ApplicationLogLevel` of `WARN` drops the per-request `Captured` line and keeps
 the rest. `ERROR` or above hides them all.
@@ -257,8 +346,10 @@ Alarm on:
 
 - Lambda `Errors`, first: each one is a blocked customer request
 - Lambda `Throttles`
-- `CaptureDropped` without a dimension; its `Reason` series say why
-- `UnexpectedPhase` above 0: the function is attached at RESPONSE
+- `CaptureDropped` without a dimension; its `Reason` series say why. An alarm
+  on response capture reads the `Phase` `response` series
+- `UnexpectedPhase` above 0: the function is attached at RESPONSE while
+  response capture is off
 - the stream's `ThrottledRecords`
 - the stream's `DeliveryToHttpEndpoint.Success` below 1. A rejected access key
   or an endpoint outage shows there, not in the function's metrics
