@@ -1,5 +1,7 @@
 """The handler's contract: whatever fails, the caller's payload comes back intact."""
 
+import base64
+import copy
 import importlib
 import json
 import logging
@@ -11,6 +13,7 @@ import pytest
 from botocore.awsrequest import AWSResponse
 from helpers import LambdaContext, case_names, load_case, runtime_encode
 
+from cerberus_agentcore_interceptor import envelope as env
 from cerberus_agentcore_interceptor import handler as handler_mod
 from cerberus_agentcore_interceptor import metrics, output
 from cerberus_agentcore_interceptor.config import Config
@@ -86,9 +89,48 @@ def counted(monkeypatch):
     return counts
 
 
+@pytest.fixture
+def phased(monkeypatch):
+    counts: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        handler_mod.metrics,
+        "count",
+        lambda name, reason="", phase="", **fields: counts.append((name, reason, phase)),
+    )
+    return counts
+
+
+@pytest.fixture
+def responses(monkeypatch, sink):
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",), response_capture=True))
+    return sink
+
+
 def invoke(name: str):
     case = load_case(name)
     return handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
+
+
+def invoke_case(case: dict):
+    return handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
+
+
+RESPONSE_CASES = [
+    name for name in case_names() if env.parse(load_case(name)["input"]).phase == env.RESPONSE
+]
+RESPONSE_SHAPES = ["mcp-tools-call-lambda-response", "inference-chat-response"]
+REQUEST_SHAPES = ["mcp-tools-call-lambda", "inference-chat"]
+HTTP_PASSTHROUGH = {"interceptorOutputVersion": "1.0", "http": {}}
+
+
+def echo(name: str) -> dict:
+    """The answer that hands a RESPONSE case's response back as the gateway gave it."""
+    shape = load_case(name)["input"].get("mcp")
+    if shape is None:
+        return {"interceptorOutputVersion": "1.0", "http": {}}
+    response = shape["gatewayResponse"]
+    transformed = {"body": response["body"], "statusCode": response["statusCode"]}
+    return {"interceptorOutputVersion": "1.0", "mcp": {"transformedGatewayResponse": transformed}}
 
 
 def test_mcp_request_is_captured_and_echoed(sink):
@@ -134,14 +176,9 @@ def test_an_echoed_lone_surrogate_survives_the_runtime_encode(sink):
     assert len(sink.events) == 1
 
 
-def test_response_phase_captures_nothing_and_echoes_the_response(sink, counted):
-    response = load_case("mcp-tools-call-lambda-response")["input"]["mcp"]["gatewayResponse"]
-    result = invoke("mcp-tools-call-lambda-response")
-
-    assert result["mcp"]["transformedGatewayResponse"] == {
-        "body": response["body"],
-        "statusCode": response["statusCode"],
-    }
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_response_capture_off_captures_nothing_and_echoes_the_response(sink, counted, name):
+    assert invoke(name) == echo(name)
     assert sink.events == []
     assert (metrics.UNEXPECTED_PHASE, "") in counted
 
@@ -264,7 +301,7 @@ def test_a_deadline_drop_names_the_request(monkeypatch, extra_ms):
     )
     case, _ = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + extra_ms)
 
-    assert fields == [{"request_id": case["client_context"]["REQUEST_ID"]}]
+    assert fields == [{"phase": "request", "request_id": case["client_context"]["REQUEST_ID"]}]
 
 
 def test_a_put_that_could_outlast_the_deadline_is_skipped(counted, monkeypatch):
@@ -345,3 +382,286 @@ def test_the_aws_client_stack_logs_no_payload_when_the_runtime_logs_at_debug(mon
 
     assert "caller-secret" not in caplog.text
     assert not logging.getLogger("urllib3.connectionpool").isEnabledFor(logging.DEBUG)
+
+
+def test_request_capture_is_counted_by_phase(sink, phased):
+    invoke("mcp-tools-call-lambda")
+    assert phased == [(metrics.CAPTURED, "", "request")]
+
+
+def test_request_events_expect_a_response_only_with_response_capture_on(sink, monkeypatch):
+    invoke("mcp-tools-call-lambda")
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",), response_capture=True))
+    invoke("inference-chat")
+
+    assert [event["custom_data"]["agentcore"]["response_expected"] for event in sink.events] == [
+        False,
+        True,
+    ]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_a_response_is_captured_and_echoed(responses, phased, name):
+    case = load_case(name)
+    result = invoke(name)
+
+    assert result == echo(name)
+    event = responses.events[0]
+    assert event["event_id"] == case["client_context"]["REQUEST_ID"] + "#response"
+    assert event["custom_data"]["agentcore"]["phase"] == "response"
+    assert responses.keys[0] == case["client_context"]["GATEWAY_ARN"]
+    assert phased == [(metrics.CAPTURED, "", "response")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_CASES)
+def test_response_capture_answers_every_response_as_capture_off_does(responses, monkeypatch, name):
+    captured = invoke(name)
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",)))
+
+    assert captured == invoke(name) == echo(name)
+    assert len(responses.events) == 1
+
+
+@pytest.mark.parametrize("name", case_names())
+def test_every_fixture_returns_a_valid_output_with_response_capture_on(responses, name):
+    result = invoke(name)
+    assert output.is_valid_output(result)
+    runtime_encode(result)
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_a_raising_parser_at_response_echoes_the_raw_response(responses, phased, monkeypatch, name):
+    monkeypatch.setattr(handler_mod, "parse", _boom)
+    assert invoke(name) == echo(name)
+    assert responses.events == []
+    assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER, "")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_a_raising_response_mapper_leaves_the_response_alone(responses, phased, monkeypatch, name):
+    monkeypatch.setattr(handler_mod, "response_event", _boom)
+    assert invoke(name) == echo(name)
+    assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER, "response")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_an_unboundable_response_event_is_dropped(responses, phased, monkeypatch, name):
+    monkeypatch.setattr(handler_mod, "response_event", lambda *args, **kwargs: None)
+    assert invoke(name) == echo(name)
+    assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_OVERSIZE, "response")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_response_capture_past_its_deadline_echoes_the_response(responses, phased, name):
+    _, result = invoke_with(name, handler_mod.ANSWER_MARGIN_MS)
+    assert result == echo(name)
+    assert responses.events == []
+    assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, "response")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ({"reason": metrics.REASON_THROTTLE}, metrics.REASON_THROTTLE),
+        ({"raises": RuntimeError("firehose")}, metrics.REASON_HANDLER),
+    ],
+    ids=["throttled", "raising"],
+)
+def test_a_response_the_sink_drops_is_counted_by_reason(
+    responses, phased, monkeypatch, name, failure, reason
+):
+    monkeypatch.setattr(handler_mod, "SINK", RecordingSink(**failure))
+    assert invoke(name) == echo(name)
+    assert phased == [(metrics.CAPTURE_DROPPED, reason, "response")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_response_capture_with_capture_off_is_counted(sink, phased, monkeypatch, name):
+    off = Config.from_env({"CERBERUS_RESPONSE_CAPTURE": "true"})
+    monkeypatch.setattr(handler_mod, "CONFIG", off)
+
+    assert off.response_capture and not off.capturing
+    assert invoke(name) == echo(name)
+    assert sink.events == []
+    assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG, "response")]
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_an_unknown_input_version_at_response_is_echoed_and_never_mapped(
+    responses, phased, monkeypatch, name
+):
+    monkeypatch.setattr(handler_mod, "response_event", lambda *a, **k: pytest.fail("mapped"))
+    case = load_case(name)
+    case["input"]["interceptorInputVersion"] = "2.0"
+
+    assert invoke_case(case) == echo(name)
+    assert responses.events == []
+    assert phased == [(metrics.UNKNOWN_INPUT_VERSION, "", "")]
+
+
+def test_an_unknown_shape_at_response_is_counted_captured_and_echoed(responses, phased):
+    response = {"body": {"x": 1}, "statusCode": 200}
+    payload = {
+        "interceptorInputVersion": "1.0",
+        "grpc": {"gatewayRequest": None, "gatewayResponse": response},
+    }
+    result = handler_mod.handler(payload, None)
+
+    assert result == {
+        "interceptorOutputVersion": "1.0",
+        "grpc": {"transformedGatewayResponse": response},
+    }
+    assert phased == [(metrics.UNKNOWN_SHAPE, "", ""), (metrics.CAPTURED, "", "response")]
+
+
+@pytest.mark.parametrize("on", [False, True])
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_an_output_that_cannot_be_built_echoes_the_raw_response(sink, monkeypatch, on, name):
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",), response_capture=on))
+    monkeypatch.setattr(output, "passthrough", _boom)
+    assert invoke(name) == echo(name)
+
+
+def test_the_raw_echo_hands_the_body_back_as_given(responses, monkeypatch):
+    monkeypatch.setattr(output, "passthrough", _boom)
+    case = load_case("mcp-tools-call-lambda-response")
+    body = {"jsonrpc": "2.0", "id": 1, "result": {"text": "cut \ud83c", "n": float("inf")}}
+    case["input"]["mcp"]["gatewayResponse"]["body"] = body
+
+    assert invoke_case(case)["mcp"]["transformedGatewayResponse"]["body"] is body
+
+
+@pytest.mark.parametrize("status", ["200", True, 200.0, None])
+def test_the_raw_echo_carries_only_an_int_status_code(responses, monkeypatch, status):
+    monkeypatch.setattr(output, "passthrough", _boom)
+    case = load_case("mcp-tools-call-lambda-response")
+    case["input"]["mcp"]["gatewayResponse"]["statusCode"] = status
+
+    assert "statusCode" not in invoke_case(case)["mcp"]["transformedGatewayResponse"]
+
+
+@pytest.mark.parametrize("raw_echo", [False, True])
+@pytest.mark.parametrize("on", [False, True])
+def test_a_bodyless_mcp_response_is_answered_with_the_empty_form(sink, monkeypatch, on, raw_echo):
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",), response_capture=on))
+    if raw_echo:
+        monkeypatch.setattr(output, "passthrough", _boom)
+    case = load_case("mcp-tools-call-lambda-response")
+    del case["input"]["mcp"]["gatewayResponse"]["body"]
+
+    assert invoke_case(case) == {"interceptorOutputVersion": "1.0", "mcp": {}}
+
+
+QUOTED_ARN = "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example"
+
+
+class Unreadable(dict):
+    """A dict whose every read raises, quoting what it holds."""
+
+    def get(self, key, default=None):
+        raise RuntimeError(f"{self['body']} {QUOTED_ARN}")
+
+
+def test_a_response_that_cannot_be_echoed_is_refused_with_text_safe_to_show(responses, caplog):
+    case = load_case("mcp-tools-call-lambda-response")
+    mcp = case["input"]["mcp"]
+    mcp["gatewayResponse"] = Unreadable(body="SECRET-response-body", statusCode=200)
+    with caplog.at_level(logging.ERROR, logger="cerberus_agentcore_interceptor"):
+        with pytest.raises(handler_mod.InterceptorError) as raised:
+            invoke_case(case)
+
+    text = str(raised.value)
+    for internal in ("SECRET", "arn:", "123456789012", "RuntimeError"):
+        assert internal not in text
+    assert raised.value.__suppress_context__
+    assert "pass-through could not be built: RuntimeError" in caplog.text
+    assert "SECRET" not in caplog.text
+
+
+@pytest.mark.parametrize("on", [False, True])
+@pytest.mark.parametrize("name", ["mcp-tools-call-lambda", "mcp-tools-call-lambda-response"])
+def test_an_mcp_input_that_cannot_be_read_passes_through(sink, monkeypatch, on, name):
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",), response_capture=on))
+    case = load_case(name)
+    case["input"]["mcp"] = Unreadable(case["input"]["mcp"], body="SECRET")
+    assert invoke_case(case) == HTTP_PASSTHROUGH
+
+
+@pytest.mark.parametrize(
+    ("module", "attribute"),
+    [(handler_mod, "parse"), (output, "passthrough")],
+    ids=["parse", "passthrough"],
+)
+@pytest.mark.parametrize("on", [False, True])
+@pytest.mark.parametrize("name", REQUEST_SHAPES)
+def test_a_request_whose_answer_cannot_be_built_passes_through(
+    sink, monkeypatch, module, attribute, on, name
+):
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",), response_capture=on))
+    monkeypatch.setattr(module, attribute, _boom)
+    assert invoke(name) == HTTP_PASSTHROUGH
+
+
+def test_an_unparsed_mcp_value_that_is_not_an_object_passes_through(sink, monkeypatch):
+    monkeypatch.setattr(handler_mod, "parse", _boom)
+    payload = {"interceptorInputVersion": "1.0", "mcp": [1]}
+    assert handler_mod.handler(payload, None) == HTTP_PASSTHROUGH
+
+
+def test_an_http_response_that_cannot_be_read_still_passes_through(responses):
+    case = load_case("inference-chat-response")
+    case["input"]["http"]["gatewayResponse"] = Unreadable(body="SECRET", statusCode=200)
+    assert invoke_case(case) == {"interceptorOutputVersion": "1.0", "http": {}}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"mcp": {"gatewayResponse": {}}},
+        {"interceptorInputVersion": "1.0", "mcp": {"gatewayResponse": {"body": None}}},
+        {"interceptorInputVersion": "1.0", "http": {"gatewayResponse": {"body": 7}}},
+        {"interceptorInputVersion": "1.0", "mcp": {"gatewayResponse": {"body": "text"}}},
+    ],
+)
+def test_junk_responses_return_a_valid_output(responses, payload):
+    assert output.is_valid_output(handler_mod.handler(payload, None))
+
+
+def test_a_credential_a_passthrough_response_echoes_is_not_captured(responses):
+    case = load_case("passthrough-echo-response")
+    response = case["input"]["http"]["gatewayResponse"]
+    echoed = json.loads(base64.b64decode(response["body"]))
+    echoed["headers"]["x-amz-security-token"] = "SECRET-session-token"
+    echoed["headers"]["authorization"] = "AWS4-HMAC-SHA256 Credential=SECRET-key-id"
+    response["body"] = base64.b64encode(json.dumps(echoed).encode()).decode()
+
+    assert invoke_case(case) == {"interceptorOutputVersion": "1.0", "http": {}}
+    event = responses.events[0]
+    assert "SECRET" not in json.dumps(event)
+    assert event["response_body"]["headers"]["x-amz-security-token"] == "[REDACTED]"
+
+
+def test_a_secret_in_mcp_result_text_is_not_captured_but_is_echoed(responses):
+    case = load_case("mcp-tools-call-lambda-response")
+    content = case["input"]["mcp"]["gatewayResponse"]["body"]["result"]["content"][0]
+    result = json.loads(content["text"])
+    result["echo"]["api_key"] = "SECRET-api-key"
+    content["text"] = json.dumps(result)
+    sent = copy.deepcopy(case["input"]["mcp"]["gatewayResponse"])
+
+    answer = invoke_case(case)
+
+    assert answer["mcp"]["transformedGatewayResponse"]["body"] == sent["body"]
+    assert "SECRET" not in json.dumps(responses.events[0])
+    text = responses.events[0]["response_body"]["result"]["content"][0]["text"]
+    assert json.loads(text)["echo"]["api_key"] == "[REDACTED]"
+
+
+def test_the_module_reads_response_capture_at_import(monkeypatch):
+    monkeypatch.setenv("CERBERUS_RESPONSE_CAPTURE", "true")
+    reloaded = importlib.reload(handler_mod)
+    assert reloaded.CONFIG.response_capture is True
+
+    monkeypatch.undo()
+    importlib.reload(handler_mod)

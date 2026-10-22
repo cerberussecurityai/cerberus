@@ -28,6 +28,7 @@ def test_defaults():
     assert config.user_id_claim == "sub"
     assert config.capture_headers == DEFAULT_CAPTURE_HEADERS
     assert config.capture_bodies is True
+    assert config.response_capture is False
     assert config.sensitive_keys == ()
     assert config.max_event_bytes == DEFAULT_MAX_EVENT_BYTES
     assert config.firehose_connect_ms == 250
@@ -124,6 +125,29 @@ def test_sensitive_keys_override():
 )
 def test_capture_bodies_boolean(raw, expected):
     assert build(CERBERUS_CAPTURE_BODIES=raw).capture_bodies is expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("true", True), ("1", True), ("YES", True), ("on", True), ("false", False), ("0", False)],
+)
+def test_response_capture_boolean(raw, expected):
+    assert build(CERBERUS_RESPONSE_CAPTURE=raw).response_capture is expected
+
+
+@pytest.mark.parametrize("raw", ["maybe", "enabled", "2"])
+def test_an_unusable_response_capture_turns_off_response_capture_alone(caplog, raw):
+    config = build(CERBERUS_RESPONSE_CAPTURE=raw)
+    assert config.response_capture is False
+    assert config.capturing is True
+    assert config.invalid == ()
+    assert logged(caplog, logging.ERROR, "CERBERUS_RESPONSE_CAPTURE")
+
+
+def test_response_capture_beside_an_unusable_capture_setting_stays_on():
+    config = build(CERBERUS_RESPONSE_CAPTURE="true", CERBERUS_CAPTURE_BODIES="maybe")
+    assert config.response_capture is True
+    assert config.invalid == ("CERBERUS_CAPTURE_BODIES",)
 
 
 @pytest.mark.parametrize(

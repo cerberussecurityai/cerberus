@@ -65,6 +65,7 @@ class Config:
     user_id_claim: str = identity.DEFAULT_USER_ID_CLAIM
     capture_headers: tuple[str, ...] = DEFAULT_CAPTURE_HEADERS
     capture_bodies: bool = True
+    response_capture: bool = False
     sensitive_keys: tuple[str, ...] = ()
     max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES
     firehose_connect_ms: int = DEFAULT_FIREHOSE_CONNECT_MS
@@ -169,6 +170,7 @@ class Config:
             user_id_claim=_text(source, "CERBERUS_USER_ID_CLAIM", identity.DEFAULT_USER_ID_CLAIM),
             capture_headers=_list(source, "CERBERUS_CAPTURE_HEADERS") or DEFAULT_CAPTURE_HEADERS,
             capture_bodies=capture_bodies,
+            response_capture=_response_capture(source, chain_arn),
             sensitive_keys=_list(source, "CERBERUS_SENSITIVE_KEYS"),
             max_event_bytes=max_event_bytes,
             firehose_connect_ms=connect_ms,
@@ -180,6 +182,23 @@ class Config:
             log_level=_log_level(source),
             invalid=tuple(invalid),
         )
+
+
+def _response_capture(source: Mapping[str, str], chain_arn: str) -> bool:
+    """CERBERUS_RESPONSE_CAPTURE, off when unusable or beside a REQUEST chain."""
+    try:
+        wanted = _bool(source, "CERBERUS_RESPONSE_CAPTURE", False)
+    except ConfigError as exc:
+        logger.error("%s; response capture is off", exc)
+        return False
+    if wanted and chain_arn:
+        # Only REQUEST is chained, so with a chain every RESPONSE is refused.
+        logger.error(
+            "CERBERUS_RESPONSE_CAPTURE is unavailable with CERBERUS_CHAIN_REQUEST_ARN set; "
+            "response capture is off"
+        )
+        return False
+    return wanted
 
 
 def _chain_settings(source: Mapping[str, str]) -> list[str]:
