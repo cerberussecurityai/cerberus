@@ -241,6 +241,76 @@ def test_the_response_echo_replaces_a_lone_surrogate():
     runtime_encode(result)
 
 
+def strict_json(data: bytes) -> Any:
+    def refuse(token: str) -> Any:
+        raise AssertionError(f"{token} is not JSON")
+
+    return json.loads(data, parse_constant=refuse)
+
+
+OVERFLOWING_CALL = (
+    '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "t", '
+    '"arguments": {"big": 1e999, "small": -1E+400, "long": 1' + "0" * 400 + ".5}}}"
+)
+
+
+@pytest.mark.parametrize("carried", ["string body", "raw body only", "parsed body only"])
+def test_an_overflowing_number_is_echoed_as_the_gateway_writes_it(carried):
+    envelope = mcp_request(OVERFLOWING_CALL)
+    mcp = envelope["mcp"]
+    if carried == "string body":
+        mcp["gatewayRequest"]["body"] = OVERFLOWING_CALL
+        del mcp["rawGatewayRequest"]
+    elif carried == "raw body only":
+        mcp["gatewayRequest"]["body"] = None
+    else:
+        del mcp["rawGatewayRequest"]
+
+    result = passthrough(env.parse(envelope))
+
+    assert echoed(result)["params"]["arguments"] == {
+        "big": "Infinity",
+        "small": "-Infinity",
+        "long": "Infinity",
+    }
+    strict_json(runtime_encode(result))
+
+
+def test_a_nan_token_is_echoed_as_a_string():
+    result = passthrough(env.parse(mcp_request('{"id": 1, "params": {"n": NaN}}')))
+    assert echoed(result)["params"] == {"n": "NaN"}
+    strict_json(runtime_encode(result))
+
+
+def test_the_response_echo_writes_an_infinity_as_a_string():
+    envelope = {
+        "interceptorInputVersion": "1.0",
+        "mcp": {
+            "gatewayRequest": None,
+            "gatewayResponse": {"body": {"result": {"n": float("-inf")}}, "statusCode": 200},
+        },
+    }
+    result = passthrough(env.parse(envelope))
+
+    assert result["mcp"]["transformedGatewayResponse"]["body"] == {"result": {"n": "-Infinity"}}
+    strict_json(runtime_encode(result))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"id": 1, "params": {"n": 1e308, "m": 1e-999, "k": 12345678901234567890}}',
+        '{"id": 1, "params": {"note": "e100 and 9e123"}}',
+    ],
+)
+def test_a_finite_number_is_echoed_as_it_is(raw):
+    envelope = mcp_request(raw)
+    result = passthrough(env.parse(envelope))
+
+    assert echoed(result) is envelope["mcp"]["gatewayRequest"]["body"]
+    strict_json(runtime_encode(result))
+
+
 @pytest.mark.parametrize(
     "raw",
     [
