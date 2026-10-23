@@ -713,7 +713,9 @@ def test_a_raising_mapper_leaves_the_chained_answer_alone(chained, monkeypatch):
     assert invoke() == answer
 
 
-@pytest.mark.parametrize("name", ["mcp-tools-call-response-phase", "inference-chat-response-phase"])
+@pytest.mark.parametrize(
+    "name", ["mcp-tools-call-lambda-response", "inference-chat-sigv4-response"]
+)
 def test_the_response_phase_is_refused_when_chaining(chained, name):
     fake = chained(mcp_output({}))
     with pytest.raises(handler_mod.InterceptorError):

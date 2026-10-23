@@ -1,0 +1,26 @@
+{
+  "name": "inference-chat-response-shed",
+  "note": "inference-chat-response under a 590-byte cap, which leaves no room for a truncated body.",
+  "options": {
+    "identity_mode": "jwt",
+    "max_event_bytes": 590
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-08",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "http": {
+      "gatewayRequest": null,
+      "gatewayResponse": {
+        "statusCode": 200,
+        "headers": null,
+        "body": "eyJjaG9pY2VzIjpbeyJmaW5pc2hfcmVhc29uIjoibGVuZ3RoIiwiaW5kZXgiOjAsImxvZ3Byb2JzIjpudWxsLCJtZXNzYWdlIjp7ImNvbnRlbnQiOm51bGwsInJlYXNvbmluZyI6IlRoZSB1c2VyIHNheXMgXCJTYXkgT0suIENFUkJDQU5BUlktaW5mZXJlbmNlY2hhdC1lMWJiNjA0YjcxXCIuIiwicmVmdXNhbCI6bnVsbCwicm9sZSI6ImFzc2lzdGFudCJ9fV0sImNyZWF0ZWQiOjE3ODk4ODU0NTYsImlkIjoiY2hhdGNtcGwtMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMGIxIiwibW9kZWwiOiJvcGVuYWkuZ3B0LW9zcy0yMGIiLCJvYmplY3QiOiJjaGF0LmNvbXBsZXRpb24iLCJzZXJ2aWNlX3RpZXIiOiJkZWZhdWx0IiwidXNhZ2UiOnsiY29tcGxldGlvbl90b2tlbnMiOjI0LCJwcm9tcHRfdG9rZW5zIjo4MywicHJvbXB0X3Rva2Vuc19kZXRhaWxzIjp7ImF1ZGlvX3Rva2VucyI6MCwiY2FjaGVkX3Rva2VucyI6MzJ9LCJ0b3RhbF90b2tlbnMiOjEwN319",
+        "contentType": "application/json"
+      }
+    }
+  }
+}

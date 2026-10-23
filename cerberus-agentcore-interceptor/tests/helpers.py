@@ -10,7 +10,8 @@ from typing import Any
 
 from cerberus_agentcore_interceptor import __version__
 from cerberus_agentcore_interceptor import envelope as envelope_mod
-from cerberus_agentcore_interceptor.mapper import MapperOptions, source_event
+from cerberus_agentcore_interceptor.bounding import DEFAULT_MAX_EVENT_BYTES
+from cerberus_agentcore_interceptor.mapper import MapperOptions, response_event, source_event
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -50,18 +51,22 @@ def runtime_encode(value: Any) -> bytes:
 
 
 def options(case: dict[str, Any], **overrides: Any) -> MapperOptions:
+    given = case.get("options", {})
     base = MapperOptions(
-        identity_mode=case.get("options", {}).get("identity_mode", "jwt"),
+        identity_mode=given.get("identity_mode", "jwt"),
+        max_event_bytes=given.get("max_event_bytes", DEFAULT_MAX_EVENT_BYTES),
         version=__version__,
     )
     return replace(base, **overrides) if overrides else base
 
 
 def map_case(name: str, **overrides: Any) -> dict[str, Any] | None:
-    """Map a fixture through the parser and mapper, as the handler would."""
+    """Map a fixture through the parser and the mapper for its phase, as the handler would."""
     case = load_case(name)
-    return source_event(
-        envelope_mod.parse(case["input"]),
+    envelope = envelope_mod.parse(case["input"])
+    build = response_event if envelope.phase == envelope_mod.RESPONSE else source_event
+    return build(
+        envelope,
         envelope_mod.gateway_context(LambdaContext(case["client_context"])),
         options(case, **overrides),
         TIMESTAMP,

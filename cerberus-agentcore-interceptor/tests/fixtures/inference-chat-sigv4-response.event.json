@@ -1,0 +1,53 @@
+{
+  "custom_data": {
+    "agentcore": {
+      "account_id": "123456789012",
+      "gateway_id": "example-gateway-abcdefghij",
+      "kind": "http",
+      "phase": "response",
+      "region": "us-west-2",
+      "request_id": "request-id-16",
+      "response": {
+        "content_type": "application/json",
+        "state": "captured"
+      },
+      "version": "0.2.0"
+    },
+    "integration": "agentcore-gateway"
+  },
+  "event_id": "request-id-16#response",
+  "host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+  "remote_addr": "192.0.2.10",
+  "response_body": {
+    "choices": [
+      {
+        "finish_reason": "length",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": null,
+          "reasoning": "The user says: \"Say OK. CERBCANARY-httpinference-8dd32ed606",
+          "refusal": null,
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1789885470,
+    "id": "chatcmpl-00000000-0000-0000-0000-0000000000b2",
+    "model": "openai.gpt-oss-20b",
+    "object": "chat.completion",
+    "service_tier": "default",
+    "usage": {
+      "completion_tokens": 24,
+      "prompt_tokens": 83,
+      "prompt_tokens_details": {
+        "audio_tokens": 0,
+        "cached_tokens": 48
+      },
+      "total_tokens": 107
+    }
+  },
+  "scheme": true,
+  "status_code": 200,
+  "timestamp": "2026-09-20T06:24:30.123456+00:00"
+}

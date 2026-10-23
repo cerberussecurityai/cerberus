@@ -77,6 +77,24 @@ class Envelope:
     def method(self) -> str:
         return _text((self.request or {}).get("httpMethod"))
 
+    @property
+    def status_code(self) -> int | None:
+        """The response's status code, or None when it is absent or not an int."""
+        status = (self.response or {}).get("statusCode")
+        if isinstance(status, bool) or not isinstance(status, int):
+            return None
+        return status
+
+    @property
+    def response_body(self) -> Any:
+        """The response body as given: parsed JSON on mcp, base64 text on http."""
+        return (self.response or {}).get("body")
+
+    @property
+    def content_type(self) -> str:
+        """The response's content type, which only the http shape carries."""
+        return _text((self.response or {}).get("contentType"))
+
 
 def parse(event: Any) -> Envelope:
     """Read an interceptor input into an Envelope."""
@@ -142,17 +160,20 @@ def header(headers: Any, name: str) -> str:
 
 
 def request_body(envelope: Envelope) -> tuple[Any, str]:
-    """The request body as a dict, or (None, reason)."""
-    if envelope.phase != REQUEST:
-        return None, BODY_EMPTY
+    """The request body as a dict, or (None, reason).
+
+    The mcp shape carries the request at both phases; the http shape only at REQUEST.
+    """
     if envelope.kind == MCP:
         return _mcp_body(envelope)
+    if envelope.phase != REQUEST:
+        return None, BODY_EMPTY
     return http_body((envelope.request or {}).get("body"))
 
 
 def request_body_size(envelope: Envelope) -> int | None:
     """The request body's size as sent, or None when it is not known without parsing."""
-    if envelope.phase != REQUEST:
+    if envelope.kind != MCP and envelope.phase != REQUEST:
         return None
     body = (envelope.request or {}).get("body")
     if isinstance(body, str):
