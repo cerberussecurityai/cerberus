@@ -1,14 +1,12 @@
 import json
 import logging
 import re
-import socket
-import struct
-import threading
 from datetime import datetime
 from time import monotonic
 
 import pytest
 from botocore import exceptions as botocore_errors
+from helpers import ForgetfulEndpoint, boom, use_local_endpoint
 
 from cerberus_agentcore_interceptor import metrics
 from cerberus_agentcore_interceptor import sink as sink_mod
@@ -44,71 +42,10 @@ class FlakyFirehose(FakeFirehose):
         return {"RecordId": "r-1"}
 
 
-class ForgetfulFirehose:
-    """A local PutRecord endpoint that, once told to forget, resets older connections."""
-
-    def __init__(self):
-        self.forget = threading.Event()
-        self.connections = 0
-        self.records = 0
-        self.sock = socket.create_server(("127.0.0.1", 0))
-        threading.Thread(target=self._accept, daemon=True).start()
-
-    @property
-    def url(self):
-        return f"http://127.0.0.1:{self.sock.getsockname()[1]}"
-
-    def _accept(self):
-        while True:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            self.connections += 1
-            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
-
-    def _serve(self, conn):
-        opened_before = not self.forget.is_set()
-        reader = conn.makefile("rb")
-        while _read_request(reader):
-            if opened_before and self.forget.is_set():
-                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-                break
-            self.records += 1
-            head = f"HTTP/1.1 200 OK\r\nContent-Length: {len(OK)}\r\n"
-            conn.sendall(head.encode() + b"Content-Type: application/x-amz-json-1.1\r\n\r\n" + OK)
-        reader.close()
-        conn.close()
-
-
-def _read_request(reader):
-    line = reader.readline()
-    length = 0
-    while line not in (b"\r\n", b""):
-        name, _, value = line.partition(b":")
-        if name.strip().lower() == b"content-length":
-            length = int(value)
-        line = reader.readline()
-    return bool(line) and len(reader.read(length)) == length
-
-
 @pytest.fixture
 def forgetful(monkeypatch, tmp_path):
-    endpoint = ForgetfulFirehose()
-    env = {
-        "AWS_ENDPOINT_URL_FIREHOSE": endpoint.url,
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "AWS_ACCESS_KEY_ID": "AKIDEXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "example",
-        "AWS_CONFIG_FILE": str(tmp_path / "none"),
-        "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "none"),
-        "AWS_EC2_METADATA_DISABLED": "true",
-        "NO_PROXY": "127.0.0.1",
-    }
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    for name in ("AWS_PROFILE", "AWS_SESSION_TOKEN"):
-        monkeypatch.delenv(name, raising=False)
+    endpoint = ForgetfulEndpoint(OK, "application/x-amz-json-1.1")
+    use_local_endpoint(monkeypatch, tmp_path, "FIREHOSE", endpoint.url, "us-east-1")
     yield endpoint
     endpoint.sock.close()
 
@@ -219,7 +156,7 @@ def test_a_connection_reset_after_an_idle_gap_is_resent_on_a_new_one(forgetful):
 
     assert shipped.put({"event_id": "e-2"}, "k") == ""
     assert forgetful.connections == 2
-    assert forgetful.records == 2
+    assert forgetful.requests == 2
 
 
 def test_an_oversized_record_never_reaches_firehose():
@@ -259,16 +196,12 @@ def test_keys_spread_across_streams():
 
 def test_prepare_does_not_raise_without_credentials(monkeypatch, caplog):
     broken = FirehoseSink(("s",), 250, 500)
-    monkeypatch.setattr(broken, "_firehose", _boom)
+    monkeypatch.setattr(broken, "_firehose", boom)
     with caplog.at_level(logging.WARNING, logger="cerberus_agentcore_interceptor"):
         broken.prepare()
 
     assert "firehose client not ready: RuntimeError" in caplog.text
-    assert "no credentials" not in caplog.text
-
-
-def _boom(*args, **kwargs):
-    raise RuntimeError("no credentials")
+    assert "boom" not in caplog.text
 
 
 def test_metrics_emit_one_embedded_metric_line(capsys):
@@ -331,7 +264,7 @@ def test_a_field_cannot_replace_what_the_metric_line_needs(capsys):
 
 
 def test_metrics_never_raise(monkeypatch, capsys):
-    monkeypatch.setattr(json, "dumps", _boom)
+    monkeypatch.setattr(json, "dumps", boom)
     metrics.count(metrics.CAPTURED)
 
 

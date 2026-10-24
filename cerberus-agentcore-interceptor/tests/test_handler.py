@@ -6,43 +6,21 @@ import logging
 from time import monotonic
 
 import pytest
-from helpers import LambdaContext, case_names, load_case, runtime_encode
+from helpers import (
+    LambdaContext,
+    RecordingSink,
+    boom,
+    case_names,
+    invoke,
+    invoke_with,
+    load_case,
+    runtime_encode,
+)
 
 from cerberus_agentcore_interceptor import handler as handler_mod
 from cerberus_agentcore_interceptor import metrics, output
 from cerberus_agentcore_interceptor.config import Config
 from cerberus_agentcore_interceptor.sink import FirehoseSink
-
-
-class RecordingSink(FirehoseSink):
-    """A sink that records instead of writing, and can fail on demand."""
-
-    def __init__(self, reason: str = "", raises: Exception | None = None):
-        super().__init__(("stream",), 250, 500, client=object())
-        self.events: list[dict] = []
-        self.keys: list[str] = []
-        self.deadlines: list[float | None] = []
-        self._reason = reason
-        self._raises = raises
-
-    def put(self, event, key, deadline=None):
-        if self._raises is not None:
-            raise self._raises
-        self.events.append(event)
-        self.keys.append(key)
-        self.deadlines.append(deadline)
-        return self._reason
-
-
-class TimedContext(LambdaContext):
-    """A Lambda context that reports a fixed remaining time."""
-
-    def __init__(self, custom, remaining_ms):
-        super().__init__(custom)
-        self.remaining_ms = remaining_ms
-
-    def get_remaining_time_in_millis(self):
-        return self.remaining_ms
 
 
 class CountingFirehose:
@@ -52,16 +30,6 @@ class CountingFirehose:
     def put_record(self, **kwargs):
         self.calls += 1
         return {"RecordId": "r-1"}
-
-
-def _boom(*args, **kwargs):
-    raise RuntimeError("boom")
-
-
-def invoke_with(name: str, remaining_ms: int):
-    case = load_case(name)
-    context = TimedContext(case["client_context"], remaining_ms)
-    return case, handler_mod.handler(case["input"], context)
 
 
 @pytest.fixture
@@ -81,11 +49,6 @@ def counted(monkeypatch):
         lambda name, reason="", **fields: counts.append((name, reason)),
     )
     return counts
-
-
-def invoke(name: str):
-    case = load_case(name)
-    return handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
 
 
 def test_mcp_request_is_captured_and_echoed(sink):
@@ -151,7 +114,7 @@ def test_unknown_input_version_captures_nothing_and_echoes(sink, counted):
 
 
 def test_a_raising_parser_leaves_the_request_alone(sink, counted, monkeypatch):
-    monkeypatch.setattr(handler_mod, "parse", _boom)
+    monkeypatch.setattr(handler_mod, "parse", boom)
     result = handler_mod.handler(load_case("inference-chat")["input"], None)
 
     assert output.is_valid_output(result)
@@ -175,7 +138,7 @@ def test_a_failure_is_logged_without_its_message(sink, counted, monkeypatch, cap
 
 
 def test_a_raising_mapper_leaves_the_request_alone(sink, counted, monkeypatch):
-    monkeypatch.setattr(handler_mod, "source_event", _boom)
+    monkeypatch.setattr(handler_mod, "source_event", boom)
     case = load_case("mcp-tools-call-lambda")
     result = handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
 
