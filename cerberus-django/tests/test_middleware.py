@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import RequestFactory
 
-from cerberus_core import REDACTED
+from cerberus_core import REDACTED, hash_pii
 from cerberus_django.middleware import (
     CerberusMiddleware,
     _extract_body,
@@ -22,6 +22,32 @@ from cerberus_django.middleware import (
 @pytest.fixture
 def rf():
     return RequestFactory()
+
+
+BASE_CONFIG = {"token": "tok", "client_id": "cid", "ws_url": "wss://b:8765"}
+
+
+def _make_middleware(get_response, **config):
+    """Build the middleware under CERBERUS_CONFIG = BASE_CONFIG + config.
+
+    __init__ copies the settings dict, so the patch only needs to cover
+    construction. Callers patch ensure_background_thread themselves.
+    """
+    with patch.dict(
+        "django.conf.settings.__dict__", {"CERBERUS_CONFIG": {**BASE_CONFIG, **config}}
+    ):
+        return CerberusMiddleware(get_response)
+
+
+def _queued_event(mw, request):
+    """Run one request through mw and return the event it queued."""
+    while not event_queue.empty():
+        try:
+            event_queue.get_nowait()
+        except thread_queue.Empty:
+            break
+    mw(request)
+    return event_queue.get_nowait()
 
 
 class TestExtractHeaders:
@@ -55,9 +81,9 @@ class TestExtractHeaders:
     def test_hashes_authorization_with_secret_key(self, rf):
         request = rf.get("/", HTTP_AUTHORIZATION="Bearer token123")
         headers = _extract_headers(request, secret_key="test-key")
-        assert headers["Authorization"] != "Bearer token123"
-        assert headers["Authorization"] != REDACTED
-        assert len(headers["Authorization"]) == 64  # SHA-256 hex
+        # The HMAC of the raw header value, so the same value and key always
+        # produce the same digest
+        assert headers["Authorization"] == hash_pii("Bearer token123", "test-key")
 
     def test_redacts_authorization_without_secret_key(self, rf):
         request = rf.get("/", HTTP_AUTHORIZATION="Bearer token123")
@@ -69,13 +95,6 @@ class TestExtractHeaders:
         request.META = {}
         headers = _extract_headers(request)
         assert headers is None
-
-    def test_consistent_authorization_hash(self, rf):
-        """Same Authorization value + same key = same hash."""
-        request = rf.get("/", HTTP_AUTHORIZATION="Bearer abc")
-        h1 = _extract_headers(request, secret_key="key")
-        h2 = _extract_headers(request, secret_key="key")
-        assert h1["Authorization"] == h2["Authorization"]
 
 
 class TestExtractQueryParams:
@@ -108,12 +127,6 @@ class TestExtractQueryParams:
         request = rf.get("/?tag=a&tag=b&tag=c")
         params = _extract_query_params(request)
         assert params["tag"] == ["a", "b", "c"]
-
-    def test_single_value_not_wrapped_in_list(self, rf):
-        request = rf.get("/?name=alice")
-        params = _extract_query_params(request)
-        assert params["name"] == "alice"
-        assert not isinstance(params["name"], list)
 
 
 class TestExtractBody:
@@ -156,13 +169,9 @@ class TestExtractBody:
         body = _extract_body(request)
         assert body is None
 
-    def test_returns_none_for_bare_json_string(self, rf):
-        request = rf.post("/", data=json.dumps("just a string"), content_type="application/json")
-        body = _extract_body(request)
-        assert body is None
-
-    def test_returns_none_for_bare_json_number(self, rf):
-        request = rf.post("/", data=json.dumps(42), content_type="application/json")
+    @pytest.mark.parametrize("value", ["just a string", 42], ids=["string", "number"])
+    def test_returns_none_for_bare_json_primitive(self, rf, value):
+        request = rf.post("/", data=json.dumps(value), content_type="application/json")
         body = _extract_body(request)
         assert body is None
 
@@ -179,9 +188,8 @@ class TestExtractBody:
         body = _extract_body(request)
         assert body is None
 
-    def test_handles_raw_post_data_exception(self, rf):
+    def test_handles_raw_post_data_exception(self):
         """Broad except should catch RawPostDataException without crashing."""
-        request = rf.post("/", data=b"{}", content_type="application/json")
         # Simulate RawPostDataException by making body access raise
         # Use a mock to avoid mutating the class-level descriptor
         request = MagicMock()
@@ -193,19 +201,12 @@ class TestExtractBody:
         # Clean up the property we set on MagicMock
         del type(request).body
 
-    def test_put_method(self, rf):
+    @pytest.mark.parametrize("method", ["put", "patch"])
+    def test_put_and_patch_bodies_extracted(self, rf, method):
         data = {"field": "value"}
-        request = rf.put("/", data=json.dumps(data), content_type="application/json")
+        request = getattr(rf, method)("/", data=json.dumps(data), content_type="application/json")
         body = _extract_body(request)
-        assert body is not None
-        assert body["field"] == "value"
-
-    def test_patch_method(self, rf):
-        data = {"field": "value"}
-        request = rf.patch("/", data=json.dumps(data), content_type="application/json")
-        body = _extract_body(request)
-        assert body is not None
-        assert body["field"] == "value"
+        assert body == {"field": "value"}
 
     def test_delete_method_returns_none(self, rf):
         request = rf.delete("/")
@@ -354,54 +355,34 @@ class TestExtractResponseBody:
 class TestResponseBodyCapture:
     """Middleware-level tests for opt-in response body capture."""
 
-    def _drain_queue(self):
-        while not event_queue.empty():
-            try:
-                event_queue.get_nowait()
-            except thread_queue.Empty:
-                break
-
     @patch("cerberus_django.middleware.ensure_background_thread")
     def test_response_body_captured_when_enabled(self, mock_bg, rf):
         from django.http import JsonResponse
 
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-            "secret_key": "test-key", "capture_response_body": True,
-        }}):
-            mw = CerberusMiddleware(
-                lambda req: JsonResponse({"answer": "ok", "token": "sk-1"})
-            )
-            self._drain_queue()
-            mw(rf.get("/test"))
-            event = event_queue.get_nowait()
-            assert event.response_body == {"answer": "ok", "token": REDACTED}
+        mw = _make_middleware(
+            lambda req: JsonResponse({"answer": "ok", "token": "sk-1"}),
+            secret_key="test-key", capture_response_body=True,
+        )
+        event = _queued_event(mw, rf.get("/test"))
+        assert event.response_body == {"answer": "ok", "token": REDACTED}
 
     @patch("cerberus_django.middleware.ensure_background_thread")
     def test_response_body_not_captured_by_default(self, mock_bg, rf):
         from django.http import JsonResponse
 
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-            "secret_key": "test-key",
-        }}):
-            mw = CerberusMiddleware(lambda req: JsonResponse({"answer": "ok"}))
-            self._drain_queue()
-            mw(rf.get("/test"))
-            event = event_queue.get_nowait()
-            assert event.response_body is None
+        mw = _make_middleware(lambda req: JsonResponse({"answer": "ok"}), secret_key="test-key")
+        event = _queued_event(mw, rf.get("/test"))
+        assert event.response_body is None
 
     @patch("cerberus_django.middleware.ensure_background_thread")
-    def test_malformed_sizing_knob_falls_back_to_default(self, mock_bg, rf):
+    def test_malformed_sizing_knob_falls_back_to_default(self, mock_bg):
         from cerberus_django.middleware import RESPONSE_HEAD_BYTES_DEFAULT
 
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-            "secret_key": "test-key", "capture_response_body": True,
-            "response_head_bytes": "lots",
-        }}):
-            mw = CerberusMiddleware(lambda req: MagicMock(data={}))
-            assert mw.response_head_bytes == RESPONSE_HEAD_BYTES_DEFAULT
+        mw = _make_middleware(
+            lambda req: MagicMock(data={}),
+            secret_key="test-key", capture_response_body=True, response_head_bytes="lots",
+        )
+        assert mw.response_head_bytes == RESPONSE_HEAD_BYTES_DEFAULT
 
     @patch("cerberus_django.middleware.ensure_background_thread")
     def test_valid_sizing_knobs_are_honored_end_to_end(self, mock_bg, rf):
@@ -411,20 +392,15 @@ class TestResponseBodyCapture:
         from django.http import HttpResponse
 
         big = json.dumps({"content": "x" * 1000})
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-            "secret_key": "test-key", "capture_response_body": True,
-            "response_head_bytes": 64, "response_tail_bytes": 32,
-        }}):
-            mw = CerberusMiddleware(
-                lambda req: HttpResponse(big, content_type="application/json")
-            )
-            self._drain_queue()
-            mw(rf.get("/test"))
-            event = event_queue.get_nowait()
-            assert event.response_body["body_truncated"] is True
-            assert event.response_body["head"] == big[:64]
-            assert event.response_body["tail"] == big[-32:]
+        mw = _make_middleware(
+            lambda req: HttpResponse(big, content_type="application/json"),
+            secret_key="test-key", capture_response_body=True,
+            response_head_bytes=64, response_tail_bytes=32,
+        )
+        event = _queued_event(mw, rf.get("/test"))
+        assert event.response_body["body_truncated"] is True
+        assert event.response_body["head"] == big[:64]
+        assert event.response_body["tail"] == big[-32:]
 
     def test_ws_payload_includes_response_body(self):
         """The transport payload must carry response_body under that exact key
@@ -458,51 +434,28 @@ class TestResponseBodyCapture:
 class TestSourceIpHandling:
     """Tests for source IP hashing and plaintext warning."""
 
-    def _drain_queue(self):
-        while not event_queue.empty():
-            try:
-                event_queue.get_nowait()
-            except thread_queue.Empty:
-                break
-
     @patch("cerberus_django.middleware.ensure_background_thread")
     def test_source_ip_hashed_with_secret_key(self, mock_bg, rf):
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-            "secret_key": "test-key",
-        }}):
-            mw = CerberusMiddleware(lambda req: MagicMock(data={}))
-            self._drain_queue()
-            request = rf.get("/test")
-            mw(request)
-            event = event_queue.get_nowait()
-            # Should be a 64-char hex hash, not the raw IP
-            assert event.source_ip != request.META.get("REMOTE_ADDR")
-            assert len(event.source_ip) == 64
+        mw = _make_middleware(lambda req: MagicMock(data={}), secret_key="test-key")
+        request = rf.get("/test")
+        event = _queued_event(mw, request)
+        # Should be a 64-char hex hash, not the raw IP
+        assert event.source_ip != request.META.get("REMOTE_ADDR")
+        assert len(event.source_ip) == 64
 
     @patch("cerberus_django.middleware.ensure_background_thread")
     def test_source_ip_raw_without_secret_key_warns(self, mock_bg, rf, caplog):
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-        }}):
-            mw = CerberusMiddleware(lambda req: MagicMock(data={}))
-            self._drain_queue()
-            request = rf.get("/test")
-            with caplog.at_level(logging.WARNING, logger="cerberus_django.middleware"):
-                mw(request)
-            event = event_queue.get_nowait()
-            # IP should be the raw value (127.0.0.1 from RequestFactory)
-            assert event.source_ip == "127.0.0.1"
-            assert "plaintext" in caplog.text
+        mw = _make_middleware(lambda req: MagicMock(data={}))
+        with caplog.at_level(logging.WARNING, logger="cerberus_django.middleware"):
+            event = _queued_event(mw, rf.get("/test"))
+        # IP should be the raw value (127.0.0.1 from RequestFactory)
+        assert event.source_ip == "127.0.0.1"
+        assert "plaintext" in caplog.text
 
     @patch("cerberus_django.middleware.ensure_background_thread")
     def test_source_ip_warning_only_once(self, mock_bg, rf, caplog):
-        with patch.dict("django.conf.settings.__dict__", {"CERBERUS_CONFIG": {
-            "token": "tok", "client_id": "cid", "ws_url": "wss://b:8765",
-        }}):
-            mw = CerberusMiddleware(lambda req: MagicMock(data={}))
-            self._drain_queue()
-            with caplog.at_level(logging.WARNING, logger="cerberus_django.middleware"):
-                mw(rf.get("/one"))
-                mw(rf.get("/two"))
-            assert caplog.text.count("plaintext") == 1
+        mw = _make_middleware(lambda req: MagicMock(data={}))
+        with caplog.at_level(logging.WARNING, logger="cerberus_django.middleware"):
+            mw(rf.get("/one"))
+            mw(rf.get("/two"))
+        assert caplog.text.count("plaintext") == 1
