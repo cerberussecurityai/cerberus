@@ -50,8 +50,8 @@ class FakeLambda:
 
 
 class Throttled(Exception):
-    def __init__(self):
-        super().__init__("slow down")
+    def __init__(self, message="slow down"):
+        super().__init__(message)
         self.response = {"Error": {"Code": "TooManyRequestsException"}}
 
 
@@ -616,6 +616,29 @@ def test_the_error_text_names_nothing_a_customer_should_not_see(chained):
         invoke()
     assert "arn:" not in str(raised.value)
     assert "123456789012" not in str(raised.value)
+
+
+# Stands in for anything an invoke error can quote: an ARN, a caller's token.
+SECRET = "sentinel-secret-quoted-by-the-error"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(RuntimeError(f"{CHAIN_ARN} refused {SECRET}"), id="not-retried"),
+        pytest.param(Throttled(f"{CHAIN_ARN} throttled {SECRET}"), id="retries-exhausted"),
+    ],
+)
+def test_a_failed_invoke_is_logged_by_its_type_alone(chained, caplog, error):
+    chained(raises=error)
+    with caplog.at_level(logging.WARNING, logger="cerberus_agentcore_interceptor"):
+        with pytest.raises(handler_mod.InterceptorError):
+            invoke()
+
+    assert f"chained invoke failed: {type(error).__name__}" in caplog.text
+    assert SECRET not in caplog.text
+    assert "123456789012" not in caplog.text
+    assert chained.sink.events[0]["custom_data"]["agentcore"]["chain"] == {"outcome": "error"}
 
 
 class UnreadableStream:

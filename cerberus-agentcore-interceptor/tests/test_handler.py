@@ -145,6 +145,19 @@ def test_a_raising_mapper_leaves_the_request_alone(sink, counted, monkeypatch):
     assert (metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER) in counted
 
 
+@pytest.mark.parametrize("name", ["mcp-tools-call-lambda", "mcp-tools-call-response-phase"])
+def test_an_output_that_cannot_be_built_falls_back_to_the_http_pass_through(
+    sink, monkeypatch, caplog, name
+):
+    monkeypatch.setattr(output, "passthrough", boom)
+    with caplog.at_level(logging.ERROR, logger="cerberus_agentcore_interceptor"):
+        result = invoke(name)
+
+    # Not an empty mcp output: that answers 200 and replaces the payload.
+    assert result == {"interceptorOutputVersion": "1.0", "http": {}}
+    assert "output could not be built: RuntimeError" in caplog.text
+
+
 def test_a_raising_sink_leaves_the_request_alone(counted, monkeypatch):
     monkeypatch.setattr(handler_mod, "SINK", RecordingSink(raises=RuntimeError("firehose")))
     assert invoke("inference-chat") == {"interceptorOutputVersion": "1.0", "http": {}}
