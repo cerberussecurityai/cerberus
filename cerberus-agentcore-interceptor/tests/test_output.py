@@ -34,6 +34,30 @@ def mcp_request(raw: str) -> dict:
     }
 
 
+CARRIED = ["string body", "raw body only", "parsed body only"]
+
+
+def mcp_request_carried(raw: str, carried: str) -> dict:
+    """mcp_request(raw) with the body in only the place CARRIED names."""
+    envelope = mcp_request(raw)
+    mcp = envelope["mcp"]
+    if carried == "string body":
+        mcp["gatewayRequest"]["body"] = raw
+        del mcp["rawGatewayRequest"]
+    elif carried == "raw body only":
+        mcp["gatewayRequest"]["body"] = None
+    else:
+        del mcp["rawGatewayRequest"]
+    return envelope
+
+
+def mcp_response(body: Any, status: int) -> dict:
+    return {
+        "interceptorInputVersion": "1.0",
+        "mcp": {"gatewayRequest": None, "gatewayResponse": {"body": body, "statusCode": status}},
+    }
+
+
 def echoed(result: dict) -> Any:
     return result["mcp"]["transformedGatewayRequest"]["body"]
 
@@ -126,18 +150,29 @@ def test_the_http_pass_through_is_not_shared_between_calls():
     assert passthrough(env.parse(load_case("inference-chat")["input"]))["http"] == {}
 
 
-def test_the_response_echo_carries_the_status_code():
-    envelope = {
-        "interceptorInputVersion": "1.0",
-        "mcp": {
-            "gatewayRequest": None,
-            "gatewayResponse": {"body": {"result": {}}, "statusCode": 503},
-        },
-    }
-    assert passthrough(env.parse(envelope))["mcp"]["transformedGatewayResponse"] == {
-        "body": {"result": {}},
-        "statusCode": 503,
-    }
+@pytest.mark.parametrize(
+    ("body", "status", "expected"),
+    [
+        pytest.param({"result": {}}, 503, {"result": {}}, id="carries-the-status-code"),
+        pytest.param(
+            {"result": {"text": "cut \ud83c"}},
+            200,
+            {"result": {"text": "cut �"}},
+            id="replaces-a-lone-surrogate",
+        ),
+        pytest.param(
+            {"result": {"n": float("-inf")}},
+            200,
+            {"result": {"n": "-Infinity"}},
+            id="writes-an-infinity-as-a-string",
+        ),
+    ],
+)
+def test_the_response_echo(body, status, expected):
+    result = passthrough(env.parse(mcp_response(body, status)))
+
+    assert result["mcp"]["transformedGatewayResponse"] == {"body": expected, "statusCode": status}
+    strict_json(runtime_encode(result))
 
 
 def test_a_string_mcp_body_is_echoed_as_the_call_it_encodes():
@@ -159,11 +194,6 @@ def test_nothing_to_echo_still_produces_a_valid_output():
     result = passthrough(env.parse({"interceptorInputVersion": "1.0", "mcp": {}}))
     assert result == {"interceptorOutputVersion": OUTPUT_VERSION, "mcp": {}}
     assert is_valid_output(result)
-
-
-def test_every_fixture_produces_a_valid_output():
-    for name in ("mcp-tools-call-lambda", "inference-chat", "unknown-input-version"):
-        assert is_valid_output(out(name))
 
 
 def test_is_valid_output_rejects_the_wrong_version_and_shape():
@@ -199,19 +229,9 @@ def test_a_lone_surrogate_in_a_key_is_replaced_too():
     assert echoed(result)["params"] == {"\ufffd": 1}
 
 
-@pytest.mark.parametrize("carried", ["string body", "raw body only", "parsed body only"])
+@pytest.mark.parametrize("carried", CARRIED)
 def test_a_lone_surrogate_is_replaced_however_the_body_arrives(carried):
-    envelope = mcp_request(LONE_SURROGATE_CALL)
-    mcp = envelope["mcp"]
-    if carried == "string body":
-        mcp["gatewayRequest"]["body"] = LONE_SURROGATE_CALL
-        del mcp["rawGatewayRequest"]
-    elif carried == "raw body only":
-        mcp["gatewayRequest"]["body"] = None
-    else:
-        del mcp["rawGatewayRequest"]
-
-    result = passthrough(env.parse(envelope))
+    result = passthrough(env.parse(mcp_request_carried(LONE_SURROGATE_CALL, carried)))
     assert echoed(result)["params"]["arguments"]["message"] == "Party \ufffd"
     runtime_encode(result)
 
@@ -227,20 +247,6 @@ def test_a_surrogate_code_point_in_a_string_body_is_replaced():
     assert echoed(passthrough(env.parse(envelope)))["note"] == "cut \ufffd"
 
 
-def test_the_response_echo_replaces_a_lone_surrogate():
-    envelope = {
-        "interceptorInputVersion": "1.0",
-        "mcp": {
-            "gatewayRequest": None,
-            "gatewayResponse": {"body": {"result": {"text": "cut \ud83c"}}, "statusCode": 200},
-        },
-    }
-    result = passthrough(env.parse(envelope))
-
-    assert result["mcp"]["transformedGatewayResponse"]["body"] == {"result": {"text": "cut \ufffd"}}
-    runtime_encode(result)
-
-
 def strict_json(data: bytes) -> Any:
     def refuse(token: str) -> Any:
         raise AssertionError(f"{token} is not JSON")
@@ -254,19 +260,9 @@ OVERFLOWING_CALL = (
 )
 
 
-@pytest.mark.parametrize("carried", ["string body", "raw body only", "parsed body only"])
+@pytest.mark.parametrize("carried", CARRIED)
 def test_an_overflowing_number_is_echoed_as_the_gateway_writes_it(carried):
-    envelope = mcp_request(OVERFLOWING_CALL)
-    mcp = envelope["mcp"]
-    if carried == "string body":
-        mcp["gatewayRequest"]["body"] = OVERFLOWING_CALL
-        del mcp["rawGatewayRequest"]
-    elif carried == "raw body only":
-        mcp["gatewayRequest"]["body"] = None
-    else:
-        del mcp["rawGatewayRequest"]
-
-    result = passthrough(env.parse(envelope))
+    result = passthrough(env.parse(mcp_request_carried(OVERFLOWING_CALL, carried)))
 
     assert echoed(result)["params"]["arguments"] == {
         "big": "Infinity",
@@ -279,20 +275,6 @@ def test_an_overflowing_number_is_echoed_as_the_gateway_writes_it(carried):
 def test_a_nan_token_is_echoed_as_a_string():
     result = passthrough(env.parse(mcp_request('{"id": 1, "params": {"n": NaN}}')))
     assert echoed(result)["params"] == {"n": "NaN"}
-    strict_json(runtime_encode(result))
-
-
-def test_the_response_echo_writes_an_infinity_as_a_string():
-    envelope = {
-        "interceptorInputVersion": "1.0",
-        "mcp": {
-            "gatewayRequest": None,
-            "gatewayResponse": {"body": {"result": {"n": float("-inf")}}, "statusCode": 200},
-        },
-    }
-    result = passthrough(env.parse(envelope))
-
-    assert result["mcp"]["transformedGatewayResponse"]["body"] == {"result": {"n": "-Infinity"}}
     strict_json(runtime_encode(result))
 
 

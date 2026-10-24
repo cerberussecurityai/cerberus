@@ -166,15 +166,6 @@ def test_an_oversized_record_never_reaches_firehose():
     assert client.calls == []
 
 
-def test_several_streams_are_picked_stably_by_key():
-    streams = ("a", "b", "c")
-    chosen = sink(streams=streams)
-    first = chosen.stream_for("arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/gw-1")
-    again = chosen.stream_for("arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/gw-1")
-    assert first == again
-    assert first in streams
-
-
 @pytest.mark.parametrize(
     ("gateway", "stream"),
     [("gw-1", "b"), ("gw-2", "c"), ("gw-4", "a")],
@@ -186,12 +177,6 @@ def test_a_key_picks_the_same_stream_in_every_release(gateway, stream):
 
 def test_one_stream_needs_no_hashing():
     assert sink().stream_for("anything") == "stream-a"
-
-
-def test_keys_spread_across_streams():
-    chosen = sink(streams=("a", "b", "c"))
-    picked = {chosen.stream_for(f"gateway-{index}") for index in range(50)}
-    assert len(picked) > 1
 
 
 def test_prepare_does_not_raise_without_credentials(monkeypatch, caplog):

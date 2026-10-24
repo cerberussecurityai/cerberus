@@ -10,9 +10,9 @@ from helpers import (
     ForgetfulEndpoint,
     LambdaContext,
     RecordingSink,
-    TimedContext,
     boom,
     invoke,
+    invoke_with,
     load_case,
     runtime_encode,
     use_local_endpoint,
@@ -587,7 +587,7 @@ def test_a_chain_error_is_captured_and_then_raised(chained):
     assert chained.sink.events[0]["custom_data"]["agentcore"]["chain"] == {"outcome": "error"}
 
 
-def test_an_unlisted_gateway_is_refused_before_the_chain_runs(chained):
+def test_an_unlisted_gateway_is_refused_and_named_before_the_chain_runs(chained, caplog):
     fake = chained(mcp_output({}))
     case = load_case("mcp-tools-call-lambda")
     context = dict(case["client_context"])
@@ -597,16 +597,6 @@ def test_an_unlisted_gateway_is_refused_before_the_chain_runs(chained):
         handler_mod.handler(case["input"], LambdaContext(context))
     assert fake.calls == []
     assert chained.sink.events == []
-
-
-def test_a_refused_gateway_is_named_in_the_log(chained, caplog):
-    chained(mcp_output({}))
-    case = load_case("mcp-tools-call-lambda")
-    context = dict(case["client_context"])
-    context["GATEWAY_ARN"] = context["GATEWAY_ARN"].replace(GATEWAY_ID, "unlisted-gateway")
-
-    with pytest.raises(handler_mod.InterceptorError):
-        handler_mod.handler(case["input"], LambdaContext(context))
     assert any("unlisted-gateway" in record.getMessage() for record in caplog.records)
 
 
@@ -648,7 +638,7 @@ def test_an_answer_that_cannot_be_read_is_refused_without_naming_the_function(ch
 def test_a_raising_parser_still_invokes_the_chain_once(chained, monkeypatch):
     fake = chained(mcp_output({}))
     monkeypatch.setattr(handler_mod, "parse", boom)
-    handler_mod.handler(load_case("mcp-tools-call-lambda")["input"], context())
+    invoke()
     assert len(fake.calls) == 1
 
 
@@ -776,11 +766,8 @@ def test_with_capture_off_the_chained_answer_still_decides(chained, counted, mon
 
 def test_a_throttled_chain_is_not_retried_past_the_functions_time(chained):
     fake = chained(raises=Throttled())
-    case = load_case("mcp-tools-call-lambda")
-    context = TimedContext(case["client_context"], handler_mod.ANSWER_MARGIN_MS + 300)
-
     with pytest.raises(handler_mod.InterceptorError):
-        handler_mod.handler(case["input"], context)
+        invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 300)
     assert len(fake.calls) == 1
 
 
@@ -802,10 +789,9 @@ def test_an_unreadable_remaining_time_still_chains(chained):
 def test_capture_after_a_slow_chain_gives_up_and_the_answer_stands(chained):
     answer = mcp_output({"jsonrpc": "2.0", "id": 7, "method": "tools/call"})
     chained(answer)
-    case = load_case("mcp-tools-call-lambda")
-    context = TimedContext(case["client_context"], handler_mod.ANSWER_MARGIN_MS)
+    _, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS)
 
-    assert handler_mod.handler(case["input"], context) == answer
+    assert result == answer
     assert chained.sink.events == []
 
 

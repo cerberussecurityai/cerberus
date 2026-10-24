@@ -59,13 +59,10 @@ def test_http_request_is_captured_and_passed_through(sink):
 
 
 @pytest.mark.parametrize("name", case_names())
-def test_every_fixture_returns_a_valid_output(sink, name):
-    assert output.is_valid_output(invoke(name))
-
-
-@pytest.mark.parametrize("name", case_names())
-def test_every_output_is_serializable(sink, name):
-    runtime_encode(invoke(name))
+def test_every_fixture_returns_a_valid_serializable_output(sink, name):
+    result = invoke(name)
+    assert output.is_valid_output(result)
+    runtime_encode(result)
 
 
 def test_an_echoed_lone_surrogate_survives_the_runtime_encode(sink):
