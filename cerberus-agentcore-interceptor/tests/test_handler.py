@@ -31,12 +31,24 @@ class CountingFirehose:
         return {"RecordId": "r-1"}
 
 
+OPTIONS = Config(streams=("s",)).mapper_options("0.1.0")
+
+
 @pytest.fixture
 def sink(monkeypatch):
     recording = RecordingSink()
     monkeypatch.setattr(handler_mod, "SINK", recording)
-    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
+    monkeypatch.setattr(handler_mod, "OPTIONS", OPTIONS)
     return recording
+
+
+@pytest.fixture
+def firehose(monkeypatch):
+    """The shipped sink, writing to a client that counts its puts."""
+    client = CountingFirehose()
+    monkeypatch.setattr(handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=client))
+    monkeypatch.setattr(handler_mod, "OPTIONS", OPTIONS)
+    return client
 
 
 def test_mcp_request_is_captured_and_echoed(sink):
@@ -198,11 +210,7 @@ def test_capture_past_its_deadline_passes_the_request_through(sink, counted):
 
 
 @pytest.mark.parametrize("extra_ms", [0, 700])
-def test_a_deadline_drop_names_the_request(monkeypatch, extra_ms):
-    monkeypatch.setattr(
-        handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=CountingFirehose())
-    )
-    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
+def test_a_deadline_drop_names_the_request(firehose, monkeypatch, extra_ms):
     fields: list[dict] = []
     monkeypatch.setattr(
         handler_mod.metrics, "count", lambda name, reason="", **kw: fields.append(kw)
@@ -212,18 +220,15 @@ def test_a_deadline_drop_names_the_request(monkeypatch, extra_ms):
     assert fields == [{"request_id": case["client_context"]["REQUEST_ID"]}]
 
 
-def test_a_put_that_could_outlast_the_deadline_is_skipped(counted, monkeypatch):
-    client = CountingFirehose()
-    monkeypatch.setattr(handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=client))
-    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
-    case, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 700)
+def test_a_put_that_could_outlast_the_deadline_is_skipped(firehose, counted):
+    _, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 700)
 
     assert output.is_valid_output(result)
-    assert client.calls == 0
+    assert firehose.calls == 0
     assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE)]
 
     invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 1000)
-    assert client.calls == 1
+    assert firehose.calls == 1
     assert counted[-1] == (metrics.CAPTURED, "")
 
 
