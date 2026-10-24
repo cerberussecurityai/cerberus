@@ -1,48 +1,25 @@
 """The handler's contract: whatever fails, the caller's payload comes back intact."""
 
-import importlib
 import json
 import logging
 from time import monotonic
 
 import pytest
-from helpers import LambdaContext, case_names, load_case, runtime_encode
+from helpers import (
+    LambdaContext,
+    RecordingSink,
+    boom,
+    case_names,
+    invoke,
+    invoke_with,
+    load_case,
+    runtime_encode,
+)
 
 from cerberus_agentcore_interceptor import handler as handler_mod
 from cerberus_agentcore_interceptor import metrics, output
 from cerberus_agentcore_interceptor.config import Config
 from cerberus_agentcore_interceptor.sink import FirehoseSink
-
-
-class RecordingSink(FirehoseSink):
-    """A sink that records instead of writing, and can fail on demand."""
-
-    def __init__(self, reason: str = "", raises: Exception | None = None):
-        super().__init__(("stream",), 250, 500, client=object())
-        self.events: list[dict] = []
-        self.keys: list[str] = []
-        self.deadlines: list[float | None] = []
-        self._reason = reason
-        self._raises = raises
-
-    def put(self, event, key, deadline=None):
-        if self._raises is not None:
-            raise self._raises
-        self.events.append(event)
-        self.keys.append(key)
-        self.deadlines.append(deadline)
-        return self._reason
-
-
-class TimedContext(LambdaContext):
-    """A Lambda context that reports a fixed remaining time."""
-
-    def __init__(self, custom, remaining_ms):
-        super().__init__(custom)
-        self.remaining_ms = remaining_ms
-
-    def get_remaining_time_in_millis(self):
-        return self.remaining_ms
 
 
 class CountingFirehose:
@@ -54,38 +31,24 @@ class CountingFirehose:
         return {"RecordId": "r-1"}
 
 
-def _boom(*args, **kwargs):
-    raise RuntimeError("boom")
-
-
-def invoke_with(name: str, remaining_ms: int):
-    case = load_case(name)
-    context = TimedContext(case["client_context"], remaining_ms)
-    return case, handler_mod.handler(case["input"], context)
+OPTIONS = Config(streams=("s",)).mapper_options("0.1.0")
 
 
 @pytest.fixture
 def sink(monkeypatch):
     recording = RecordingSink()
     monkeypatch.setattr(handler_mod, "SINK", recording)
-    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
+    monkeypatch.setattr(handler_mod, "OPTIONS", OPTIONS)
     return recording
 
 
 @pytest.fixture
-def counted(monkeypatch):
-    counts: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        handler_mod.metrics,
-        "count",
-        lambda name, reason="", **fields: counts.append((name, reason)),
-    )
-    return counts
-
-
-def invoke(name: str):
-    case = load_case(name)
-    return handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
+def firehose(monkeypatch):
+    """The shipped sink, writing to a client that counts its puts."""
+    client = CountingFirehose()
+    monkeypatch.setattr(handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=client))
+    monkeypatch.setattr(handler_mod, "OPTIONS", OPTIONS)
+    return client
 
 
 def test_mcp_request_is_captured_and_echoed(sink):
@@ -108,13 +71,10 @@ def test_http_request_is_captured_and_passed_through(sink):
 
 
 @pytest.mark.parametrize("name", case_names())
-def test_every_fixture_returns_a_valid_output(sink, name):
-    assert output.is_valid_output(invoke(name))
-
-
-@pytest.mark.parametrize("name", case_names())
-def test_every_output_is_serializable(sink, name):
-    runtime_encode(invoke(name))
+def test_every_fixture_returns_a_valid_serializable_output(sink, name):
+    result = invoke(name)
+    assert output.is_valid_output(result)
+    runtime_encode(result)
 
 
 def test_an_echoed_lone_surrogate_survives_the_runtime_encode(sink):
@@ -151,7 +111,7 @@ def test_unknown_input_version_captures_nothing_and_echoes(sink, counted):
 
 
 def test_a_raising_parser_leaves_the_request_alone(sink, counted, monkeypatch):
-    monkeypatch.setattr(handler_mod, "parse", _boom)
+    monkeypatch.setattr(handler_mod, "parse", boom)
     result = handler_mod.handler(load_case("inference-chat")["input"], None)
 
     assert output.is_valid_output(result)
@@ -175,7 +135,7 @@ def test_a_failure_is_logged_without_its_message(sink, counted, monkeypatch, cap
 
 
 def test_a_raising_mapper_leaves_the_request_alone(sink, counted, monkeypatch):
-    monkeypatch.setattr(handler_mod, "source_event", _boom)
+    monkeypatch.setattr(handler_mod, "source_event", boom)
     case = load_case("mcp-tools-call-lambda")
     result = handler_mod.handler(case["input"], LambdaContext(case["client_context"]))
 
@@ -183,6 +143,19 @@ def test_a_raising_mapper_leaves_the_request_alone(sink, counted, monkeypatch):
         "body": case["input"]["mcp"]["gatewayRequest"]["body"]
     }
     assert (metrics.CAPTURE_DROPPED, metrics.REASON_HANDLER) in counted
+
+
+@pytest.mark.parametrize("name", ["mcp-tools-call-lambda", "mcp-tools-call-response-phase"])
+def test_an_output_that_cannot_be_built_falls_back_to_the_http_pass_through(
+    sink, monkeypatch, caplog, name
+):
+    monkeypatch.setattr(output, "passthrough", boom)
+    with caplog.at_level(logging.ERROR, logger="cerberus_agentcore_interceptor"):
+        result = invoke(name)
+
+    # Not an empty mcp output: that answers 200 and replaces the payload.
+    assert result == {"interceptorOutputVersion": "1.0", "http": {}}
+    assert "output could not be built: RuntimeError" in caplog.text
 
 
 def test_a_raising_sink_leaves_the_request_alone(counted, monkeypatch):
@@ -250,11 +223,7 @@ def test_capture_past_its_deadline_passes_the_request_through(sink, counted):
 
 
 @pytest.mark.parametrize("extra_ms", [0, 700])
-def test_a_deadline_drop_names_the_request(monkeypatch, extra_ms):
-    monkeypatch.setattr(
-        handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=CountingFirehose())
-    )
-    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
+def test_a_deadline_drop_names_the_request(firehose, monkeypatch, extra_ms):
     fields: list[dict] = []
     monkeypatch.setattr(
         handler_mod.metrics, "count", lambda name, reason="", **kw: fields.append(kw)
@@ -264,18 +233,15 @@ def test_a_deadline_drop_names_the_request(monkeypatch, extra_ms):
     assert fields == [{"request_id": case["client_context"]["REQUEST_ID"]}]
 
 
-def test_a_put_that_could_outlast_the_deadline_is_skipped(counted, monkeypatch):
-    client = CountingFirehose()
-    monkeypatch.setattr(handler_mod, "SINK", FirehoseSink(("s",), 250, 500, client=client))
-    monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
-    case, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 700)
+def test_a_put_that_could_outlast_the_deadline_is_skipped(firehose, counted):
+    _, result = invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 700)
 
     assert output.is_valid_output(result)
-    assert client.calls == 0
+    assert firehose.calls == 0
     assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE)]
 
     invoke_with("mcp-tools-call-lambda", handler_mod.ANSWER_MARGIN_MS + 1000)
-    assert client.calls == 1
+    assert firehose.calls == 1
     assert counted[-1] == (metrics.CAPTURED, "")
 
 
@@ -298,27 +264,21 @@ def test_capture_off_is_counted(sink, counted, monkeypatch):
     assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
 
 
-def test_the_module_reads_its_configuration_at_import(monkeypatch):
+def test_the_module_reads_its_configuration_at_import(monkeypatch, reload_handler):
     monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "one,two")
     monkeypatch.setenv("CERBERUS_IDENTITY", "sigv4")
     monkeypatch.setenv("CERBERUS_MAX_EVENT_BYTES", "4096")
-    reloaded = importlib.reload(handler_mod)
+    reloaded = reload_handler()
 
     assert reloaded.CONFIG.streams == ("one", "two")
     assert reloaded.OPTIONS.identity_mode == "sigv4"
     assert reloaded.OPTIONS.max_event_bytes == 4096
 
-    monkeypatch.undo()
-    importlib.reload(handler_mod)
 
-
-def test_an_unusable_setting_does_not_fail_the_import(monkeypatch):
+def test_an_unusable_setting_does_not_fail_the_import(monkeypatch, reload_handler):
     monkeypatch.setenv("CERBERUS_CAPTURE_BODIES", "maybe")
     monkeypatch.setenv("CERBERUS_LOG_LEVEL", "verbose")
-    reloaded = importlib.reload(handler_mod)
+    reloaded = reload_handler()
 
     assert reloaded.CONFIG.invalid == ("CERBERUS_CAPTURE_BODIES",)
     assert reloaded.logger.level == logging.INFO
-
-    monkeypatch.undo()
-    importlib.reload(handler_mod)

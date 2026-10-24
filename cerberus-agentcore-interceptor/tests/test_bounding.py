@@ -4,11 +4,9 @@ import json
 from time import monotonic
 
 import pytest
-from helpers import TIMESTAMP, LambdaContext, load_case, options
+from helpers import load_case, map_loaded_case
 
 from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, bounding, mapper
-from cerberus_agentcore_interceptor import envelope as envelope_mod
-from cerberus_agentcore_interceptor.mapper import source_event
 
 MAX = bounding.DEFAULT_MAX_EVENT_BYTES
 
@@ -22,13 +20,7 @@ def map_with_body(case_name: str, body, deadline=None, raw=False, **overrides):
         shape["rawGatewayRequest"] = {"body": json.dumps(body)}
     else:
         shape.pop("rawGatewayRequest", None)
-    return source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
-        options(case, **overrides),
-        TIMESTAMP,
-        deadline=deadline,
-    )
+    return map_loaded_case(case, deadline, **overrides)
 
 
 def note(event):
@@ -156,15 +148,9 @@ def test_a_two_hundred_kilobyte_tool_call_still_classifies():
 
 def test_an_event_that_cannot_be_bounded_is_dropped():
     case = load_case("mcp-tools-call-lambda")
-    context = dict(case["client_context"])
-    context["GATEWAY_ARN"] = "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/" + "g" * 200
-    event = source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(context)),
-        options(case, max_event_bytes=200),
-        TIMESTAMP,
-    )
-    assert event is None
+    gateway = "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/" + "g" * 200
+    case["client_context"]["GATEWAY_ARN"] = gateway
+    assert map_loaded_case(case, max_event_bytes=200) is None
 
 
 def test_a_custom_cap_is_honoured():
@@ -203,12 +189,7 @@ def test_padded_headers_cannot_push_an_event_out_of_capture():
     for name in ("User-Agent", "Content-Type", "X-Amzn-Trace-Id", "anthropic-version"):
         request["headers"][name] = "\U0001f600" * 40000
 
-    event = source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
-        options(case),
-        TIMESTAMP,
-    )
+    event = map_loaded_case(case)
 
     assert event is not None
     assert event["body"]["method"] == "tools/call"
@@ -218,12 +199,7 @@ def test_padded_headers_cannot_push_an_event_out_of_capture():
 def test_headers_are_shed_before_the_body():
     case = load_case("mcp-tools-call-lambda")
     case["input"]["mcp"]["gatewayRequest"]["headers"]["User-Agent"] = "u" * 900
-    event = source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
-        options(case, max_event_bytes=1000),
-        TIMESTAMP,
-    )
+    event = map_loaded_case(case, max_event_bytes=1000)
 
     assert event is not None
     assert "headers" not in event
@@ -593,12 +569,7 @@ def test_a_parsed_body_and_the_headers_are_made_storable():
         "params": {"name": "shell___exec", "arguments": {"cmd": "id\udc00", "x": float("nan")}},
     }
     case["input"]["mcp"].pop("rawGatewayRequest", None)
-    event = source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
-        options(case),
-        TIMESTAMP,
-    )
+    event = map_loaded_case(case)
 
     assert event["user_agent"] == "agent\ufffd/1"
     assert event["headers"]["User-Agent"] == "agent\ufffd/1"

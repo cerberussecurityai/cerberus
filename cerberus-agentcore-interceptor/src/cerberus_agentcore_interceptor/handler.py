@@ -50,7 +50,12 @@ class InterceptorError(RuntimeError):
 
 
 def handler(event: Any, context: Any = None) -> dict[str, Any]:
-    """Capture one interception and return the caller's payload unchanged."""
+    """Capture one interception and answer the gateway.
+
+    The answer is the chained interceptor's when one is configured, otherwise the
+    caller's payload unchanged. Raises InterceptorError when the request must not
+    be served.
+    """
     envelope = _parse(event)
     gateway = _gateway(context)
     if envelope is None:
