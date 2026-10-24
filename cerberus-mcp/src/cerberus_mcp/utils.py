@@ -4,9 +4,13 @@ Cerberus MCP Utilities
 Argument sanitization and result summarization helpers for MCP event capture.
 """
 
+import logging
+
 from cerberus_core import REDACTED, SENSITIVE_KEYS, sanitize_dict
 
 from .config import MAX_ARG_STRING_LENGTH
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_arguments(args):
