@@ -174,7 +174,7 @@ playground/drive.sh # send one chat completion + one MCP tools/call
 ```
 
 Success looks like the stub ingest printing one `llm_chat_completion` event
-and one `mcp_tool_call` event with a 64-hex-char hashed `source_ip` and
+and one `mcp_tool_call` event with a 64-hex-char hashed `remote_addr` and
 `[REDACTED]` sensitive argument values.
 
 Without `aigw`, `drive.sh --direct` POSTs pre-recorded OTLP payloads straight
