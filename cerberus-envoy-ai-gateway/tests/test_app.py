@@ -82,6 +82,17 @@ def test_health_and_ready(config):
         assert ready.json() == {"status": "ready"}
 
 
+def test_requests_before_startup_get_503(config):
+    # Without the context manager TestClient never runs the lifespan, so the
+    # app stays in its pre-startup state.
+    client = TestClient(create_app(make_test_config(config)))
+    for method, path in (("post", "/v1/traces"), ("get", "/ready"), ("get", "/stats")):
+        response = client.request(method, path)
+        assert response.status_code == 503, path
+        assert response.json() == {"status": "starting"}, path
+    assert client.get("/health").status_code == 200
+
+
 def test_dump_spans_prints_decoded_spans(config, capsys):
     app = create_app(make_test_config(config, dump_spans=True))
     with TestClient(app) as client:
