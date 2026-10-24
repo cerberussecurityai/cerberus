@@ -300,28 +300,17 @@ class CerberusMCP(FastMCP):
                         tool_entry["input_schema"] = schema
                     tools_list.append(tool_entry)
 
-            # Introspect registered resources (both concrete and templates)
+            # Introspect registered resources: concrete resources with fixed
+            # URIs, then parameterized URI templates (e.g. "resource://{city}/weather")
             resource_manager = getattr(self, '_resource_manager', None)
             if resource_manager is not None:
-                # Concrete resources with fixed URIs
-                resources_dict = getattr(resource_manager, '_resources', {})
-                for r_uri, r_obj in resources_dict.items():
-                    res_entry = {
-                        "uri_template": str(r_uri),
-                        "name": getattr(r_obj, 'name', str(r_uri)),
-                        "description": getattr(r_obj, 'description', '') or '',
-                    }
-                    resources_list.append(res_entry)
-
-                # Parameterized URI templates (e.g. "resource://{city}/weather")
-                templates_dict = getattr(resource_manager, '_templates', {})
-                for t_uri, t_obj in templates_dict.items():
-                    res_entry = {
-                        "uri_template": str(t_uri),
-                        "name": getattr(t_obj, 'name', str(t_uri)),
-                        "description": getattr(t_obj, 'description', '') or '',
-                    }
-                    resources_list.append(res_entry)
+                for registry in ('_resources', '_templates'):
+                    for r_uri, r_obj in getattr(resource_manager, registry, {}).items():
+                        resources_list.append({
+                            "uri_template": str(r_uri),
+                            "name": getattr(r_obj, 'name', str(r_uri)),
+                            "description": getattr(r_obj, 'description', '') or '',
+                        })
 
             # Introspect registered prompts
             prompt_manager = getattr(self, '_prompt_manager', None)
