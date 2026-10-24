@@ -11,6 +11,9 @@ DEBUG_ENABLED = os.getenv('CERBERUS_DEBUG', 'false').lower() in ('true', '1', 'y
 # Maximum length for string values in captured arguments
 MAX_ARG_STRING_LENGTH = 200
 
+# Maximum length for result summary strings
+MAX_RESULT_LENGTH = 100
+
 # Maximum number of events to buffer before dropping
 EVENT_QUEUE_MAXSIZE = 10_000
 
