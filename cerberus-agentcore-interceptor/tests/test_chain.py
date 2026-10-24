@@ -2,7 +2,6 @@
 
 import base64
 import copy
-import importlib
 import json
 import logging
 
@@ -373,6 +372,11 @@ def chain_env(gateway_ids=GATEWAY_ID, **overrides):
     }
 
 
+def set_env(monkeypatch, env):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+
 def test_chaining_needs_gateway_ids_and_a_read_timeout():
     with pytest.raises(ConfigError, match="CERBERUS_GATEWAY_IDS"):
         Config.from_env({**MINIMAL, "CERBERUS_CHAIN_REQUEST_ARN": CHAIN_ARN})
@@ -708,38 +712,30 @@ def test_without_a_chain_the_handler_answers_for_itself(monkeypatch):
     assert "transformedGatewayRequest" in invoke()["mcp"]
 
 
-def test_the_module_builds_a_chain_client_from_the_environment(monkeypatch):
-    monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "s")
-    monkeypatch.setenv("CERBERUS_CHAIN_REQUEST_ARN", CHAIN_ARN)
-    monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
-    monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
-    monkeypatch.setenv("CERBERUS_CHAIN_PASS_HEADERS", "true")
-    reloaded = importlib.reload(handler_mod)
-    try:
-        assert reloaded.CHAIN is not None
-        assert reloaded.CONFIG.gateway_ids == (GATEWAY_ID,)
-        fake = FakeLambda(payload=mcp_output({}))
-        monkeypatch.setattr(reloaded.CHAIN, "_client", fake)
-        monkeypatch.setattr(reloaded, "SINK", RecordingSink())
-        reloaded.handler(load_case("mcp-tools-call-lambda")["input"], context())
-        assert json.loads(fake.calls[0]["Payload"])["mcp"]["gatewayRequest"]["headers"]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(handler_mod)
+def test_the_module_builds_a_chain_client_from_the_environment(monkeypatch, reload_handler):
+    set_env(
+        monkeypatch,
+        chain_env(CERBERUS_CHAIN_READ_MS="4000", CERBERUS_CHAIN_PASS_HEADERS="true"),
+    )
+    reloaded = reload_handler()
+
+    assert reloaded.CHAIN is not None
+    assert reloaded.CONFIG.gateway_ids == (GATEWAY_ID,)
+    fake = FakeLambda(payload=mcp_output({}))
+    monkeypatch.setattr(reloaded.CHAIN, "_client", fake)
+    monkeypatch.setattr(reloaded, "SINK", RecordingSink())
+    reloaded.handler(load_case("mcp-tools-call-lambda")["input"], context())
+    assert json.loads(fake.calls[0]["Payload"])["mcp"]["gatewayRequest"]["headers"]
 
 
-def test_the_module_refuses_to_load_with_a_chain_but_no_arn(monkeypatch):
+def test_the_module_refuses_to_load_with_a_chain_but_no_arn(monkeypatch, reload_handler):
     monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "s")
     monkeypatch.delenv("CERBERUS_CHAIN_REQUEST_ARN", raising=False)
     monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
     monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
     monkeypatch.setenv("CERBERUS_CHAIN_PASS_HEADERS", "true")
-    try:
-        with pytest.raises(ConfigError):
-            importlib.reload(handler_mod)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(handler_mod)
+    with pytest.raises(ConfigError):
+        reload_handler()
 
 
 def test_capture_keeps_the_headers_the_chained_function_does_not_get(chained):
@@ -750,18 +746,10 @@ def test_capture_keeps_the_headers_the_chained_function_does_not_get(chained):
     assert chained.sink.events[0]["user_agent"] == "python-requests/2.34.2"
 
 
-def test_metrics_still_count_the_capture(chained):
-    counts = []
+def test_metrics_still_count_the_capture(chained, counted):
     chained(mcp_output({}))
-    original = metrics.count
-    try:
-        metrics.count = lambda name, reason="", **fields: counts.append(name)
-        handler_mod.metrics.count = metrics.count
-        invoke()
-    finally:
-        metrics.count = original
-        handler_mod.metrics.count = original
-    assert metrics.CAPTURED in counts
+    invoke()
+    assert (metrics.CAPTURED, "") in counted
 
 
 def test_a_lone_surrogate_in_the_chained_answer_survives_the_runtime_encode(chained):
@@ -774,20 +762,16 @@ def test_a_lone_surrogate_in_the_chained_answer_survives_the_runtime_encode(chai
     assert wire["mcp"]["transformedGatewayRequest"]["body"]["params"]["name"] == "a�"
 
 
-def test_with_capture_off_the_chained_answer_still_decides(chained, monkeypatch):
+def test_with_capture_off_the_chained_answer_still_decides(chained, counted, monkeypatch):
     answer = mcp_output({"jsonrpc": "2.0", "id": 7, "method": "tools/call"})
     fake = chained(answer)
     off = Config.from_env(chain_env(CERBERUS_FIREHOSE_STREAM=""))
     monkeypatch.setattr(handler_mod, "CONFIG", off)
-    counts = []
-    monkeypatch.setattr(
-        handler_mod.metrics, "count", lambda name, reason="", **_: counts.append((name, reason))
-    )
 
     assert invoke() == answer
     assert len(fake.calls) == 1
     assert chained.sink.events == []
-    assert counts == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
+    assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
 
 
 def test_a_throttled_chain_is_not_retried_past_the_functions_time(chained):
@@ -825,22 +809,22 @@ def test_capture_after_a_slow_chain_gives_up_and_the_answer_stands(chained):
     assert chained.sink.events == []
 
 
-def test_the_chain_client_is_prepared_with_capture_off(monkeypatch):
+def test_the_chain_client_is_prepared_with_capture_off(monkeypatch, reload_handler):
     prepared = []
     monkeypatch.setattr(ChainClient, "prepare", lambda self: prepared.append(self))
     monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "interceptor")
-    monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "not a stream")
-    monkeypatch.setenv("CERBERUS_CHAIN_REQUEST_ARN", CHAIN_ARN)
-    monkeypatch.setenv("CERBERUS_GATEWAY_IDS", GATEWAY_ID)
-    monkeypatch.setenv("CERBERUS_CHAIN_READ_MS", "4000")
-    monkeypatch.setenv("CERBERUS_CHAIN_PASS_HEADERS", "true")
-    reloaded = importlib.reload(handler_mod)
-    try:
-        assert not reloaded.CONFIG.capturing
-        assert prepared == [reloaded.CHAIN]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(handler_mod)
+    set_env(
+        monkeypatch,
+        chain_env(
+            CERBERUS_FIREHOSE_STREAM="not a stream",
+            CERBERUS_CHAIN_READ_MS="4000",
+            CERBERUS_CHAIN_PASS_HEADERS="true",
+        ),
+    )
+    reloaded = reload_handler()
+
+    assert not reloaded.CONFIG.capturing
+    assert prepared == [reloaded.CHAIN]
 
 
 def test_a_client_that_cannot_be_built_is_logged_by_error_type(monkeypatch, caplog):

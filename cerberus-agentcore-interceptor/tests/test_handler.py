@@ -1,6 +1,5 @@
 """The handler's contract: whatever fails, the caller's payload comes back intact."""
 
-import importlib
 import json
 import logging
 from time import monotonic
@@ -38,17 +37,6 @@ def sink(monkeypatch):
     monkeypatch.setattr(handler_mod, "SINK", recording)
     monkeypatch.setattr(handler_mod, "OPTIONS", Config(streams=("s",)).mapper_options("0.1.0"))
     return recording
-
-
-@pytest.fixture
-def counted(monkeypatch):
-    counts: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        handler_mod.metrics,
-        "count",
-        lambda name, reason="", **fields: counts.append((name, reason)),
-    )
-    return counts
 
 
 def test_mcp_request_is_captured_and_echoed(sink):
@@ -261,27 +249,21 @@ def test_capture_off_is_counted(sink, counted, monkeypatch):
     assert counted == [(metrics.CAPTURE_DROPPED, metrics.REASON_CONFIG)]
 
 
-def test_the_module_reads_its_configuration_at_import(monkeypatch):
+def test_the_module_reads_its_configuration_at_import(monkeypatch, reload_handler):
     monkeypatch.setenv("CERBERUS_FIREHOSE_STREAM", "one,two")
     monkeypatch.setenv("CERBERUS_IDENTITY", "sigv4")
     monkeypatch.setenv("CERBERUS_MAX_EVENT_BYTES", "4096")
-    reloaded = importlib.reload(handler_mod)
+    reloaded = reload_handler()
 
     assert reloaded.CONFIG.streams == ("one", "two")
     assert reloaded.OPTIONS.identity_mode == "sigv4"
     assert reloaded.OPTIONS.max_event_bytes == 4096
 
-    monkeypatch.undo()
-    importlib.reload(handler_mod)
 
-
-def test_an_unusable_setting_does_not_fail_the_import(monkeypatch):
+def test_an_unusable_setting_does_not_fail_the_import(monkeypatch, reload_handler):
     monkeypatch.setenv("CERBERUS_CAPTURE_BODIES", "maybe")
     monkeypatch.setenv("CERBERUS_LOG_LEVEL", "verbose")
-    reloaded = importlib.reload(handler_mod)
+    reloaded = reload_handler()
 
     assert reloaded.CONFIG.invalid == ("CERBERUS_CAPTURE_BODIES",)
     assert reloaded.logger.level == logging.INFO
-
-    monkeypatch.undo()
-    importlib.reload(handler_mod)
