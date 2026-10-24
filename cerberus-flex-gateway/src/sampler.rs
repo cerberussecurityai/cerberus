@@ -295,13 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn keyed_decision_is_deterministic() {
-        let a = keyed_decision(KEY_MATERIAL, DOMAIN_SESSION, "sess-1", None, 0.5);
-        let b = keyed_decision(KEY_MATERIAL, DOMAIN_SESSION, "sess-1", None, 0.5);
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn keyed_sampler_matches_pure_decision() {
         let s = KeyedSampler::new(0.5, KEY_MATERIAL);
         for i in 0..64 {

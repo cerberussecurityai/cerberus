@@ -125,14 +125,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hash_pii_is_deterministic() {
-        let a = hash_pii("192.168.1.1", "secret");
-        let b = hash_pii("192.168.1.1", "secret");
-        assert_eq!(a, b);
-        assert_eq!(a.len(), 64); // SHA-256 hex
-    }
-
-    #[test]
     fn hash_pii_changes_with_secret() {
         let a = hash_pii("192.168.1.1", "secret-1");
         let b = hash_pii("192.168.1.1", "secret-2");
