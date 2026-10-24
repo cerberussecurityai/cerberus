@@ -21,7 +21,8 @@ class MCPEventData:
         - source_ip: Client IP for SSE/HTTP transports, "mcp-local" for stdio
         - endpoint: mcp://{server_name}/{handler_name}
         - scheme: "mcp" (distinguishes MCP transport from HTTP)
-        - method: Event type (mcp_tool_call, mcp_resource_read, mcp_prompt_get)
+        - method: Event type (mcp_tool_call, mcp_resource_read, mcp_prompt_get,
+          or mcp_schema_report)
         - timestamp: ISO 8601 UTC timestamp
         - custom_data: MCP-specific metadata (see below)
         - headers: None (MCP has no HTTP headers)
@@ -30,12 +31,12 @@ class MCPEventData:
         - user_agent: "cerberus-mcp/{version}"
         - user_id: MCP client ID if available
 
-    custom_data fields:
+    custom_data fields (handler calls; an mcp_schema_report event carries
+    mcp_server, event_type "schema_report", and tools/resources/prompts lists):
         - mcp_server: Server name
         - handler_name: Tool/resource/prompt name
         - event_type: tool_call, resource_read, or prompt_get
         - duration_ms: Call duration in milliseconds
-        - arguments: Sanitized arguments summary
         - error: Error message if call failed
         - result_summary: Type and size of result
         - session_id: UUID per ServerSession
