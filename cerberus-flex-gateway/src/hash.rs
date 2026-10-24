@@ -1,7 +1,7 @@
 // HMAC-SHA256 hashing + IP normalization. Mirrors cerberus-core's
 // `hash_pii` and `normalize_ip` Python helpers.
 //
-// See cerberus-core/src/cerberus_core/sanitization.py:37-80 for the
+// See cerberus-core/src/cerberus_core/sanitization.py for the
 // canonical Python implementations and parity-fixtures/{normalize_ip,
 // hash_pii}.yaml for the cross-impl test cases.
 
@@ -14,7 +14,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// HMAC-SHA256 of `value` keyed on `secret`. Returns the lowercase hex
 /// digest. Deterministic — same input always produces the same digest,
-/// so analytics can dedupe / track "same IP across requests" without
+/// so analytics can dedupe / track "same value across requests" without
 /// storing raw PII.
 pub fn hash_pii(value: &str, secret: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
@@ -24,7 +24,7 @@ pub fn hash_pii(value: &str, secret: &str) -> String {
 }
 
 /// Normalize an IP string to its canonical form so the same logical
-/// address always hashes identically.
+/// address always ships identically.
 ///
 /// Steps:
 ///   1. Strip the IPv6 zone ID (`%eth0`, `%25en0`, ...).

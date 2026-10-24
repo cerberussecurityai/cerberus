@@ -11,8 +11,8 @@
 //      ships without remote_addr.
 //
 // The value shipped in the event is `event_value(resolved)`: the address
-// normalized (normalize_ip strips IPv6 zone IDs, expands compressed
-// forms) and nothing else. Source IPs are not treated as PII and are
+// normalized (normalize_ip strips IPv6 zone IDs and rewrites the
+// address in canonical form) and nothing else. Source IPs are not treated as PII and are
 // never hashed; the HMAC secret only ever touches the Authorization
 // header and `action: hash` PII rules (see lib.rs).
 
@@ -31,8 +31,8 @@ pub fn resolve(client_ip_header_value: Option<String>, stream: &StreamProperties
         if !first_hop.is_empty() {
             // XFF values normally don't carry a port, but some
             // upstreams do append one. Strip defensively so the
-            // hashed/stored value is consistent with the connection-
-            // source path.
+            // shipped value is consistent with the connection-source
+            // path.
             return Some(strip_port(first_hop));
         }
     }
