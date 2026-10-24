@@ -1,15 +1,14 @@
 import json
-from dataclasses import replace
 
 import pytest
 from helpers import (
     FIXTURES,
     TIMESTAMP,
-    LambdaContext,
     case_names,
     load_case,
     load_expected,
     map_case,
+    map_loaded_case,
     options,
 )
 
@@ -99,15 +98,9 @@ def test_over_length_fields_fit_their_columns():
     request = case["input"]["mcp"]["gatewayRequest"]
     request["path"] = "/" + "p" * 900
     request["headers"]["Mcp-Session-Id"] = "s" * 400
-    context = dict(case["client_context"])
-    context["REQUEST_ID"] = "r" * 400
+    case["client_context"]["REQUEST_ID"] = "r" * 400
 
-    event = source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(context)),
-        replace(options(case), user_id_claim="jti"),
-        TIMESTAMP,
-    )
+    event = map_loaded_case(case, user_id_claim="jti")
 
     assert len(event["endpoint"]) == MAX_ENDPOINT_CHARS
     assert len(event["session_id"]) == MAX_SESSION_ID_CHARS
@@ -118,13 +111,7 @@ def test_over_length_fields_fit_their_columns():
 def test_query_string_is_dropped_from_the_endpoint():
     case = load_case("passthrough-echo")
     case["input"]["http"]["gatewayRequest"]["path"] = "/passthru/echo?token=abc&x=1"
-    event = source_event(
-        envelope_mod.parse(case["input"]),
-        envelope_mod.gateway_context(LambdaContext(case["client_context"])),
-        options(case),
-        TIMESTAMP,
-    )
-    assert event["endpoint"] == "/passthru/echo"
+    assert map_loaded_case(case)["endpoint"] == "/passthru/echo"
 
 
 def test_timestamp_is_utc_with_microseconds():
