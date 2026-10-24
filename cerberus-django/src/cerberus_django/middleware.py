@@ -42,8 +42,8 @@ event_queue = thread_queue.Queue(maxsize=10_000)
 # serialized form with explicit truncation markers instead of the whole body.
 # Tail is generous relative to head because LLM providers put usage/finish
 # data at the end of responses. Overridable via CERBERUS_CONFIG
-# response_head_bytes / response_tail_bytes; defaults match the caps planned
-# for the flex-gateway policy.
+# response_head_bytes / response_tail_bytes; defaults match the flex-gateway
+# policy's responseHeadBytes / responseTailBytes.
 RESPONSE_HEAD_BYTES_DEFAULT = 24 * 1024
 RESPONSE_TAIL_BYTES_DEFAULT = 16 * 1024
 
@@ -172,8 +172,6 @@ async def _process_queue_async():
 
     Runs continuously in the background thread's event loop.
     """
-    global WS_CLIENT
-
     if DEBUG_ENABLED:
         logger.info("[Cerberus] Background queue processor started")
 
