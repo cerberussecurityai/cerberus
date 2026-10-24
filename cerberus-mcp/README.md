@@ -72,7 +72,7 @@ Set `CERBERUS_DEBUG=true` to enable verbose logging.
 - Python >= 3.10
 - `mcp` >= 1.0 (MCP Python SDK)
 - `websockets` >= 12.0
-- A running Cerberus backend ([cerberus-int](https://github.com/gpotrock/cerberus))
+- A running Cerberus backend to receive events (the `ws_url` above)
 
 ## License
 
