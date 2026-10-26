@@ -322,3 +322,10 @@ def test_an_unusable_setting_does_not_fail_the_import(monkeypatch):
 
     monkeypatch.undo()
     importlib.reload(handler_mod)
+
+
+def test_the_aws_client_stack_stays_quiet_when_the_runtime_logs_at_debug(caplog):
+    caplog.set_level(logging.DEBUG)
+
+    for name in ("botocore.endpoint", "botocore.parsers", "urllib3.connectionpool"):
+        assert not logging.getLogger(name).isEnabledFor(logging.DEBUG)
