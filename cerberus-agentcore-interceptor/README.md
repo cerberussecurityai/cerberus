@@ -35,6 +35,11 @@ function's `Errors` and on its `Throttles`: the gateway refuses a throttled
 request, and a throttle does not show in `Errors`. Move an alias rather than
 editing the gateway role in place.
 
+Attaching it also lowers the gateway's MCP request size limit. The REQUEST input
+carries an MCP body twice, raw and parsed, and a synchronous Lambda invoke takes
+at most 6 MB, so the gateway refuses an MCP request over about 3 MB with a 500
+before the function runs.
+
 Leave the function unreserved unless you size its reserved concurrency.
 Reserved concurrency is a hard ceiling shared by every gateway on the function,
 and Lambda also allows each reserved unit only 10 requests per second. Past
@@ -221,9 +226,15 @@ chained function.
 
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers; inference callers still receive it, so nothing this
-package raises says anything you would not show a customer's end user.
+package raises says anything you would not show a customer's end user. Lambda's
+own errors reach inference callers too: while the function is throttled, the
+caller's error names its ARN, account id included.
 
 ### Delivery stream
+
+Create the stream in the function's own account and region. The function writes
+by stream name: an ARN in `CERBERUS_FIREHOSE_STREAM` is reduced to its name, and
+its region and account are ignored.
 
 Give the stream an HTTP endpoint destination, with the endpoint URL and access
 key Cerberus gives you, and these settings:
@@ -247,11 +258,15 @@ The handler emits CloudWatch embedded-metric lines in namespace
 `UnknownInputVersion`, `UnexpectedPhase` and `UnknownShape`. `CaptureDropped` is
 published once without a dimension, summing every reason, and once by
 `Reason`: `throttle`, `timeout`, `deadline`, `oversize`, `sink_error`,
-`handler_error`, `config_invalid`.
+`handler_error`, `config_invalid`. A throttled stream can answer slower than the
+read timeout instead of refusing, so throttling shows as `timeout` as well as
+`throttle`.
 
-`Captured` is logged at `INFO` and every other metric at `WARN`, so a Lambda
-`ApplicationLogLevel` of `WARN` drops the per-request `Captured` line and keeps
-the rest. `ERROR` or above hides them all.
+Metric lines are printed to stdout, which Lambda's `ApplicationLogLevel` does
+not filter, so they count at every level. The function's other log lines are
+filtered: `ERROR` hides the `capture dropped` warnings but not their metric
+lines. `botocore` and `urllib3` stay at `WARNING` whatever the level, since at
+`DEBUG` botocore logs each request with its payload.
 
 Alarm on:
 
@@ -260,8 +275,13 @@ Alarm on:
 - `CaptureDropped` without a dimension; its `Reason` series say why
 - `UnexpectedPhase` above 0: the function is attached at RESPONSE
 - the stream's `ThrottledRecords`
-- the stream's `DeliveryToHttpEndpoint.Success` below 1. A rejected access key
-  or an endpoint outage shows there, not in the function's metrics
+- the stream's `DeliveryToHttpEndpoint.DataFreshness` (Maximum) above the buffer
+  interval plus 300 s. A rejected access key or an endpoint outage shows there,
+  not in the function's metrics. `DeliveryToHttpEndpoint.Success` cannot
+  replace it: while every attempt fails it reports no datapoints at all
+- a canary call through the gateway, or a drop in the gateway's `Invocations`.
+  A lost invoke grant refuses calls without invoking the function, and no other
+  Lambda or gateway metric counts them
 
 ## Development
 
