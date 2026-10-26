@@ -225,8 +225,10 @@ names gateway `''`. That line is expected; the test invoke never reaches the
 chained function.
 
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
-text away from MCP callers; inference callers still receive it, so nothing this
-package raises says anything you would not show a customer's end user. Lambda's
+text away from MCP callers. Inference callers still receive a refusal as
+Lambda's error payload: the message, the `InterceptorError` type, the Lambda
+request id and a stack trace through this package's files. Nothing this package
+raises says anything you would not show a customer's end user. Lambda's
 own errors reach inference callers too: while the function is throttled, the
 caller's error names its ARN, account id included.
 
