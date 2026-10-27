@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-from cerberus_core import SENSITIVE_HEADERS, sanitize_dict
+from cerberus_core import REDACTED, SENSITIVE_HEADERS, SENSITIVE_KEYS, sanitize_dict
 
-from .bounding import clip_text
+from .bounding import VALUES_PER_CHECK, check_deadline, clip_text, non_finite_text, storable_text
 from .envelope import header as _header
 
 # Captured by default. Everything else is dropped, so a header that is useful
@@ -56,6 +57,9 @@ DROP_PREFIXES: tuple[str, ...] = ("x-amzn-vpce-", "x-amzn-tls-")
 
 MAX_HEADER_VALUE_CHARS = 1024
 
+# As in sanitize_dict, a dict or list nested deeper than this is redacted whole.
+MAX_SANITIZE_DEPTH = 20
+
 
 def capture_headers(headers: Any, allowlist: tuple[str, ...]) -> dict[str, str]:
     """Allowlisted headers, keyed by the allowlist's own spelling."""
@@ -86,6 +90,43 @@ def session_id(headers: Any) -> str:
 def sanitize_body(body: Any, extra_keys: tuple[str, ...] = ()) -> Any:
     """Redact sensitive keys in a captured body."""
     return sanitize_dict(body, extra_keys=extra_keys)
+
+
+def sanitize_storable(
+    body: Any, extra_keys: tuple[str, ...] = (), deadline: float | None = None
+) -> Any:
+    """storable(sanitize_body(body, extra_keys)) in one walk, checking the deadline as it goes.
+
+    Raises CaptureDeadlineExceeded once time.monotonic() reaches deadline.
+    """
+    keys = SENSITIVE_KEYS | {key.strip().lower() for key in extra_keys if key.strip()}
+    left = 1
+
+    def walk(node: Any, depth: int) -> Any:
+        nonlocal left
+        left -= 1
+        if not left:
+            left = VALUES_PER_CHECK
+            check_deadline(deadline)
+        if isinstance(node, dict):
+            if depth > MAX_SANITIZE_DEPTH:
+                return REDACTED
+            sanitized = {}
+            for key, item in node.items():
+                redacted = isinstance(key, str) and key.lower() in keys
+                sanitized[walk(key, depth)] = REDACTED if redacted else walk(item, depth + 1)
+            return sanitized
+        if isinstance(node, list):
+            if depth > MAX_SANITIZE_DEPTH:
+                return REDACTED
+            return [walk(item, depth + 1) for item in node]
+        if isinstance(node, str):
+            return storable_text(node)
+        if isinstance(node, float) and not math.isfinite(node):
+            return non_finite_text(node)
+        return node
+
+    return walk(body, 0)
 
 
 def _value(value: Any) -> str:

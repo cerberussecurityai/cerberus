@@ -55,9 +55,10 @@ call. While the chained function is throttled, each request holds this one for
 up to 2 s more, so give one of the two reserved concurrency: that wait should
 not draw on the pool the throttled function needs.
 
-With response capture on, each call is two invocations, one at each point, so
-need roughly doubles, and with it any provisioned or reserved concurrency sized
-from it.
+With response capture on, each call is two invocations, one at each point.
+Work out need for each point from its own p99 duration, the RESPONSE one
+measured on your own responses, and size any provisioned or reserved
+concurrency from the sum.
 
 ## What it captures
 
@@ -269,8 +270,8 @@ environment variables at 4 KB together.
 |---|---|
 | Handler | `cerberus_agentcore_interceptor.handler.handler` |
 | Runtime | `python3.13`, `arm64` |
-| Memory | 512 MB to start; raise it from your own worst-case request and response body sizes |
-| Timeout | 3 s; longer with a chain, see Chaining |
+| Memory | 512 MB to start; 1769 MB with response capture on |
+| Timeout | 3 s; 6 s with response capture on; longer with a chain, see Chaining |
 | Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
 | Interception points | `["REQUEST"]`, or `["REQUEST", "RESPONSE"]` with response capture on |
 
@@ -282,9 +283,15 @@ write when the time left cannot cover `CERBERUS_FIREHOSE_CONNECT_MS` plus
 timeout under 500 ms plus the two, 1.25 s by default, every write is skipped.
 
 The same holds at RESPONSE, where the 500 ms left also covers echoing the
-response back, up to several megabytes on `mcp`. Memory sets the function's CPU
-too, so raise it until your largest responses are answered well inside the
-timeout.
+response back. Lambda gives a function CPU in proportion to its memory, and
+response capture needs 1769 MB, a full vCPU, to read a large response in time
+and room to hold it.
+
+Of the 6 s timeout, 500 ms is that margin and 750 ms the two Firehose timeouts
+by default; the rest is for reading the response. Raise the timeout by as much
+as you raise those two. A response that cannot be read in time has its capture
+dropped, the call goes through unchanged, and `CaptureDropped` counts reason
+`deadline`. If those drops appear, raise the timeout.
 
 The gateway's role needs `lambda:InvokeFunction` on `function:<name>:*` — a
 grant on the unqualified ARN does not cover an alias, and permission edits take
@@ -328,14 +335,15 @@ key Cerberus gives you, and these settings:
 | | |
 |---|---|
 | Content encoding | `GZIP` |
-| Buffer size | 2 MiB at most |
+| Buffer size | 4 MiB at most |
 | Retry duration | 3600 s, so a short endpoint outage is retried rather than backed up |
 | S3 backup | Failed data only |
 
-The endpoint accepts deliveries up to 4 MiB uncompressed. Firehose
-base64-encodes each record, so a delivery is about 4/3 the size of the buffer,
-and 2 MiB leaves room for the request around it. A delivery over the limit is
-refused on every retry and ends up in the backup bucket.
+The endpoint accepts deliveries up to 4 MiB uncompressed. A delivery, its
+base64-encoded records included, never exceeds the buffer size, so any buffer
+up to 4 MiB fits. A delivery over the limit is refused on every retry and ends
+up in the backup bucket. With response capture on, each call writes two
+records.
 
 ### Metrics
 

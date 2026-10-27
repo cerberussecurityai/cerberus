@@ -3,6 +3,7 @@
 import base64
 import copy
 import importlib
+import itertools
 import json
 import logging
 from io import BytesIO
@@ -13,9 +14,9 @@ import pytest
 from botocore.awsrequest import AWSResponse
 from helpers import LambdaContext, case_names, load_case, runtime_encode
 
+from cerberus_agentcore_interceptor import bounding, metrics, output, sanitize
 from cerberus_agentcore_interceptor import envelope as env
 from cerberus_agentcore_interceptor import handler as handler_mod
-from cerberus_agentcore_interceptor import metrics, output
 from cerberus_agentcore_interceptor.config import Config
 from cerberus_agentcore_interceptor.sink import FirehoseSink
 
@@ -457,6 +458,45 @@ def test_response_capture_past_its_deadline_echoes_the_response(responses, phase
     assert result == echo(name)
     assert responses.events == []
     assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, "response")]
+
+
+def dense(name: str) -> dict:
+    """A RESPONSE case whose body holds tens of thousands of strings."""
+    case = load_case(name)
+    values = ["v"] * 50 * bounding.VALUES_PER_CHECK
+    shape = case["input"].get("mcp")
+    if shape is not None:
+        shape["gatewayResponse"]["body"]["result"]["structuredContent"] = values
+    else:
+        body = base64.b64encode(json.dumps(values).encode()).decode()
+        case["input"]["http"]["gatewayResponse"]["body"] = body
+    return case
+
+
+@pytest.mark.parametrize("name", RESPONSE_SHAPES)
+def test_a_dense_response_past_its_deadline_mid_sanitize_is_dropped_and_echoed(
+    responses, phased, monkeypatch, name
+):
+    case = dense(name)
+    walked = [0]
+    real = sanitize.storable_text
+
+    def storable_text(value):
+        walked[0] += 1
+        return real(value)
+
+    reads = itertools.count()
+    monkeypatch.setattr(sanitize, "storable_text", storable_text)
+    monkeypatch.setattr(handler_mod, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(bounding, "monotonic", lambda: next(reads) / 1000)
+    context = TimedContext(case["client_context"], handler_mod.ANSWER_MARGIN_MS + 20)
+    result = handler_mod.handler(case["input"], context)
+
+    assert 0 < walked[0] < 50 * bounding.VALUES_PER_CHECK
+    assert responses.events == []
+    assert phased == [(metrics.CAPTURE_DROPPED, metrics.REASON_DEADLINE, "response")]
+    monkeypatch.setattr(handler_mod, "CONFIG", Config(streams=("s",)))
+    assert result == handler_mod.handler(case["input"], context)
 
 
 @pytest.mark.parametrize("name", RESPONSE_SHAPES)

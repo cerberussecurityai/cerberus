@@ -1,6 +1,17 @@
-from cerberus_core import SENSITIVE_HEADERS
+import itertools
+import json
 
-from cerberus_agentcore_interceptor import sanitize
+import pytest
+from cerberus_core import SENSITIVE_HEADERS, sanitize_dict
+
+from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, bounding, sanitize
+
+
+def nested(depth, leaf):
+    """leaf inside depth containers, dicts and lists in turn."""
+    for level in range(depth):
+        leaf = {"k": leaf, "token": "t"} if level % 2 else [leaf, "x"]
+    return leaf
 
 
 def test_every_core_sensitive_header_is_dropped():
@@ -80,3 +91,30 @@ def test_body_redaction_keeps_model_parameters():
 def test_extra_sensitive_keys():
     sanitized = sanitize.sanitize_body({"member_number": "M-1"}, ("member_number",))
     assert sanitized["member_number"] == "[REDACTED]"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"user": "alice", "Password": "p", "in": {"TOKEN": {"a": 1}, "ok": [1, 2.5, None, True]}},
+        [{"api_key": "k"}, ["secret", {"session_id": "s"}], "plain", 7],
+        {"a\x00": "b\x00", "\ud800": "\udc00x", "pair": "\ud83d\ude00", "é": "ü"},
+        {"n": [float("nan"), float("inf"), -float("inf"), 1e308], "Authorization": "Bearer x"},
+        {"member_number": "M-1", "x-custom": {"a": 1}, "HTTP_AUTHORIZATION": "x"},
+        nested(sanitize.MAX_SANITIZE_DEPTH, "leaf"),
+        nested(sanitize.MAX_SANITIZE_DEPTH + 1, "leaf"),
+        nested(sanitize.MAX_SANITIZE_DEPTH + 3, {"password": "p"}),
+    ],
+)
+def test_sanitize_storable_is_sanitize_body_then_storable(body):
+    keys = ("member_number", " X-Custom ", *sanitize.ECHOED_HEADER_KEYS)
+    expected = bounding.storable(sanitize_dict(body, extra_keys=keys))
+    assert json.dumps(sanitize.sanitize_storable(body, keys)) == json.dumps(expected)
+
+
+def test_sanitize_storable_checks_the_deadline_as_it_walks(monkeypatch):
+    reads = itertools.count()
+    monkeypatch.setattr(bounding, "monotonic", lambda: next(reads))
+    with pytest.raises(CaptureDeadlineExceeded):
+        sanitize.sanitize_storable([[]] * 10 * bounding.VALUES_PER_CHECK, (), deadline=3)
+    assert next(reads) == 4

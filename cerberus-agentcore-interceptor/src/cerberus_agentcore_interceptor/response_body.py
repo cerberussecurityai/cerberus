@@ -6,7 +6,7 @@ import base64
 import binascii
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from .bounding import (
@@ -15,6 +15,7 @@ from .bounding import (
     STATE_OMITTED,
     STATE_REDUCED,
     STATE_SHED,
+    VALUES_PER_CHECK,
     check_deadline,
     clip_text,
     serialize,
@@ -30,7 +31,7 @@ from .envelope import (
     MCP,
     Envelope,
 )
-from .sanitize import ECHOED_HEADER_KEYS, sanitize_body
+from .sanitize import ECHOED_HEADER_KEYS, sanitize_storable
 
 STATE_SKIPPED = "skipped"
 STATE_TRUNCATED = "truncated"
@@ -93,9 +94,7 @@ def sanitize_sse(text: str, keys: tuple[str, ...], deadline: float | None = None
     lines = zip(parts[::2], [*parts[1::2], ""], strict=True)
     out: list[str] = []
     event: list[tuple[str, str]] = []
-    for index, (line, ending) in enumerate(lines):
-        if index % SSE_LINES_PER_CHECK == 0:
-            check_deadline(deadline)
+    for line, ending in _checked(lines, deadline, SSE_LINES_PER_CHECK):
         if line:
             event.append((line, ending))
             continue
@@ -225,24 +224,24 @@ def _sse_event(
     lines: list[tuple[str, str]], keys: tuple[str, ...], deadline: float | None
 ) -> list[str]:
     """One SSE event's lines with their endings, its JSON data sanitized."""
-    data = [index for index, (line, _) in enumerate(lines) if line.startswith("data:")]
-    if len(data) > 1:
-        payload = "\n".join(_sse_payload(lines[index][0]) for index in data)
-        joined = _sse_json(payload, keys, deadline)
+    payloads: list[str] = []
+    others: list[str] = []
+    # How many other lines come before the last data line, whose ending closes the event.
+    before, closing = 0, ""
+    for line, ending in _checked(lines, deadline, SSE_LINES_PER_CHECK):
+        if line.startswith("data:"):
+            payloads.append(_sse_payload(line))
+            before, closing = len(others), ending
+        else:
+            others.append(line + ending)
+    if len(payloads) > 1:
+        joined = _sse_json("\n".join(payloads), keys, deadline)
         if joined is not None:
-            # The last data line's ending is the one that closes the event.
-            last, rest = data[-1], set(data[:-1])
-            return [
-                f"data: {joined}{ending}" if index == last else line + ending
-                for index, (line, ending) in enumerate(lines)
-                if index not in rest
-            ]
-    out: list[str] = []
-    for index, (line, ending) in enumerate(lines):
-        if index % SSE_LINES_PER_CHECK == 0:
-            check_deadline(deadline)
-        out.append(_sse_line(line, keys, deadline) + ending)
-    return out
+            return [*others[:before], f"data: {joined}{closing}", *others[before:]]
+    return [
+        _sse_line(line, keys, deadline) + ending
+        for line, ending in _checked(lines, deadline, SSE_LINES_PER_CHECK)
+    ]
 
 
 def _sse_line(line: str, keys: tuple[str, ...], deadline: float | None) -> str:
@@ -269,12 +268,10 @@ def _sse_json(payload: str, keys: tuple[str, ...], deadline: float | None) -> st
 
 def _json(value: Any, keys: tuple[str, ...], deadline: float | None) -> Any:
     """A JSON body sanitized, MCP result text included, and made storable."""
-    sanitized = sanitize_body(value, keys)
-    for message in sanitized if isinstance(sanitized, list) else (sanitized,):
-        check_deadline(deadline)
+    sanitized = sanitize_storable(value, keys, deadline)
+    for message in _checked(sanitized if isinstance(sanitized, list) else (sanitized,), deadline):
         _sanitize_result_text(message, keys, deadline)
-    check_deadline(deadline)
-    return storable(sanitized)
+    return sanitized
 
 
 def _sanitize_result_text(message: Any, keys: tuple[str, ...], deadline: float | None) -> None:
@@ -283,8 +280,7 @@ def _sanitize_result_text(message: Any, keys: tuple[str, ...], deadline: float |
     content = result.get("content") if isinstance(result, dict) else None
     if not isinstance(content, list):
         return
-    for item in content:
-        check_deadline(deadline)
+    for item in _checked(content, deadline):
         text = item.get("text") if isinstance(item, dict) else None
         if not isinstance(text, str):
             continue
@@ -293,7 +289,17 @@ def _sanitize_result_text(message: Any, keys: tuple[str, ...], deadline: float |
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, (dict, list)):
-            item["text"] = _dumps(storable(sanitize_body(parsed, keys)))
+            item["text"] = _dumps(sanitize_storable(parsed, keys, deadline))
+
+
+def _checked(
+    items: Iterable[Any], deadline: float | None, every: int = VALUES_PER_CHECK
+) -> Iterator[Any]:
+    """items, checking the deadline before the first and again every `every` items."""
+    for index, item in enumerate(items):
+        if index % every == 0:
+            check_deadline(deadline)
+        yield item
 
 
 def _dumps(value: Any) -> str:
@@ -385,12 +391,16 @@ def _reductions(value: Any, deadline: float | None) -> Iterator[Any]:
     for limit in ARGUMENT_CHAR_LIMITS:
         check_deadline(deadline)
         if isinstance(value, list):
-            yield [_reduce_mcp(item, limit) for item in value if isinstance(item, dict)]
+            yield [
+                _reduce_mcp(item, limit, deadline)
+                for item in _checked(value, deadline)
+                if isinstance(item, dict)
+            ]
         else:
-            yield _reduce_mcp(value, limit)
+            yield _reduce_mcp(value, limit, deadline)
 
 
-def _reduce_mcp(message: dict[str, Any], limit: int) -> dict[str, Any]:
+def _reduce_mcp(message: dict[str, Any], limit: int, deadline: float | None) -> dict[str, Any]:
     """A JSON-RPC response cut to its id, its error, and the result's names, flags and text."""
     reduced = {key: message[key] for key in MCP_ENVELOPE_KEYS if key in message}
     error = message.get("error")
@@ -401,21 +411,29 @@ def _reduce_mcp(message: dict[str, Any], limit: int) -> dict[str, Any]:
         reduced["error"] = kept
     result = message.get("result")
     if isinstance(result, dict):
-        reduced["result"] = _reduce_result(result, limit)
+        reduced["result"] = _reduce_result(result, limit, deadline)
     return reduced
 
 
-def _reduce_result(result: dict[str, Any], limit: int) -> dict[str, Any]:
+def _reduce_result(result: dict[str, Any], limit: int, deadline: float | None) -> dict[str, Any]:
     kept: dict[str, Any] = {"isError": result["isError"]} if "isError" in result else {}
     for key in MCP_LISTING_KEYS:
         items = result.get(key)
         if isinstance(items, list):
-            kept[key] = [_listing_item(item, limit) for item in items if isinstance(item, dict)]
+            kept[key] = [
+                _listing_item(item, limit)
+                for item in _checked(items, deadline)
+                if isinstance(item, dict)
+            ]
     if isinstance(result.get("nextCursor"), str):
         kept["nextCursor"] = clip_text(result["nextCursor"], limit)
     content = result.get("content")
     if isinstance(content, list):
-        kept["content"] = [_content_item(item, limit) for item in content if isinstance(item, dict)]
+        kept["content"] = [
+            _content_item(item, limit)
+            for item in _checked(content, deadline)
+            if isinstance(item, dict)
+        ]
     return kept
 
 
