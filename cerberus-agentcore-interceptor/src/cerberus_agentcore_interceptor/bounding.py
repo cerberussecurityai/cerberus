@@ -36,7 +36,7 @@ PRUNE_FACTOR = 4
 
 MAX_WALK_DEPTH = 24
 
-# How many values a walk visits, or items a loop reads, between deadline checks.
+# How many values walked, or items or lines read, between deadline checks.
 VALUES_PER_CHECK = 1024
 
 STATE_CAPTURED = "captured"
@@ -68,6 +68,27 @@ def check_deadline(deadline: float | None) -> None:
     """Raise CaptureDeadlineExceeded once time.monotonic() reaches deadline."""
     if deadline is not None and monotonic() >= deadline:
         raise CaptureDeadlineExceeded
+
+
+class Ticker:
+    """Counts work toward a deadline and checks it once every VALUES_PER_CHECK ticks.
+
+    The loops of one read share a ticker, so many short loops add up to one
+    check instead of each paying for its own.
+    """
+
+    __slots__ = ("deadline", "left")
+
+    def __init__(self, deadline: float | None = None) -> None:
+        self.deadline = deadline
+        self.left = VALUES_PER_CHECK
+
+    def tick(self, count: int = 1) -> None:
+        """Count work done. Raises CaptureDeadlineExceeded at a check past the deadline."""
+        self.left -= count
+        if self.left <= 0:
+            self.left = VALUES_PER_CHECK
+            check_deadline(self.deadline)
 
 
 def serialize(event: dict[str, Any]) -> bytes:

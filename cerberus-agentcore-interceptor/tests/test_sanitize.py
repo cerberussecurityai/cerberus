@@ -1,10 +1,14 @@
 import itertools
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 from cerberus_core import SENSITIVE_HEADERS, sanitize_dict
 
 from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, bounding, sanitize
+
+PARITY_FIXTURES = Path(__file__).resolve().parents[2] / "parity-fixtures"
 
 
 def nested(depth, leaf):
@@ -112,9 +116,24 @@ def test_sanitize_storable_is_sanitize_body_then_storable(body):
     assert json.dumps(sanitize.sanitize_storable(body, keys)) == json.dumps(expected)
 
 
+def parity_key_cases():
+    """The parity-fixtures cases that redact by key alone."""
+    cases = yaml.safe_load((PARITY_FIXTURES / "sanitize_dict.yaml").read_text())["cases"]
+    custom = yaml.safe_load((PARITY_FIXTURES / "custom_pii_rules.yaml").read_text())["cases"]
+    cases += [case for case in custom if not case.get("patterns")]
+    return [pytest.param(case, id=case["name"]) for case in cases]
+
+
+@pytest.mark.parametrize("case", parity_key_cases())
+def test_sanitize_storable_matches_sanitize_dict_on_the_parity_cases(case):
+    keys = tuple(case.get("custom_sensitive_keys", ()))
+    expected = bounding.storable(sanitize_dict(case["input"], extra_keys=keys))
+    assert sanitize.sanitize_storable(case["input"], keys) == expected
+
+
 def test_sanitize_storable_checks_the_deadline_as_it_walks(monkeypatch):
     reads = itertools.count()
     monkeypatch.setattr(bounding, "monotonic", lambda: next(reads))
     with pytest.raises(CaptureDeadlineExceeded):
-        sanitize.sanitize_storable([[]] * 10 * bounding.VALUES_PER_CHECK, (), deadline=3)
+        sanitize.sanitize_storable([[]] * 10 * bounding.VALUES_PER_CHECK, (), bounding.Ticker(3))
     assert next(reads) == 4

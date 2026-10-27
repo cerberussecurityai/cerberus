@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from typing import Any
 
 from cerberus_core import REDACTED, SENSITIVE_HEADERS, SENSITIVE_KEYS, sanitize_dict
 
-from .bounding import VALUES_PER_CHECK, check_deadline, clip_text, non_finite_text, storable_text
+from .bounding import (
+    VALUES_PER_CHECK,
+    Ticker,
+    check_deadline,
+    clip_text,
+    non_finite_text,
+    storable_text,
+)
 from .envelope import header as _header
 
 # Captured by default. Everything else is dropped, so a header that is useful
@@ -93,21 +101,23 @@ def sanitize_body(body: Any, extra_keys: tuple[str, ...] = ()) -> Any:
 
 
 def sanitize_storable(
-    body: Any, extra_keys: tuple[str, ...] = (), deadline: float | None = None
+    body: Any, extra_keys: tuple[str, ...] = (), ticker: Ticker | None = None
 ) -> Any:
-    """storable(sanitize_body(body, extra_keys)) in one walk, checking the deadline as it goes.
+    """storable(sanitize_body(body, extra_keys)) in one walk, with a tick for each value.
 
-    Raises CaptureDeadlineExceeded once time.monotonic() reaches deadline.
+    Raises CaptureDeadlineExceeded at a check past the ticker's deadline.
     """
-    keys = SENSITIVE_KEYS | {key.strip().lower() for key in extra_keys if key.strip()}
-    left = 1
+    keys = _sensitive_keys(extra_keys)
+    clock = Ticker() if ticker is None else ticker
+    # Counting in a local, handed back at the end, costs less than a call per value.
+    left = clock.left
 
     def walk(node: Any, depth: int) -> Any:
         nonlocal left
         left -= 1
-        if not left:
+        if left <= 0:
             left = VALUES_PER_CHECK
-            check_deadline(deadline)
+            check_deadline(clock.deadline)
         if isinstance(node, dict):
             if depth > MAX_SANITIZE_DEPTH:
                 return REDACTED
@@ -126,7 +136,16 @@ def sanitize_storable(
             return non_finite_text(node)
         return node
 
-    return walk(body, 0)
+    sanitized = walk(body, 0)
+    clock.left = left
+    return sanitized
+
+
+@lru_cache(maxsize=16)
+def _sensitive_keys(extra_keys: tuple[str, ...]) -> frozenset[str]:
+    """SENSITIVE_KEYS and the extra names, read as sanitize_dict reads them."""
+    extra = {key.strip().lower() for key in extra_keys if isinstance(key, str) and key.strip()}
+    return frozenset(SENSITIVE_KEYS | extra)
 
 
 def _value(value: Any) -> str:

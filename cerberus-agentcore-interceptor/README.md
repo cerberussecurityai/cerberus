@@ -335,15 +335,14 @@ key Cerberus gives you, and these settings:
 | | |
 |---|---|
 | Content encoding | `GZIP` |
-| Buffer size | 4 MiB at most |
+| Buffer size | 2 MiB at most |
 | Retry duration | 3600 s, so a short endpoint outage is retried rather than backed up |
 | S3 backup | Failed data only |
 
 The endpoint accepts deliveries up to 4 MiB uncompressed. A delivery, its
-base64-encoded records included, never exceeds the buffer size, so any buffer
-up to 4 MiB fits. A delivery over the limit is refused on every retry and ends
-up in the backup bucket. With response capture on, each call writes two
-records.
+base64-encoded records included, never exceeds the buffer size. A delivery over
+the limit is refused on every retry and ends up in the backup bucket. With
+response capture on, each call writes two records.
 
 ### Metrics
 
