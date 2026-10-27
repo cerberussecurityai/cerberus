@@ -60,9 +60,9 @@ With response capture on, or a RESPONSE chain, each call is two invocations,
 one at each point, so need roughly doubles, and with it any provisioned or
 reserved concurrency: more where responses are larger than requests. Work out
 need for each point from its own p99 duration, the RESPONSE one measured on
-your own responses, and size from the sum. Unreserved, the function draws that
-sum from the account's concurrency, which every other function shares. A
-throttle at RESPONSE fails the call after its target has run.
+your own responses, and size from the sum, since a throttle at RESPONSE fails a
+call whose target has run. Unreserved, the function draws that sum from the
+account's concurrency, which every other function shares.
 
 ## What it captures
 
@@ -190,10 +190,10 @@ carry what your interceptor removed.
 Detaching is the kill switch. Settings are read at init, and none of them can
 undo what the attachment does to the gateway. To stop response capture, update
 the gateway with this function's entry at `["REQUEST"]` only, or drop the entry
-to detach the function. The change is in effect once the gateway is `READY`
-again, about a second after the update. A point you detach takes the
-interceptor this function chains there with it, so give that one its own entry
-at the points you detach, in the same update. Then set
+to detach the function. The change takes effect about a second after the
+update, a few seconds before the gateway reports `READY` again. A point you
+detach takes the interceptor this function chains there with it, so give that
+one its own entry at the points you detach, in the same update. Then set
 `CERBERUS_RESPONSE_CAPTURE` to false on a new version and move the alias, so
 request events stop saying a response follows.
 
@@ -384,10 +384,12 @@ chained function.
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers. Inference callers still receive a refusal as
 Lambda's error payload: the message, the `InterceptorError` type, the Lambda
-request id and a stack trace through this package's files. The message is fixed
-text and the trace shows only this package's code, so neither carries request
-content or settings. Lambda's own errors reach inference callers too: while the
-function is throttled, the caller's error names its ARN, account id included.
+request id and a stack trace through this package's files, and so do Runtime and
+passthrough callers whose call fails at RESPONSE. The message is fixed text and
+the trace shows only this package's code, so neither carries request content or
+settings. Lambda's and the gateway's own errors reach these callers too and can
+name the function's qualified ARN, account id included: while the function is
+throttled, or when a call is over the RESPONSE size limit.
 
 ### Delivery stream
 
@@ -425,7 +427,8 @@ read timeout instead of refusing, so throttling shows as `timeout` as well as
 `Captured` and `CaptureDropped` are also published by `Phase`, `request` or
 `response`, since Lambda's own `Errors`, `Throttles` and `Duration` cannot tell
 the two points apart. A drop counted before the phase is known, such as an input
-that cannot be read, has no `Phase`.
+that cannot be read, has no `Phase`. No series names the function, so each sums
+every function in the account and region that runs this package.
 
 Metric lines are printed to stdout, which Lambda's `ApplicationLogLevel` does
 not filter, so they count at every level. The function's other log lines are
@@ -440,10 +443,13 @@ Alarm on:
 - Lambda `Throttles`, which count both points too
 - `CaptureDropped` without a dimension; its `Reason` series say why, and its
   `Phase` series at which point
-- with response capture on, `Captured` with `Phase` `response` at 0 while
-  `Phase` `request` is not, which needs the `Captured` line kept: the gateway
-  has stopped invoking the function at RESPONSE while its request events still
-  say a response follows
+- with response capture on, the function's Lambda `Invocations` above 0 while
+  `Captured` with `Phase` `response` is 0: the gateway has stopped invoking the
+  function at RESPONSE while its request events still say a response follows.
+  Keep the `Captured` line, and fill the response series with 0, as in
+  `IF(invocations > 0 AND FILL(captured, 0) == 0, 1, 0)`, since a period with
+  no capture has no data rather than a 0. The check holds while only one
+  function in the account and region captures responses
 - `UnexpectedPhase` above 0: the function is attached at RESPONSE while
   response capture is off and no RESPONSE chain is set
 - the stream's `ThrottledRecords`
