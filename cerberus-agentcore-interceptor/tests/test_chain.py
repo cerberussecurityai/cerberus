@@ -153,7 +153,16 @@ def test_a_response_handed_back_unchanged_passes():
     result = chain.invoke({}, context(MCP_RESPONSE), parsed(MCP_RESPONSE))
 
     assert result.outcome == chain_mod.OUTCOME_PASSED
-    assert result.response is None
+    assert result.response == original
+
+
+def test_a_response_handed_back_with_another_status_passes_with_that_status():
+    original = load_case(MCP_RESPONSE)["input"]["mcp"]["gatewayResponse"]
+    chain, _ = client(response_output(original["body"], 403))
+    result = chain.invoke({}, context(MCP_RESPONSE), parsed(MCP_RESPONSE))
+
+    assert result.outcome == chain_mod.OUTCOME_PASSED
+    assert result.response == {**original, "statusCode": 403}
 
 
 def test_a_changed_response_is_transformed_never_short_circuited():
@@ -177,19 +186,47 @@ def test_a_changed_http_response_keeps_what_the_answer_leaves_out():
     assert result.response == {**original, "body": body, "contentType": "application/json"}
 
 
-@pytest.mark.parametrize(
-    "answer",
-    [
-        {"interceptorOutputVersion": "1.0", "mcp": {}},
-        response_output(None),
-        mcp_output({"jsonrpc": "2.0", "id": 1, "method": "tools/call"}),
-    ],
-    ids=["empty", "null-body", "request-form"],
-)
-def test_a_response_answer_with_no_body_of_its_own_passes(answer):
+BODYLESS_MCP_ANSWERS = [
+    {"interceptorOutputVersion": "1.0", "mcp": {}},
+    {"interceptorOutputVersion": "1.0"},
+    {"interceptorOutputVersion": "1.0", "http": {}},
+    response_output(None),
+    mcp_output({"jsonrpc": "2.0", "id": 1, "method": "tools/call"}),
+]
+BODYLESS_MCP_IDS = ["empty", "no-shape", "http-shape", "null-body", "request-form"]
+
+
+@pytest.mark.parametrize("answer", BODYLESS_MCP_ANSWERS, ids=BODYLESS_MCP_IDS)
+def test_an_mcp_response_answer_with_no_body_empties_the_response(answer):
     chain, _ = client(answer)
     result = chain.invoke({}, context(MCP_RESPONSE), parsed(MCP_RESPONSE))
+
+    assert result.outcome == chain_mod.OUTCOME_TRANSFORMED
+    assert result.response["body"] == {}
+
+
+def test_an_mcp_response_with_no_body_passes_an_answer_with_none():
+    case = load_case(MCP_RESPONSE)
+    case["input"]["mcp"]["gatewayResponse"]["body"] = None
+    chain, _ = client({"interceptorOutputVersion": "1.0", "mcp": {}})
+    result = chain.invoke({}, context(MCP_RESPONSE), env.parse(case["input"]))
+
     assert result.outcome == chain_mod.OUTCOME_PASSED
+    assert result.response["body"] is None
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"interceptorOutputVersion": "1.0", "http": {}}, response_output(None, None, shape="http")],
+    ids=["empty", "null-body"],
+)
+def test_an_http_response_answer_with_no_body_keeps_the_targets(answer):
+    original = load_case(HTTP_RESPONSE)["input"]["http"]["gatewayResponse"]
+    chain, _ = client(answer)
+    result = chain.invoke({}, context(HTTP_RESPONSE), parsed(HTTP_RESPONSE))
+
+    assert result.outcome == chain_mod.OUTCOME_PASSED
+    assert result.response == original
 
 
 def test_without_pass_headers_a_response_chain_still_gets_the_responses_headers():
@@ -1237,6 +1274,27 @@ def test_an_echoed_response_is_captured_as_it_came(response_chained, monkeypatch
     unchained = response_chained.sink.events[1]
     assert event["response_body"] == unchained["response_body"]
     assert event["status_code"] == unchained["status_code"]
+
+
+@pytest.mark.parametrize("answer", BODYLESS_MCP_ANSWERS, ids=BODYLESS_MCP_IDS)
+def test_an_emptied_mcp_response_captures_no_tool_result(response_chained, answer):
+    response_chained(answer)
+    assert invoke(MCP_RESPONSE) == answer
+
+    event = response_chained.sink.events[0]
+    assert event["response_body"] == {}
+    assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "transformed"}
+
+
+def test_the_status_an_echoing_answer_gives_is_captured(response_chained):
+    answer = echo(MCP_RESPONSE)
+    answer["mcp"]["transformedGatewayResponse"]["statusCode"] = 403
+    response_chained(answer)
+    invoke(MCP_RESPONSE)
+
+    event = response_chained.sink.events[0]
+    assert event["status_code"] == 403
+    assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "passed"}
 
 
 @pytest.mark.parametrize("name", RESPONSE_SHAPES)

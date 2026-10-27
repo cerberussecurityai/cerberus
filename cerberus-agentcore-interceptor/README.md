@@ -11,6 +11,7 @@ generic providers, AgentCore Runtime targets and HTTP passthrough targets.
 ```
 caller ──► AgentCore Gateway ──► target
                │ REQUEST interceptor, and RESPONSE with response capture on
+               │ or a RESPONSE chain
                ▼
       cerberus-agentcore-interceptor (your account)
                │
@@ -225,9 +226,11 @@ needs `lambda:InvokeFunction` on each ARN.
 A throttled invoke is retried twice, over about 1 to 2 s as the gateway itself
 would, and no retry starts within 500 ms of the function's timeout. So at
 REQUEST the function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus 2 s
-for those retries plus 1.5 s for the capture. With a RESPONSE chain and response
-capture on, add `CERBERUS_CHAIN_READ_MS` and 2 s to the RESPONSE timeout worked
-out under Deployment, and about 0.2 s more to pass a multi-megabyte input on.
+for those retries plus 1.5 s for the capture. A RESPONSE chain passes the whole
+response on and reads the answer back, so size the function for it as for
+response capture, on or off: add `CERBERUS_CHAIN_READ_MS` and 2 s to the RESPONSE
+timeout worked out under Deployment, and about 0.2 s more to pass a
+multi-megabyte input on. Chained RESPONSE durations are not yet measured.
 
 Set `CERBERUS_CHAIN_PASS_HEADERS` to the REQUEST interceptor's
 `inputConfiguration.passRequestHeaders`, and
@@ -245,8 +248,10 @@ unchanged; headers are not compared), `transformed` (the transformed body is
 what gets captured, since it is what reaches the target), `short_circuit` with
 its status code (a refused request is still a captured attempt),
 `invalid_output`, or `error`. At RESPONSE an answer is `passed` or
-`transformed`, by its body alone, and a transformed response is captured with
-the status code and content type the answer gives.
+`transformed`, by the body the caller receives, and the response is captured
+with the status code and content type the answer gives. An `mcp` answer with no
+response body empties the response, as above, so it is `transformed` and
+captured as `{}`.
 
 ## Configuration
 
@@ -293,8 +298,8 @@ setting is fixed. Lambda caps all environment variables at 4 KB together.
 |---|---|
 | Handler | `cerberus_agentcore_interceptor.handler.handler` |
 | Runtime | `python3.13`, `arm64` |
-| Memory | 512 MB to start; 1769 MB with response capture on |
-| Timeout | 3 s; 6 s with response capture on; longer with a chain, see Chaining |
+| Memory | 512 MB to start; 1769 MB with response capture on or a RESPONSE chain |
+| Timeout | 3 s; 6 s with response capture on or a RESPONSE chain; longer with a chain, see Chaining |
 | Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on each chain target |
 | Interception points | `["REQUEST"]`, or `["REQUEST", "RESPONSE"]` with response capture on or a RESPONSE chain |
 

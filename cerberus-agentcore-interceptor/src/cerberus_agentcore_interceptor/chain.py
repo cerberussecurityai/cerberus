@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
 
-from .envelope import RESPONSE, Envelope
+from .envelope import MCP, RESPONSE, Envelope
 from .output import encodable, finite, is_valid_output
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class ChainResult:
     outcome: str
     output: dict[str, Any] | None = None
     body: Any = None
-    # At RESPONSE, the response the caller receives once their function transformed it.
+    # At RESPONSE, the response the caller receives once their function answered.
     response: dict[str, Any] | None = None
     note: dict[str, Any] = field(default_factory=dict)
 
@@ -207,20 +207,24 @@ def _classify(output: dict[str, Any], envelope: Envelope) -> ChainResult:
 def _classify_response(
     output: dict[str, Any], shape: dict[str, Any], envelope: Envelope
 ) -> ChainResult:
-    """At RESPONSE an answer passes or transforms the response; nothing is short-circuited."""
-    response = shape.get("transformedGatewayResponse")
+    """At RESPONSE an answer passes or transforms the response; nothing is short-circuited.
+
+    The outcome is read from the body alone, and the response kept is the one
+    the caller receives.
+    """
     original = envelope.response or {}
-    # A null body keeps the target's, as an absent one does.
-    if isinstance(response, dict) and response.get("body") is not None:
-        if response["body"] != original.get("body"):
-            changed = {key: value for key, value in response.items() if value is not None}
-            return ChainResult(
-                OUTCOME_TRANSFORMED,
-                output=output,
-                response={**original, **changed},
-                note={"outcome": OUTCOME_TRANSFORMED},
-            )
-    return ChainResult(OUTCOME_PASSED, output=output, note={"outcome": OUTCOME_PASSED})
+    answer = shape.get("transformedGatewayResponse")
+    answer = answer if isinstance(answer, dict) else {}
+    # An absent or null field keeps the target's, except an mcp body: without
+    # one the caller gets {}.
+    changed = {key: value for key, value in answer.items() if value is not None}
+    if envelope.kind == MCP and "body" not in changed and original.get("body") is not None:
+        changed["body"] = {}
+    transformed = "body" in changed and changed["body"] != original.get("body")
+    outcome = OUTCOME_TRANSFORMED if transformed else OUTCOME_PASSED
+    return ChainResult(
+        outcome, output=output, response={**original, **changed}, note={"outcome": outcome}
+    )
 
 
 def _payload(response: dict[str, Any]) -> Any:
