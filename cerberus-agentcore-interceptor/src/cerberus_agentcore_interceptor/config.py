@@ -3,10 +3,11 @@
 Lambda first runs init on a live request, and the gateway refuses every request
 while init fails. So a capture setting never raises: an out-of-range number is
 clamped, and any other value that cannot be used turns capture off and is logged.
-A chain setting that cannot be used does fail init, because no request may be
-served without the interceptor it names. So does a chain setting given without
-CERBERUS_CHAIN_REQUEST_ARN, since the ARN may be missing by mistake. An init
-error's text can reach callers, so one never repeats an ARN it was given.
+A chain setting that cannot be used does fail init, because no call may be served
+without the interceptor it names. So does a chain setting given without the ARN
+it serves, or an unknown CERBERUS_CHAIN_* name, since an ARN may be missing or
+misspelled. An init error's text can reach callers, so one never repeats an ARN
+it was given.
 """
 
 from __future__ import annotations
@@ -51,6 +52,16 @@ MAX_GATEWAY_IDS = 64
 GATEWAY_ARN = re.compile(r"^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]*:\d{12}:gateway/(?P<id>.+)$")
 LAMBDA_ARN = re.compile(r"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:[^\s]+$")
 
+CHAIN_REQUEST_ARN = "CERBERUS_CHAIN_REQUEST_ARN"
+CHAIN_RESPONSE_ARN = "CERBERUS_CHAIN_RESPONSE_ARN"
+# Every other chain setting, by the ARNs that put it to use.
+CHAIN_SETTINGS = {
+    "CERBERUS_CHAIN_PASS_HEADERS": (CHAIN_REQUEST_ARN,),
+    "CERBERUS_CHAIN_RESPONSE_PASS_HEADERS": (CHAIN_RESPONSE_ARN,),
+    "CERBERUS_GATEWAY_IDS": (CHAIN_REQUEST_ARN, CHAIN_RESPONSE_ARN),
+    "CERBERUS_CHAIN_READ_MS": (CHAIN_REQUEST_ARN, CHAIN_RESPONSE_ARN),
+}
+
 
 class ConfigError(ValueError):
     """Raised when a CERBERUS_* value is missing or unusable."""
@@ -70,10 +81,12 @@ class Config:
     max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES
     firehose_connect_ms: int = DEFAULT_FIREHOSE_CONNECT_MS
     firehose_read_ms: int = DEFAULT_FIREHOSE_READ_MS
-    chain_arn: str = ""
+    chain_request_arn: str = ""
+    chain_response_arn: str = ""
     gateway_ids: tuple[str, ...] = ()
     chain_read_ms: int = 0
     chain_pass_headers: bool = False
+    chain_response_pass_headers: bool = False
     log_level: str = DEFAULT_LOG_LEVEL
     # The capture settings that could not be used. Capture is off while any are.
     invalid: tuple[str, ...] = ()
@@ -108,13 +121,14 @@ class Config:
                 invalid.append(name)
                 return fallback
 
-        chain_arn = _raw(source, "CERBERUS_CHAIN_REQUEST_ARN")
+        request_arn = _chain_arn(source, CHAIN_REQUEST_ARN)
+        response_arn = _chain_arn(source, CHAIN_RESPONSE_ARN)
+        _refuse_stray_chain_settings(
+            source, {CHAIN_REQUEST_ARN: request_arn, CHAIN_RESPONSE_ARN: response_arn}
+        )
         gateway_ids: tuple[str, ...] = ()
         chain_read_ms = 0
-        chain_pass_headers = False
-        if chain_arn:
-            if not LAMBDA_ARN.match(chain_arn):
-                raise ConfigError("CERBERUS_CHAIN_REQUEST_ARN is not a Lambda function ARN")
+        if request_arn or response_arn:
             gateway_ids = _gateway_ids(_list(source, "CERBERUS_GATEWAY_IDS"))
             if not gateway_ids:
                 raise ConfigError("CERBERUS_GATEWAY_IDS is required when chaining")
@@ -126,15 +140,10 @@ class Config:
             chain_read_ms = _int(source, "CERBERUS_CHAIN_READ_MS", 0, 0, 300000)
             if not chain_read_ms:
                 raise ConfigError("CERBERUS_CHAIN_READ_MS is required when chaining")
-            # No default: either one would differ from what some chained
-            # function was configured to receive.
-            if not _raw(source, "CERBERUS_CHAIN_PASS_HEADERS"):
-                raise ConfigError("CERBERUS_CHAIN_PASS_HEADERS is required when chaining")
-            chain_pass_headers = _bool(source, "CERBERUS_CHAIN_PASS_HEADERS", False)
-        elif stray := _chain_settings(source):
-            # Without the chain this function would hold the replaced interceptor's
-            # slot and never run it.
-            raise ConfigError(f"{', '.join(stray)} set without CERBERUS_CHAIN_REQUEST_ARN")
+        pass_headers = bool(request_arn) and _pass_headers(source, "CERBERUS_CHAIN_PASS_HEADERS")
+        response_pass_headers = bool(response_arn) and _pass_headers(
+            source, "CERBERUS_CHAIN_RESPONSE_PASS_HEADERS"
+        )
 
         streams: tuple[str, ...] = capture("CERBERUS_FIREHOSE_STREAM", (), _streams)
         mode = capture("CERBERUS_IDENTITY", identity.NONE, _identity_mode)
@@ -170,46 +179,69 @@ class Config:
             user_id_claim=_text(source, "CERBERUS_USER_ID_CLAIM", identity.DEFAULT_USER_ID_CLAIM),
             capture_headers=_list(source, "CERBERUS_CAPTURE_HEADERS") or DEFAULT_CAPTURE_HEADERS,
             capture_bodies=capture_bodies,
-            response_capture=_response_capture(source, chain_arn),
+            response_capture=_response_capture(source),
             sensitive_keys=_list(source, "CERBERUS_SENSITIVE_KEYS"),
             max_event_bytes=max_event_bytes,
             firehose_connect_ms=connect_ms,
             firehose_read_ms=_read_budget(connect_ms, read_ms),
-            chain_arn=chain_arn,
+            chain_request_arn=request_arn,
+            chain_response_arn=response_arn,
             gateway_ids=gateway_ids,
             chain_read_ms=chain_read_ms,
-            chain_pass_headers=chain_pass_headers,
+            chain_pass_headers=pass_headers,
+            chain_response_pass_headers=response_pass_headers,
             log_level=_log_level(source),
             invalid=tuple(invalid),
         )
 
 
-def _response_capture(source: Mapping[str, str], chain_arn: str) -> bool:
-    """CERBERUS_RESPONSE_CAPTURE, off when unusable or beside a REQUEST chain."""
+def _response_capture(source: Mapping[str, str]) -> bool:
+    """CERBERUS_RESPONSE_CAPTURE, off when unusable."""
     try:
-        wanted = _bool(source, "CERBERUS_RESPONSE_CAPTURE", False)
+        return _bool(source, "CERBERUS_RESPONSE_CAPTURE", False)
     except ConfigError as exc:
         logger.error("%s; response capture is off", exc)
         return False
-    if wanted and chain_arn:
-        # Only REQUEST is chained, so with a chain every RESPONSE is refused.
-        logger.error(
-            "CERBERUS_RESPONSE_CAPTURE is unavailable with CERBERUS_CHAIN_REQUEST_ARN set; "
-            "response capture is off"
-        )
-        return False
-    return wanted
 
 
-def _chain_settings(source: Mapping[str, str]) -> list[str]:
-    """The chain settings given a value, besides CERBERUS_CHAIN_REQUEST_ARN."""
-    return sorted(
-        name
-        for name in source
-        if (name.startswith("CERBERUS_CHAIN_") or name == "CERBERUS_GATEWAY_IDS")
-        and name != "CERBERUS_CHAIN_REQUEST_ARN"
-        and _raw(source, name)
-    )
+def _chain_arn(source: Mapping[str, str], name: str) -> str:
+    arn = _raw(source, name)
+    if arn and not LAMBDA_ARN.match(arn):
+        raise ConfigError(f"{name} is not a Lambda function ARN")
+    return arn
+
+
+def _pass_headers(source: Mapping[str, str], name: str) -> bool:
+    # No default: either one would differ from what some chained function was
+    # configured to receive.
+    if not _raw(source, name):
+        raise ConfigError(f"{name} is required when chaining")
+    return _bool(source, name, False)
+
+
+def _refuse_stray_chain_settings(source: Mapping[str, str], arns: Mapping[str, str]) -> None:
+    """Fail on a chain setting whose ARN is unset, and on an unknown CERBERUS_CHAIN_* name.
+
+    Without the chain, this function would hold the replaced interceptor's slot
+    and never run it.
+    """
+    unknown: list[str] = []
+    stray: dict[tuple[str, ...], list[str]] = {}
+    for name in sorted(source):
+        if name in arns or not _raw(source, name):
+            continue
+        anchors = CHAIN_SETTINGS.get(name)
+        if anchors is None:
+            if name.startswith("CERBERUS_CHAIN_"):
+                unknown.append(name)
+        elif not any(arns[anchor] for anchor in anchors):
+            stray.setdefault(anchors, []).append(name)
+    problems = [f"unknown chain setting: {', '.join(unknown)}"] if unknown else []
+    problems += [
+        f"{', '.join(names)} set without {' or '.join(anchors)}" for anchors, names in stray.items()
+    ]
+    if problems:
+        raise ConfigError("; ".join(problems))
 
 
 def _raw(source: Mapping[str, str], name: str) -> str:

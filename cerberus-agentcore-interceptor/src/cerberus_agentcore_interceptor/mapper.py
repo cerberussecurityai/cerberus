@@ -112,18 +112,22 @@ def response_event(
     timestamp: datetime,
     chain: dict[str, Any] | None = None,
     deadline: float | None = None,
+    request_side: bool = True,
 ) -> dict[str, Any] | None:
     """Build the event for one RESPONSE interception. None when it could not be bounded.
 
     An mcp response event also carries the request, which the shape still holds
-    at RESPONSE; an http one has none to carry. Raises CaptureDeadlineExceeded
-    once time.monotonic() reaches deadline.
+    at RESPONSE, unless request_side is False; an http one has none to carry.
+    Raises CaptureDeadlineExceeded once time.monotonic() reaches deadline.
     """
     if options.capture_bodies:
         value, note = response_body.read(envelope, options.sensitive_keys, deadline)
     else:
         value, note = None, response_body.note(envelope, STATE_DISABLED)
-    caller = _caller(envelope, options, ORIGINAL_BODY, deadline) if envelope.kind == MCP else None
+    is_mcp = envelope.kind == MCP
+    caller = (
+        _caller(envelope, options, ORIGINAL_BODY, deadline) if is_mcp and request_side else None
+    )
     suffix = RESPONSE_EVENT_SUFFIX
     event_id = clip_text(context.request_id, MAX_EVENT_ID_CHARS - len(suffix)) + suffix
     # The request side is fitted beside the longest note the response can end with.
@@ -145,7 +149,7 @@ def response_event(
         if response_body.fits_whole(event, value, note, cap, deadline):
             return event
         event = fit(build(), cap - floor, deadline, caller.pruned) or event
-    return response_body.attach(event, value, note, cap, caller is not None, deadline)
+    return response_body.attach(event, value, note, cap, is_mcp, deadline)
 
 
 def _caller(

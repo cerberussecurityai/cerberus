@@ -30,12 +30,13 @@ RESPONSE_CASES = [name for name in GOLDEN_CASES if "-response" in name]
 REQUEST_SIDE = ("method", "endpoint", "headers", "user_agent", "user_id", "session_id", "body")
 
 
-def map_response(case):
+def map_response(case, **kwargs):
     return response_event(
         envelope_mod.parse(case["input"]),
         envelope_mod.gateway_context(LambdaContext(case["client_context"])),
         options(case),
         TIMESTAMP,
+        **kwargs,
     )
 
 
@@ -207,6 +208,25 @@ def test_an_mcp_response_event_carries_the_request_as_its_request_event_does():
         assert response.get(key) == request.get(key), key
     for key in ("identity", "body"):
         assert response["custom_data"]["agentcore"][key] == request["custom_data"]["agentcore"][key]
+
+
+def test_an_mcp_response_event_without_its_request_side_still_names_the_call():
+    case = load_case("mcp-tools-call-lambda-response")
+    event = map_response(case, request_side=False)
+
+    assert not set(REQUEST_SIDE) & set(event)
+    agentcore = event["custom_data"]["agentcore"]
+    assert "identity" not in agentcore and "body" not in agentcore
+    assert event["event_id"] == "request-id-01#response"
+    assert agentcore["request_id"] == "request-id-01"
+    assert agentcore["kind"] == "mcp"
+    assert event["response_body"] == map_response(case)["response_body"]
+
+
+def test_an_mcp_response_without_its_request_side_is_still_reduced():
+    event = map_response(load_case("mcp-tools-call-server-response-reduced"), request_side=False)
+    assert "body" not in event
+    assert event["custom_data"]["agentcore"]["response"]["state"] == "reduced"
 
 
 def test_the_response_event_id_fits_its_column():

@@ -1,4 +1,4 @@
-"""The Lambda entry point, at REQUEST and, with response capture on, at RESPONSE.
+"""The Lambda entry point, at REQUEST and at RESPONSE.
 
 The gateway fails closed on interceptor failure, so every step that builds a
 capture runs under its own guard, and capture gives up short of the function's
@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import traceback
+from dataclasses import replace
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
@@ -25,14 +26,31 @@ from .sink import FirehoseSink
 # What capture leaves of the function's timeout for answering the gateway.
 ANSWER_MARGIN_MS = 500
 
+
+def _chain_clients(config: Config) -> dict[str, ChainClient]:
+    """A chain client for each phase that chains, one shared when both would invoke alike."""
+    chains: dict[str, ChainClient] = {}
+    if config.chain_request_arn:
+        chains[REQUEST] = ChainClient(
+            config.chain_request_arn, config.chain_read_ms, pass_headers=config.chain_pass_headers
+        )
+    if config.chain_response_arn:
+        request = (config.chain_request_arn, config.chain_pass_headers)
+        if (config.chain_response_arn, config.chain_response_pass_headers) == request:
+            chains[RESPONSE] = chains[REQUEST]
+        else:
+            chains[RESPONSE] = ChainClient(
+                config.chain_response_arn,
+                config.chain_read_ms,
+                pass_headers=config.chain_response_pass_headers,
+            )
+    return chains
+
+
 CONFIG = Config.from_env()
 SINK = FirehoseSink(CONFIG.streams, CONFIG.firehose_connect_ms, CONFIG.firehose_read_ms)
 OPTIONS = CONFIG.mapper_options(__version__)
-CHAIN = (
-    ChainClient(CONFIG.chain_arn, CONFIG.chain_read_ms, pass_headers=CONFIG.chain_pass_headers)
-    if CONFIG.chain_arn
-    else None
-)
+CHAINS = _chain_clients(CONFIG)
 
 # The Lambda runtime owns the root logger's handler and its request-id prefix.
 logger = logging.getLogger("cerberus_agentcore_interceptor")
@@ -46,8 +64,8 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
     if CONFIG.capturing:
         SINK.prepare()
-    if CHAIN is not None:
-        CHAIN.prepare()
+    for chain_client in dict.fromkeys(CHAINS.values()):
+        chain_client.prepare()
 
 
 class InterceptorError(RuntimeError):
@@ -60,19 +78,13 @@ def handler(event: Any, context: Any = None) -> dict[str, Any]:
     gateway = _gateway(context)
     if envelope is None:
         # Nothing to capture, but a chained interceptor still has to run.
-        return _answer(event, None, _chain(event, context, Envelope(), gateway))
+        return _answer(event, None, _chain(event, context, None, gateway))
 
-    chain = None
-    if envelope.phase == REQUEST:
-        chain = _chain(event, context, envelope, gateway)
-    elif CHAIN is not None:
-        # Only REQUEST is chained. The RESPONSE slot may have held their
-        # interceptor, which we would be skipping.
-        metrics.count(metrics.UNEXPECTED_PHASE)
-        raise InterceptorError("interceptor is not configured for the response phase")
-    elif not CONFIG.response_capture:
-        metrics.count(metrics.UNEXPECTED_PHASE)
-        return _output(event, envelope)
+    chain = _chain(event, context, envelope, gateway)
+    if envelope.phase == RESPONSE and not CONFIG.response_capture:
+        if RESPONSE not in CHAINS:
+            metrics.count(metrics.UNEXPECTED_PHASE)
+        return _answer(event, envelope, chain)
 
     if envelope.supported_version:
         if not envelope.kind:
@@ -102,25 +114,36 @@ def _gateway(context: Any) -> GatewayContext:
 
 
 def _chain(
-    event: Any, context: Any, envelope: Envelope, gateway: GatewayContext
+    event: Any, context: Any, envelope: Envelope | None, gateway: GatewayContext
 ) -> ChainResult | None:
-    if CHAIN is None:
+    if not CHAINS:
         return None
     if gateway.gateway_id not in CONFIG.gateway_ids:
         # An unlisted gateway may have had its own interceptor before us, and we
-        # cannot serve its request without running whatever that was.
+        # cannot serve its call without running whatever that was.
         logger.error("gateway %r is not in CERBERUS_GATEWAY_IDS", gateway.gateway_id)
         raise InterceptorError("interceptor is not configured for this gateway")
+    if envelope is None:
+        clients = list(dict.fromkeys(CHAINS.values()))
+        if len(clients) > 1:
+            # Either of two functions may be the one this input is for.
+            raise InterceptorError("interceptor could not read its input")
+        client: ChainClient | None = clients[0]
+        envelope = Envelope()
+    else:
+        client = CHAINS.get(envelope.phase)
+    if client is None:
+        return None
     try:
         deadline = _deadline(context)
     except Exception as exc:
         _log_failure("remaining time could not be read", exc)
         deadline = None
     try:
-        return CHAIN.invoke(event, context, envelope, deadline)
+        return client.invoke(event, context, envelope, deadline)
     except Exception as exc:
-        # Botocore's message can name the function's ARN. The request is
-        # refused like any other failed invoke.
+        # Botocore's message can name the function's ARN. The call is refused
+        # like any other failed invoke.
         _log_failure("chained interceptor failed", exc)
         return ChainResult(OUTCOME_ERROR, note={"outcome": OUTCOME_ERROR})
 
@@ -157,17 +180,30 @@ def _event(
     envelope: Envelope, gateway: GatewayContext, chain: ChainResult | None, deadline: float | None
 ) -> dict[str, Any] | None:
     now = datetime.now(UTC)
+    note = chain.note if chain is not None else None
     if envelope.phase == RESPONSE:
-        return response_event(envelope, gateway, OPTIONS, now, deadline=deadline)
+        if chain is not None and chain.response is not None:
+            envelope = replace(envelope, response=chain.response)
+        # The RESPONSE input holds the caller's request as it was before their
+        # REQUEST interceptor, which may have removed parts of it.
+        return response_event(
+            envelope,
+            gateway,
+            OPTIONS,
+            now,
+            chain=note,
+            deadline=deadline,
+            request_side=REQUEST not in CHAINS,
+        )
     return source_event(
         envelope,
         gateway,
         OPTIONS,
         now,
-        chain=chain.note if chain is not None else None,
+        chain=note,
         body_override=chain.body if chain is not None and chain.transformed else ORIGINAL_BODY,
         deadline=deadline,
-        response_expected=CONFIG.response_capture,
+        response_expected=CONFIG.response_capture and not (chain is not None and chain.ends_call),
     )
 
 

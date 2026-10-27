@@ -55,10 +55,10 @@ call. While the chained function is throttled, each request holds this one for
 up to 2 s more, so give one of the two reserved concurrency: that wait should
 not draw on the pool the throttled function needs.
 
-With response capture on, each call is two invocations, one at each point.
-Work out need for each point from its own p99 duration, the RESPONSE one
-measured on your own responses, and size any provisioned or reserved
-concurrency from the sum.
+With response capture on, or a RESPONSE chain, each call is two invocations,
+one at each point. Work out need for each point from its own p99 duration, the
+RESPONSE one measured on your own responses, and size any provisioned or
+reserved concurrency from the sum.
 
 ## What it captures
 
@@ -112,8 +112,9 @@ the gateway host and source address it carries:
   `content_type`
 
 An `mcp` response event also carries the request, which the gateway still hands
-over at RESPONSE, handled as on a request event. An `http` response event has no
-request to carry: no method, path, headers or caller identity.
+over at RESPONSE, handled as on a request event, unless this function chains a
+REQUEST interceptor; see Chaining. An `http` response event has no request to
+carry: no method, path, headers or caller identity.
 
 JSON bodies are sanitized as request bodies are, JSON inside a tool result's
 text included, and credential header names are redacted as keys too, since a
@@ -157,15 +158,19 @@ this function does:
   invocation that fails or is throttled fails the call after the target has
   run.
 
-Response capture is not available on a function that chains a REQUEST
-interceptor; see Chaining.
+If the gateway already has a REQUEST interceptor, chain it through this function
+rather than leaving it as its own entry beside this one at RESPONSE only; see
+Chaining. The RESPONSE input holds the caller's request as it was before your
+interceptor ran, so in that setup no request event is sent and response events
+carry what your interceptor removed.
 
 Settings are read at init, and none of them can undo what the attachment does to
 the gateway. To stop response capture quickly, detach the RESPONSE point, or the
-function. Then set `CERBERUS_RESPONSE_CAPTURE` to false on a new version and
-move the alias, so request events stop saying a response follows.
-`UpdateGateway` replaces the gateway's whole configuration, so resend every
-field you are not changing.
+function. Detaching it also detaches a RESPONSE interceptor this function
+chains, so attach that one directly in its place. Then set
+`CERBERUS_RESPONSE_CAPTURE` to false on a new version and move the alias, so
+request events stop saying a response follows. `UpdateGateway` replaces the
+gateway's whole configuration, so resend every field you are not changing.
 
 ## A note on the `mcp` output shape
 
@@ -188,48 +193,60 @@ its caller gets `{}` where the target sent no body.
 
 ## Chaining
 
-A gateway has one REQUEST interceptor slot. If yours is taken, point this
+A gateway has one interceptor slot at each point. If yours is taken, point this
 function at the one that is already there: it runs first on the gateway's
 input, with numbers outside the double range written as strings as above. Its
 answer is returned to the gateway unchanged but for the two replacements above,
 and our own failures can neither skip it nor alter what it decided. If we
-cannot get its answer, or the answer is not a JSON object, the request is
-refused rather than served without it.
+cannot get its answer, or the answer is not a JSON object, the call is refused
+rather than served without it.
 
-Only the REQUEST point chains. If your interceptor is attached at both REQUEST
-and RESPONSE in one configuration entry, split it: this function at REQUEST,
-chaining to yours, and yours alone at RESPONSE. With a chain set, this
-function refuses every RESPONSE invocation, so an attachment left there fails
-closed instead of skipping your response logic. Response capture is therefore
-not available on a function that chains: with `CERBERUS_RESPONSE_CAPTURE` on as
-well, init logs that it is unavailable and leaves it off, and request capture
-and the chain are unaffected.
+`CERBERUS_CHAIN_REQUEST_ARN` chains the REQUEST point and
+`CERBERUS_CHAIN_RESPONSE_ARN` the RESPONSE point. If your interceptor is
+attached at both in one configuration entry, set both ARNs to your function and
+attach this one at both points in its place. An input this function cannot read
+goes to the chained function, and is refused when the two chains differ, since
+it could be for either.
 
-Set `CERBERUS_CHAIN_REQUEST_ARN` to the qualified ARN, `CERBERUS_GATEWAY_IDS`
-to the ids or ARNs of the gateways this function serves, and
-`CERBERUS_CHAIN_READ_MS` to the chained function's own timeout plus a
-cold-start allowance. A gateway that is not on the list is refused, and its id
-logged, because it may have had an interceptor of its own before this one. The
-execution role needs `lambda:InvokeFunction` on the ARN.
+At RESPONSE, yours runs first and its answer is what gets captured, since that
+is what the caller receives: what it removed is never seen. With a REQUEST chain
+set, an `mcp` response event carries no request side, as on `http`: the gateway
+hands RESPONSE the caller's request as it was before your interceptor ran, so
+only the request event records the request.
+
+Set `CERBERUS_CHAIN_REQUEST_ARN` and `CERBERUS_CHAIN_RESPONSE_ARN` to qualified
+ARNs, `CERBERUS_GATEWAY_IDS` to the ids or ARNs of the gateways this function
+serves, and `CERBERUS_CHAIN_READ_MS` to the slower chained function's own
+timeout plus a cold-start allowance; those two serve both chains. A gateway
+that is not on the list is refused at either point, and its id logged, because
+it may have had an interceptor of its own before this one. The execution role
+needs `lambda:InvokeFunction` on each ARN.
 
 A throttled invoke is retried twice, over about 1 to 2 s as the gateway itself
-would, and no retry starts within 500 ms of the function's timeout. So the
-function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus 2 s for those
-retries plus 1.5 s for the capture.
+would, and no retry starts within 500 ms of the function's timeout. So at
+REQUEST the function's timeout has to cover `CERBERUS_CHAIN_READ_MS` plus 2 s
+for those retries plus 1.5 s for the capture. With a RESPONSE chain and response
+capture on, add `CERBERUS_CHAIN_READ_MS` and 2 s to the RESPONSE timeout worked
+out under Deployment, and about 0.2 s more to pass a multi-megabyte input on.
 
-Set `CERBERUS_CHAIN_PASS_HEADERS` to the replaced interceptor's
-`inputConfiguration.passRequestHeaders`. This function's own slot passes request
-headers whenever identity needs them, and with `false` they are taken out before
-the chained function is invoked, so it never receives callers' credentials it
-was not configured to see. With `true`, set `passRequestHeaders: true` on this
-function's own interceptor entry as well, whatever the identity mode, or the
-chained function receives no headers.
+Set `CERBERUS_CHAIN_PASS_HEADERS` to the REQUEST interceptor's
+`inputConfiguration.passRequestHeaders`, and
+`CERBERUS_CHAIN_RESPONSE_PASS_HEADERS` to the RESPONSE one's; each is required
+beside its ARN. This function's own slot passes request headers whenever
+identity needs them, and with `false` they are taken out before the chained
+function is invoked, so it never receives callers' credentials it was not
+configured to see. The response's own headers reach a RESPONSE chain either
+way, as the gateway passes them. With `true`, set `passRequestHeaders: true` on
+this function's own interceptor entry as well, whatever the identity mode, or
+the chained function receives no headers.
 
 What their interceptor did travels with the event: `passed` (the body is
 unchanged; headers are not compared), `transformed` (the transformed body is
 what gets captured, since it is what reaches the target), `short_circuit` with
 its status code (a refused request is still a captured attempt),
-`invalid_output`, or `error`.
+`invalid_output`, or `error`. At RESPONSE an answer is `passed` or
+`transformed`, by its body alone, and a transformed response is captured with
+the status code and content type the answer gives.
 
 ## Configuration
 
@@ -243,10 +260,12 @@ its status code (a refused request is still a captured attempt),
 | `CERBERUS_RESPONSE_CAPTURE` | `false` | `true` captures responses as well; see Response capture |
 | `CERBERUS_SENSITIVE_KEYS` | empty | Extra body keys to redact |
 | `CERBERUS_MAX_EVENT_BYTES` | `57344` | 1024 to 63488 |
-| `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first |
+| `CERBERUS_CHAIN_REQUEST_ARN` | unset | Qualified ARN of an interceptor to run first at REQUEST |
+| `CERBERUS_CHAIN_RESPONSE_ARN` | unset | Qualified ARN of an interceptor to run first at RESPONSE |
 | `CERBERUS_GATEWAY_IDS` | unset | Gateway ids or ARNs. Required when chaining; any other gateway is refused |
-| `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining |
-| `CERBERUS_CHAIN_PASS_HEADERS` | unset | `true` or `false`. Required when chaining |
+| `CERBERUS_CHAIN_READ_MS` | unset | Required when chaining; serves both chains |
+| `CERBERUS_CHAIN_PASS_HEADERS` | unset | `true` or `false`. Required with `CERBERUS_CHAIN_REQUEST_ARN` |
+| `CERBERUS_CHAIN_RESPONSE_PASS_HEADERS` | unset | `true` or `false`. Required with `CERBERUS_CHAIN_RESPONSE_ARN` |
 | `CERBERUS_FIREHOSE_CONNECT_MS` | `250` | At most 750; connect plus read is capped at 1500 |
 | `CERBERUS_FIREHOSE_READ_MS` | `500` | Lowered when connect plus read exceeds 1500 |
 | `CERBERUS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `WARNING`, `ERROR`. Logs carry request ids and outcomes, never bodies or headers |
@@ -258,12 +277,12 @@ cannot be used turns capture off rather than failing the function: it logs an
 `CaptureDropped` with reason `config_invalid`. An unusable
 `CERBERUS_RESPONSE_CAPTURE` is logged and turns off response capture alone;
 request capture is unaffected. A chaining setting that cannot be
-used does fail the function at init, since no request may be served without the
-chained interceptor. So does any `CERBERUS_CHAIN_*` or `CERBERUS_GATEWAY_IDS`
-value set without `CERBERUS_CHAIN_REQUEST_ARN`: the function would otherwise hold
-the replaced interceptor's slot without running it, so the gateway refuses every
-request until the ARN is set or the other values are removed. Lambda caps all
-environment variables at 4 KB together.
+used does fail the function at init, since no call may be served without the
+chained interceptor. So does a chaining setting set without the ARN it serves,
+or a `CERBERUS_CHAIN_*` name the function does not know: either can mean an ARN
+is missing or misspelled, and the function would otherwise hold the replaced
+interceptor's slot without running it. The gateway refuses every call until the
+setting is fixed. Lambda caps all environment variables at 4 KB together.
 
 ## Deployment
 
@@ -276,8 +295,8 @@ environment variables at 4 KB together.
 | Runtime | `python3.13`, `arm64` |
 | Memory | 512 MB to start; 1769 MB with response capture on |
 | Timeout | 3 s; 6 s with response capture on; longer with a chain, see Chaining |
-| Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on a chain target |
-| Interception points | `["REQUEST"]`, or `["REQUEST", "RESPONSE"]` with response capture on |
+| Permissions | `firehose:PutRecord` on each stream, `lambda:InvokeFunction` on each chain target |
+| Interception points | `["REQUEST"]`, or `["REQUEST", "RESPONSE"]` with response capture on or a RESPONSE chain |
 
 Capture gives up 500 ms before the function's timeout, and skips the Firehose
 write when the time left cannot cover `CERBERUS_FIREHOSE_CONNECT_MS` plus
@@ -378,7 +397,7 @@ Alarm on:
 - `CaptureDropped` without a dimension; its `Reason` series say why. An alarm
   on response capture reads the `Phase` `response` series
 - `UnexpectedPhase` above 0: the function is attached at RESPONSE while
-  response capture is off
+  response capture is off and no RESPONSE chain is set
 - the stream's `ThrottledRecords`
 - the stream's `DeliveryToHttpEndpoint.DataFreshness` (Maximum) above the buffer
   interval plus 300 s. A rejected access key or an endpoint outage shows there,
