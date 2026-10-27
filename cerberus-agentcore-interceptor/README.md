@@ -57,9 +57,12 @@ up to 2 s more, so give one of the two reserved concurrency: that wait should
 not draw on the pool the throttled function needs.
 
 With response capture on, or a RESPONSE chain, each call is two invocations,
-one at each point. Work out need for each point from its own p99 duration, the
-RESPONSE one measured on your own responses, and size any provisioned or
-reserved concurrency from the sum.
+one at each point, so need roughly doubles, and with it any provisioned or
+reserved concurrency: more where responses are larger than requests. Work out
+need for each point from its own p99 duration, the RESPONSE one measured on
+your own responses, and size from the sum. Unreserved, the function draws that
+sum from the account's concurrency, which every other function shares. A
+throttle at RESPONSE fails the call after its target has run.
 
 ## What it captures
 
@@ -114,8 +117,8 @@ the gateway host and source address it carries:
 
 An `mcp` response event also carries the request, which the gateway still hands
 over at RESPONSE, handled as on a request event, unless this function chains a
-REQUEST interceptor; see Chaining. An `http` response event has no request to
-carry: no method, path, headers or caller identity.
+REQUEST interceptor; see Chaining. An `http` response event carries no
+request: no method, path, headers or caller identity.
 
 JSON bodies are sanitized as request bodies are, JSON inside a tool result's
 text included, and credential header names are redacted as keys too, since a
@@ -155,9 +158,26 @@ this function does:
   limit can pass REQUEST and then fail at RESPONSE, after the target has run.
   `payloadFilter` takes effect on `http` payloads only, so it does not shrink
   that input.
+- On Runtime and passthrough targets, a call fails once its request and
+  response bodies together pass about 4.7 MB, since the RESPONSE input carries
+  both, base64-encoded, within the same 6 MB limit. The target has run by then,
+  and the caller gets a 400. Excluding `RESPONSE_BODY` with `payloadFilter`
+  avoids the failure, but the function then receives no response body to
+  capture.
 - Each call is two invocations and two Firehose records, and a RESPONSE
   invocation that fails or is throttled fails the call after the target has
   run.
+
+With MCP response streaming off, the gateway answers each MCP call in one
+piece, and an MCP server's progress and log notifications do not reach the
+caller. Interceptors and `enableResponseStreaming` are both set per gateway, so
+to keep MCP response streaming for the callers that need it, run two gateways
+with the same targets: one with streaming off and the function at both points,
+and one with streaming on and the function at REQUEST only. Deploy the function
+twice, with `CERBERUS_RESPONSE_CAPTURE` on only for the one attached at both
+points; both can write to the same delivery stream. Streamed inference, Runtime
+and passthrough responses stream as before through a gateway with this function
+at REQUEST only, so the same split serves their callers.
 
 If the gateway already has a REQUEST interceptor, chain it through this function
 rather than leaving it as its own entry beside this one at RESPONSE only; see
@@ -165,13 +185,25 @@ Chaining. The RESPONSE input holds the caller's request as it was before your
 interceptor ran, so in that setup no request event is sent and response events
 carry what your interceptor removed.
 
-Settings are read at init, and none of them can undo what the attachment does to
-the gateway. To stop response capture quickly, detach the RESPONSE point, or the
-function. Detaching it also detaches a RESPONSE interceptor this function
-chains, so attach that one directly in its place. Then set
+### Turning it off
+
+Detaching is the kill switch. Settings are read at init, and none of them can
+undo what the attachment does to the gateway. To stop response capture, update
+the gateway with this function's entry at `["REQUEST"]` only, or drop the entry
+to detach the function. The change is in effect once the gateway is `READY`
+again, about a second after the update. A point you detach takes the
+interceptor this function chains there with it, so give that one its own entry
+at the points you detach, in the same update. Then set
 `CERBERUS_RESPONSE_CAPTURE` to false on a new version and move the alias, so
-request events stop saying a response follows. `UpdateGateway` replaces the
-gateway's whole configuration, so resend every field you are not changing.
+request events stop saying a response follows.
+
+`UpdateGateway` replaces the gateway's whole configuration rather than merging
+into it. Start from `GetGateway` and send back every field `UpdateGateway`
+takes, changing only the interceptor entries. Resend `protocolConfiguration`,
+which holds the gateway's MCP settings, and `exceptionLevel`, or the update
+clears them. An update without `interceptorConfigurations` detaches every
+interceptor on the gateway, including one this function chains, and calls then
+reach their targets with none.
 
 ## A note on the `mcp` output shape
 
@@ -403,10 +435,15 @@ lines. `botocore` and `urllib3` stay at `WARNING` whatever the level, since at
 
 Alarm on:
 
-- Lambda `Errors`, first: each one is a blocked customer request
-- Lambda `Throttles`
-- `CaptureDropped` without a dimension; its `Reason` series say why. An alarm
-  on response capture reads the `Phase` `response` series
+- Lambda `Errors`, first: each one is a blocked customer request, and at
+  RESPONSE one whose target has run
+- Lambda `Throttles`, which count both points too
+- `CaptureDropped` without a dimension; its `Reason` series say why, and its
+  `Phase` series at which point
+- with response capture on, `Captured` with `Phase` `response` at 0 while
+  `Phase` `request` is not, which needs the `Captured` line kept: the gateway
+  has stopped invoking the function at RESPONSE while its request events still
+  say a response follows
 - `UnexpectedPhase` above 0: the function is attached at RESPONSE while
   response capture is off and no RESPONSE chain is set
 - the stream's `ThrottledRecords`
