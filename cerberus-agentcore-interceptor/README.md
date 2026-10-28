@@ -227,10 +227,10 @@ chained function.
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers. Inference callers still receive a refusal as
 Lambda's error payload: the message, the `InterceptorError` type, the Lambda
-request id and a stack trace through this package's files. Nothing this package
-raises says anything you would not show a customer's end user. Lambda's
-own errors reach inference callers too: while the function is throttled, the
-caller's error names its ARN, account id included.
+request id and a stack trace through this package's files. The message is fixed
+text and the trace shows only this package's code, so neither carries request
+content or settings. Lambda's own errors reach inference callers too: while the
+function is throttled, the caller's error names its ARN, account id included.
 
 ### Delivery stream
 
@@ -281,9 +281,10 @@ Alarm on:
   interval plus 300 s. A rejected access key or an endpoint outage shows there,
   not in the function's metrics. `DeliveryToHttpEndpoint.Success` cannot
   replace it: while every attempt fails it reports no datapoints at all
-- a canary call through the gateway, or a drop in the gateway's `Invocations`.
-  A lost invoke grant refuses calls without invoking the function, and no other
-  Lambda or gateway metric counts them
+- a canary call through the gateway, or a drop in the gateway's `Invocations`
+  with missing data treated as breaching. A lost invoke grant refuses calls
+  without invoking the function, and no other Lambda or gateway metric counts
+  them
 
 ## Development
 
