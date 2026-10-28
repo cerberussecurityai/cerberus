@@ -4,7 +4,7 @@
 //   1. If `secretKey` is configured → use it.
 //   2. Else if `backendUrl` is configured → GET {backendUrl}/api/secret-key
 //      with X-API-Key: {token}, parse {"secret_key": "..."}, cache.
-//   3. Else → return None (PII emitted raw, with one-time warn log).
+//   3. Else → return None (hashing degrades to redaction; one-time warn log).
 //
 // `backendUrl` is declared `format: service` in `definition/gcl.yaml`, so
 // the PDK registers an Envoy cluster for it at policy load (see the init
