@@ -446,7 +446,7 @@ Alarm on:
 - with response capture on, the function's Lambda `Invocations` above 0 while
   `Captured` with `Phase` `response` is 0: the gateway has stopped invoking the
   function at RESPONSE while its request events still say a response follows.
-  Keep the `Captured` line, and fill the response series with 0, as in
+  Fill the response series with 0, as in
   `IF(invocations > 0 AND FILL(captured, 0) == 0, 1, 0)`, since a period with
   no capture has no data rather than a 0. The check holds while only one
   function in the account and region captures responses
