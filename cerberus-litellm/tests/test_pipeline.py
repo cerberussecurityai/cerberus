@@ -1,0 +1,723 @@
+import json
+from dataclasses import replace
+
+import pytest
+from helpers import finalized, load_capture
+
+from cerberus_litellm.mapper_llm import map_llm_event
+from cerberus_litellm.mapper_mcp import map_mcp_event, map_schema_reports
+from cerberus_litellm.pipeline import (
+    MAX_VALUE_CHARS,
+    Pipeline,
+    client_ip,
+    redact_secrets,
+    truncate_values,
+)
+
+
+def _llm(name, config):
+    return map_llm_event(load_capture(name)["standard_logging_object"], config)
+
+
+def _mcp(name, config):
+    return map_mcp_event(load_capture(name)["standard_logging_object"], config)
+
+
+def test_client_ip_is_raw_normalized_and_capped():
+    assert client_ip("203.0.113.7") == "203.0.113.7"
+    # cerberus-core's normalize_ip keeps IPv4-mapped IPv6 in IPv6 form (it
+    # canonicalises, it does not convert) — same as every other connector.
+    # The hex spelling is pinned by cerberus-core's parity fixture; str() of
+    # the address varies across CPython patch releases, so it is not used.
+    assert client_ip("::ffff:203.0.113.7") == "::ffff:cb00:7107"
+    assert client_ip("FE80::1%eth0") == "fe80::1"
+    assert client_ip(None) == "unknown"
+    assert client_ip("") == "unknown"
+    assert len(client_ip("x" * 500)) <= 64
+
+
+def test_llm_event_keeps_raw_ip(config):
+    event = finalized(Pipeline(config), _llm("chat", config), "llm")
+    assert event["remote_addr"] == "203.0.113.7"
+    assert event["custom_data"]["integration"] == "litellm"
+
+
+def test_mcp_arguments_are_sanitized_in_body_and_custom_data(config):
+    event = finalized(Pipeline(config), _mcp("mcp_tool_call", config), "mcp")
+    assert event["custom_data"]["arguments"]["api_key"] == "[REDACTED]"
+    assert event["body"]["api_key"] == "[REDACTED]"
+    assert event["custom_data"]["arguments"]["message"] == "hi mcp"
+    assert event["remote_addr"] == "unknown"  # the MCP capture carries no requester IP
+
+
+def test_mcp_arguments_flag_off_empties_arguments(config):
+    cfg = replace(config, capture_mcp_arguments=False)
+    event = finalized(Pipeline(cfg), _mcp("mcp_tool_call", cfg), "mcp")
+    assert event["custom_data"]["arguments"] == {}
+    assert event["body"] is None
+    assert event["custom_data"]["result_summary"] == "echo: hi mcp"  # results are a separate flag
+
+
+def test_llm_body_tool_arguments_are_sanitized(config):
+    event = finalized(Pipeline(config), _llm("chat_stream_tools", config), "llm")
+    message = event["body"]["output"]["choices"][0]["message"]
+    arguments = message["tool_calls"][0]["function"]["arguments"]
+    # The arguments string is JSON text, not a dict: key-based redaction cannot
+    # see inside it. That is the documented limitation shared with the bridge.
+    assert isinstance(arguments, str)
+    assert event["body"]["input"]["messages"][0]["content"] == "weather in Reykjavik?"
+
+
+def test_captured_headers_are_sanitized_and_credentials_dropped(config):
+    cfg = replace(config, capture_headers=("x-cerberus-turn-id",))
+    event = _llm("chat", cfg)
+    event["headers"] = {
+        "x-cerberus-turn-id": "turn-1",
+        "authorization": "Bearer x",
+        "x-api-key": "k",
+    }
+    out = finalized(Pipeline(cfg), event, "llm")
+    assert out["headers"] == {"x-cerberus-turn-id": "turn-1"}
+
+
+def test_long_strings_truncated(config):
+    event = _llm("chat", config)
+    event["user_agent"] = "u" * 5000
+    event["user_id"] = "i" * 5000
+    event["custom_data"]["error"] = "e" * 5000
+    out = finalized(Pipeline(config), event, "llm")
+    assert len(out["user_agent"]) <= 1024 + len("...[TRUNCATED]")
+    assert len(out["user_id"]) <= 256 + len("...[TRUNCATED]")
+    assert len(out["custom_data"]["error"]) <= 2048 + len("...[TRUNCATED]")
+
+
+def test_content_values_truncated_at_max_value_chars(config):
+    out = finalized(Pipeline(config), _llm("big_completion", config), "llm")
+    content = out["body"]["output"]["choices"][0]["message"]["content"]
+    assert len(content) == MAX_VALUE_CHARS + len("...[TRUNCATED]")
+    assert len(json.dumps(out).encode()) <= config.max_event_bytes
+
+
+def test_oversize_event_sheds_content_first(config):
+    cfg = replace(config, max_event_bytes=4096)
+    out = finalized(Pipeline(cfg), _llm("big_prompt", cfg), "llm")
+    assert out is not None
+    assert out["body"] is None
+    assert out["custom_data"]["content_dropped_oversize"] is True
+    assert out["custom_data"]["tokens_total"] is not None
+
+
+def test_dropped_oversize_is_counted(config):
+    cfg = replace(config, max_event_bytes=1024)
+    pipeline = Pipeline(cfg)
+    event = _llm("chat", cfg)
+    event["custom_data"]["extra_field"] = ["t" * 2000]  # not content, tags or headers: unsheddable
+    assert finalized(pipeline, event, "llm") is None
+    assert pipeline.dropped_oversize == 1
+
+
+def test_oversize_schema_report_sheds_tools_but_keeps_skeleton(config):
+    cfg = replace(config, max_event_bytes=2048)
+    capture = load_capture("mcp_list_tools")
+    event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], cfg)[0]
+    event["custom_data"]["tools"] = [
+        {"name": f"t{i}", "description": "d" * 300, "input_schema": {}} for i in range(40)
+    ]
+    out = finalized(Pipeline(cfg), event, "schema")
+    assert out is not None
+    assert out["custom_data"]["tools"] == []
+    assert out["method"] == "mcp_schema_report"
+
+
+def test_schema_catalogue_ships_parameter_definitions_intact(config):
+    # A parameter *named* password or api_key is a definition, not a value.
+    capture = load_capture("mcp_list_tools")
+    event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[
+        0
+    ]
+    schema = {
+        "type": "object",
+        "properties": {
+            "password": {"type": "string", "description": "the user's password"},
+            "api_key": {"type": "string"},
+        },
+    }
+    event["custom_data"]["tools"][0]["input_schema"] = schema
+    out = finalized(Pipeline(config), event, "schema")
+    assert out["custom_data"]["tools"][0]["input_schema"] == schema
+    assert out["method"] == "mcp_schema_report"
+
+
+def _schema_event(config, input_schema, description="Looks something up"):
+    capture = load_capture("mcp_list_tools")
+    event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[
+        0
+    ]
+    event["custom_data"]["tools"][0]["input_schema"] = input_schema
+    event["custom_data"]["tools"][0]["description"] = description
+    return event
+
+
+def test_schema_values_under_a_sensitive_property_are_redacted_but_definitions_kept(config):
+    schema = {
+        "type": "object",
+        "required": ["password"],
+        "properties": {
+            "password": {
+                "type": "string",
+                "description": "the user's password",
+                "default": "hunter2",
+                "examples": ["correct-horse", "battery-staple"],
+            },
+            "token": {"type": "string", "const": "fixed-token", "enum": ["a", "b"]},
+            "city": {"type": "string", "default": "Reykjavik", "enum": ["Reykjavik", "Oslo"]},
+        },
+    }
+    event = _schema_event(config, schema)
+    props = finalized(Pipeline(config), event, "schema")["custom_data"]["tools"][0]["input_schema"][
+        "properties"
+    ]
+    assert props["password"] == {
+        "type": "string",
+        "description": "the user's password",
+        "default": "[REDACTED]",
+        "examples": "[REDACTED]",
+    }
+    assert props["token"] == {"type": "string", "const": "[REDACTED]", "enum": "[REDACTED]"}
+    assert props["city"] == schema["properties"]["city"]  # not a sensitive name: untouched
+
+
+def test_schema_values_are_redacted_through_nested_structures(config):
+    schema = {
+        "type": "object",
+        "properties": {
+            "creds": {
+                "type": "object",
+                "properties": {
+                    "api_key": {
+                        "anyOf": [{"type": "string", "default": "k1"}, {"type": "null"}],
+                        "items": {"type": "string", "example": "k2"},
+                    },
+                },
+            }
+        },
+        "$defs": {"secret": {"type": "string", "default": "not-sensitive-name-in-defs"}},
+    }
+    out = finalized(Pipeline(config), _schema_event(config, schema), "schema")
+    schema_out = out["custom_data"]["tools"][0]["input_schema"]
+    api_key = schema_out["properties"]["creds"]["properties"]["api_key"]
+    assert api_key["anyOf"][0] == {"type": "string", "default": "[REDACTED]"}
+    assert api_key["anyOf"][1] == {"type": "null"}
+    assert api_key["items"] == {"type": "string", "example": "[REDACTED]"}
+    # "secret" is in SENSITIVE_KEYS, so a $defs entry of that name is masked too.
+    assert schema_out["$defs"]["secret"]["default"] == "[REDACTED]"
+
+
+def test_value_masking_inside_a_sensitive_property_fails_closed(config):
+    risky = {
+        "type": "array",
+        "description": "tokens to try",
+        "prefixItems": [{"type": "string", "default": "abc"}],
+        "items": [{"type": "string", "enum": ["sk-live-abcdef0123456789", "plain"]}],
+        "contains": {"const": "needle"},
+        "dependentSchemas": {"other": {"properties": {"x": {"default": "nested"}}}},
+        "then": {"else": {"examples": ["deep"]}},
+        "x-examples": ["vendor-extension-value"],
+        "X-Other": {"anything": "else"},
+    }
+    schema = {"type": "object", "properties": {"token": risky, "sibling": risky}}
+    out = finalized(Pipeline(config), _schema_event(config, schema), "schema")
+    props = out["custom_data"]["tools"][0]["input_schema"]["properties"]
+
+    token = props["token"]
+    assert token["type"] == "array" and token["description"] == "tokens to try"
+    assert token["prefixItems"] == [{"type": "string", "default": "[REDACTED]"}]
+    assert token["items"] == [{"type": "string", "enum": "[REDACTED]"}]
+    assert token["contains"] == {"const": "[REDACTED]"}
+    assert token["dependentSchemas"]["other"]["properties"]["x"] == {"default": "[REDACTED]"}
+    assert token["then"]["else"] == {"examples": "[REDACTED]"}
+    assert token["x-examples"] == "[REDACTED]"
+    assert token["X-Other"] == "[REDACTED]"
+    for raw in ("abc", "needle", "nested", "deep", "vendor-extension-value", "sk-live-"):
+        assert raw not in json.dumps(token)
+
+    # A non-sensitive sibling with the same shapes keeps its values (apart from
+    # secret-shaped strings, which are masked everywhere).
+    sibling = props["sibling"]
+    assert sibling["prefixItems"] == [{"type": "string", "default": "abc"}]
+    assert sibling["contains"] == {"const": "needle"}
+    assert sibling["x-examples"] == ["vendor-extension-value"]
+    assert sibling["items"][0]["enum"][1] == "plain"
+    assert "sk-live-abcdef0123456789" not in json.dumps(sibling)
+
+
+def test_secret_shaped_values_anywhere_in_a_catalogue_are_masked(config):
+    schema = {
+        "type": "object",
+        "properties": {
+            "q": {"type": "string", "description": "use key sk-live-abcdef0123456789 here"},
+            "mode": {"type": "string", "enum": ["fast", "Bearer abcdef0123456789"]},
+        },
+    }
+    event = _schema_event(config, schema, description="auth with AKIAABCDEFGHIJKLMNOP only")
+    out = finalized(Pipeline(config), event, "schema")
+    tool = out["custom_data"]["tools"][0]
+    dumped = json.dumps(tool)
+    for raw in ("sk-live-abcdef0123456789", "abcdef0123456789", "AKIAABCDEFGHIJKLMNOP"):
+        assert raw not in dumped
+    assert tool["input_schema"]["properties"]["mode"]["enum"][0] == "fast"
+    assert tool["input_schema"]["properties"]["q"]["type"] == "string"
+
+
+def test_catalogue_secret_straddling_the_truncation_cut_is_still_masked(config):
+    description = "x" * (MAX_VALUE_CHARS - 5) + " sk-live-abcdef0123456789"
+    out = finalized(Pipeline(config), _schema_event(config, {}, description), "schema")
+    assert "sk-li" not in out["custom_data"]["tools"][0]["description"]
+
+
+def test_schema_catalogue_strings_are_still_truncated(config):
+    capture = load_capture("mcp_list_tools")
+    event = map_schema_reports(capture["standard_logging_object"], capture["response_obj"], config)[
+        0
+    ]
+    event["custom_data"]["tools"][0]["description"] = "d" * (MAX_VALUE_CHARS + 50)
+    out = finalized(Pipeline(config), event, "schema")
+    assert len(out["custom_data"]["tools"][0]["description"]) == MAX_VALUE_CHARS + len(
+        "...[TRUNCATED]"
+    )
+
+
+def test_mcp_tool_call_arguments_are_still_sanitized_unlike_catalogues(config):
+    event = finalized(Pipeline(config), _mcp("mcp_tool_call", config), "mcp")
+    assert event["custom_data"]["arguments"]["api_key"] == "[REDACTED]"
+    assert event["body"]["api_key"] == "[REDACTED]"
+
+
+def test_unserializable_event_is_dropped_and_counted(config):
+    pipeline = Pipeline(config)
+    event = _llm("chat", config)
+    event["custom_data"]["junk"] = object()
+    assert finalized(pipeline, event, "llm") is None
+    assert pipeline.dropped_unserializable == 1
+
+
+def test_truncate_values_recurses():
+    assert truncate_values({"a": ["x" * 10]}, limit=4) == {"a": ["xxxx...[TRUNCATED]"]}
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("auth failed for sk-abcdef123456XYZ upstream", "auth failed for sk-[REDACTED] upstream"),
+        ("sk-proj_ab-12345678 rejected", "sk-[REDACTED] rejected"),
+        (
+            "401 with Authorization: Bearer abc.def-123_456== end",
+            "401 with Authorization: Bearer [REDACTED] end",
+        ),
+        ("bearer lowercase.token.value here", "Bearer [REDACTED] here"),
+        (
+            "GET https://api.example.com/v1?key=AIzaSyD&alt=json",
+            "GET https://api.example.com/v1?key=[REDACTED]&alt=json",
+        ),
+        ("url ?api_key=abc123 failed", "url ?api_key=[REDACTED] failed"),
+        ("apikey=abc api-key=def", "apikey=[REDACTED] api-key=[REDACTED]"),
+        ("access_token=ya29.a0 and token=t1", "access_token=[REDACTED] and token=[REDACTED]"),
+        ("body password=hunter2&user=bob", "body password=[REDACTED]&user=bob"),
+        ("SECRET=s3cr3t more", "SECRET=[REDACTED] more"),
+        (
+            "connect https://user:pass@db.example.com:5432/x",
+            "connect https://[REDACTED]@db.example.com:5432/x",
+        ),
+        # Underscore/hyphen-prefixed secret names.
+        ("client_secret=abc ok", "client_secret=[REDACTED] ok"),
+        ("refresh_token=abc ok", "refresh_token=[REDACTED] ok"),
+        ("AWS_SECRET_ACCESS_KEY=abc ok", "AWS_SECRET_ACCESS_KEY=[REDACTED] ok"),
+        ("id_token=abc auth-token=def", "id_token=[REDACTED] auth-token=[REDACTED]"),
+        # JSON-style and spaced separators, quoted keys and values.
+        ('{"api_key": "abc def", "n": 1}', '{"api_key": "[REDACTED]", "n": 1}'),
+        ("{'password':'p w','n':1}", "{'password':'[REDACTED]','n':1}"),
+        ("api_key : abc rest", "api_key : [REDACTED] rest"),
+        ('"client_secret" = "xyz"', '"client_secret" = "[REDACTED]"'),
+        # Basic credentials.
+        ("Authorization: Basic dXNlcjpwYXNzd29yZA== end", "Authorization: Basic [REDACTED] end"),
+        # Provider key prefixes.
+        ("key AIzaSyA1234567890abcdefghijKL end", "key [REDACTED] end"),
+        ("slack xoxb-1234567890-abcdef end", "slack [REDACTED] end"),
+        ("gh ghp_abcdefghijklmnopqrstuvwx end", "gh [REDACTED] end"),
+        ("aws AKIAABCDEFGHIJKLMNOP end", "aws [REDACTED] end"),
+        # Userinfo is masked up to the LAST @ before the host.
+        ("see https://u:p@ss@host.example/x", "see https://[REDACTED]@host.example/x"),
+        ("see https://TOKEN@github.com/o/r", "see https://[REDACTED]@github.com/o/r"),
+        # An "sk-" inside a longer word is not a token.
+        ("task-12345678 done", "task-12345678 done"),
+    ],
+)
+def test_redact_secrets_masks_patterns_and_keeps_surroundings(text, expected):
+    assert redact_secrets(text) == expected
+
+
+@pytest.mark.parametrize(
+    "prose,masked",
+    [
+        ("retry the token: 5 times", "retry the token: [REDACTED] times"),
+        ("monkey=happy today", "monkey=[REDACTED] today"),
+        ("the secret = banana", "the secret = [REDACTED]"),
+        ("Basic authentication works", "Basic [REDACTED] works"),
+    ],
+)
+def test_prose_that_looks_like_a_secret_is_over_redacted_by_design(prose, masked):
+    # Shape-based masking cannot tell prose from a credential, so it errs on
+    # the safe side. Pinned so a change to that direction is a deliberate one.
+    assert redact_secrets(prose) == masked
+
+
+def test_redact_secrets_leaves_plain_messages_alone():
+    for text in (
+        "mock upstream exploded",
+        "rate limit: retry in 20s",
+        "a monkey eats bananas",
+        "keyboard layout: us",
+        "see mail user@example.com for help",
+    ):
+        assert redact_secrets(text) == text
+
+
+def test_redact_secrets_is_fast_on_adversarial_input():
+    import time
+
+    start = time.perf_counter()
+    redact_secrets("a" * 200_000)
+    redact_secrets("key=" * 50_000)
+    redact_secrets("://" + "@" * 50_000)
+    redact_secrets("Basic " + "A" * 200_000)
+    assert time.perf_counter() - start < 5
+
+
+@pytest.mark.parametrize("custom_data", [None, "junk", ["x"]])
+def test_finalize_tolerates_junk_custom_data(config, custom_data):
+    event = _llm("chat", config)
+    event["custom_data"] = custom_data
+    out = finalized(Pipeline(config), event, "llm")
+    assert out is not None
+    assert out["custom_data"] == {"integration": "litellm"}
+
+
+def test_nan_in_content_and_metadata_is_scrubbed_not_fatal(config):
+    event = _llm("chat", config)
+    event["custom_data"]["duration_ms"] = float("nan")
+    event["custom_data"]["temperature"] = float("inf")
+    event["body"]["input"]["tools"] = [{"parameters": {"default": float("-inf")}}]
+    pipeline = Pipeline(config)
+    out = finalized(pipeline, event, "llm")
+    assert out is not None
+    assert out["custom_data"]["duration_ms"] is None
+    assert out["custom_data"]["temperature"] is None
+    assert out["body"]["input"]["tools"][0]["parameters"]["default"] is None
+    json.dumps(out, allow_nan=False)  # strict JSON: this is what goes on the wire
+    assert pipeline.dropped_unserializable == 0
+
+
+def test_nan_outside_the_scrubbed_fields_is_dropped_and_counted(config):
+    pipeline = Pipeline(config)
+    event = _llm("chat", config)
+    event["unscrubbed_top_level"] = float("nan")
+    assert finalized(pipeline, event, "llm") is None
+    assert pipeline.dropped_unserializable == 1
+
+
+def test_caller_controlled_values_cannot_get_an_event_dropped(config):
+    cfg = replace(config, max_event_bytes=16384)
+    event = _llm("chat", cfg)
+    event["custom_data"]["litellm_end_user_id"] = "u" * 60_000  # the request's ``user`` field
+    event["user_id"] = "u" * 60_000
+    event["session_id"] = "s" * 60_000
+    event["custom_data"]["turn_id"] = "t" * 60_000
+    pipeline = Pipeline(cfg)
+    out = finalized(pipeline, event, "llm")
+    assert out is not None
+    assert pipeline.dropped_oversize == 0
+    assert len(out["user_id"]) <= 256 + len("...[TRUNCATED]")
+    assert len(out["session_id"]) <= 256 + len("...[TRUNCATED]")
+    assert len(out["custom_data"]["litellm_end_user_id"]) <= 256 + len("...[TRUNCATED]")
+
+
+def test_finalize_returns_the_event_with_its_encoded_size(config):
+    result = Pipeline(config).finalize(_llm("chat", config), "llm")
+    event, size = result
+    assert size == len(json.dumps(event).encode())
+    # Also for an event that had to be shed to fit.
+    cfg = replace(config, max_event_bytes=2500)
+    shed, shed_size = Pipeline(cfg).finalize(_llm("big_prompt", cfg), "llm")
+    assert shed["body"] is None
+    assert shed_size == len(json.dumps(shed).encode()) <= 2500
+
+
+def test_a_late_serialisation_failure_counts_as_unserializable(config, monkeypatch):
+    from cerberus_litellm import pipeline as pipeline_module
+
+    real = pipeline_module._encoded_size
+    calls = []
+
+    def flaky(event):
+        calls.append(1)
+        if len(calls) >= 2:  # fine on the first measurement, fails on the next
+            raise ValueError("late failure")
+        return real(event)
+
+    monkeypatch.setattr(pipeline_module, "_encoded_size", flaky)
+    cfg = replace(config, max_event_bytes=2500)  # forces the shedding path
+    pipeline = Pipeline(cfg)
+    assert pipeline.finalize(_llm("big_prompt", cfg), "llm") is None
+    assert pipeline.dropped_unserializable == 1
+    assert pipeline.dropped_oversize == 0
+
+
+def test_many_tags_are_shed_before_the_event_is_dropped(config):
+    cfg = replace(config, max_event_bytes=6000)
+    event = _llm("chat", cfg)
+    event["custom_data"]["request_tags"] = [f"tag-{i}-" + "x" * 400 for i in range(1000)]
+    event["headers"] = {"x-tenant": "h" * 8000}
+    out = finalized(Pipeline(cfg), event, "llm")
+    assert out is not None
+    assert out["custom_data"]["request_tags"] == []
+    assert out["headers"] is None
+    assert out["custom_data"]["content_dropped_oversize"] is True
+    assert out["custom_data"]["metadata_dropped_oversize"] is True
+
+
+def test_oversize_warnings_are_throttled(config, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="cerberus_litellm.pipeline")
+    cfg = replace(config, max_event_bytes=1024)
+    pipeline = Pipeline(cfg)
+    for _ in range(5):
+        event = _llm("chat", cfg)
+        event["custom_data"]["extra_field"] = ["t" * 2000]
+        assert finalized(pipeline, event, "llm") is None
+    assert pipeline.dropped_oversize == 5
+    assert len([r for r in caplog.records if "oversized" in r.getMessage()]) == 1
+
+
+@pytest.mark.parametrize(
+    "secret,fragment",
+    [
+        ("sk-abcdef0123456789", "sk-abc"),
+        ("Bearer abcdef0123456789", "Bearer a"),
+        ("api_key=abcdef0123456789", "api_key=a"),
+        ("AKIAABCDEFGHIJKLMNOP", "AKIAA"),
+    ],
+)
+def test_credential_straddling_the_result_cut_leaves_no_prefix(config, secret, fragment):
+    import copy
+
+    limit = 256
+    cfg = replace(config, mcp_result_max_chars=limit)
+    # The cut lands inside the credential, leaving at least the fragment visible.
+    for pad in (limit - len(fragment) - 1, limit - len(fragment) - 2):
+        slo = copy.deepcopy(load_capture("mcp_tool_call")["standard_logging_object"])
+        slo["response"]["content"] = [{"type": "text", "text": "x" * pad + " " + secret}]
+        out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+        summary = out["custom_data"]["result_summary"]
+        assert fragment not in summary, (pad, summary[-30:])
+        assert secret not in json.dumps(out)
+
+
+def test_multi_megabyte_result_is_bounded_and_a_credential_inside_the_cap_is_redacted(config):
+    import copy
+
+    limit = 256
+    cfg = replace(config, mcp_result_max_chars=limit)
+    secret = "sk-live-abcdef0123456789"
+    text = "a " * 100 + secret + " " + "b " * 2_000_000  # ~4 MB, credential well inside the cap
+    slo = copy.deepcopy(load_capture("mcp_tool_call")["standard_logging_object"])
+    slo["response"]["content"] = [{"type": "text", "text": text}]
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    summary = out["custom_data"]["result_summary"]
+    assert "sk-[REDACTED]" in summary and secret not in summary
+    assert len(summary) <= limit + len("...[TRUNCATED]")
+    assert summary.endswith("...[TRUNCATED]")
+
+
+def test_the_same_bound_applies_to_error_text_and_catalogue_strings(config):
+    import copy
+
+    secret = "sk-live-abcdef0123456789"
+    big = "x " * 3_000_000
+    slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_message"] = "boom " + secret + " " + big
+    cfg = replace(config, capture_mcp_results=True)
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    assert secret not in out["custom_data"]["error"]
+    assert len(out["custom_data"]["error"]) <= cfg.mcp_result_max_chars + len("...[TRUNCATED]")
+
+    event = _schema_event(config, {}, "tool " + secret + " " + big)
+    description = finalized(Pipeline(config), event, "schema")["custom_data"]["tools"][0][
+        "description"
+    ]
+    assert secret not in description
+    assert len(description) <= MAX_VALUE_CHARS + len("...[TRUNCATED]")
+
+
+def test_redact_bounded_only_looks_at_four_times_the_cap():
+    from cerberus_litellm.redaction import REDACTION_INPUT_FACTOR, redact_bounded
+
+    assert REDACTION_INPUT_FACTOR == 4
+    text = "a" * 40 + " sk-live-abcdef0123456789"
+    assert redact_bounded(text, 100).endswith("sk-[REDACTED]")  # inside 400 characters
+    cut = redact_bounded("z " * 5_000, 100)  # only 400 characters were looked at
+    assert cut == "z " * 100 + "...[TRUNCATED]"  # half of them dropped as the boundary margin
+
+
+def test_an_uncut_text_is_unchanged_by_the_boundary_margin():
+    from cerberus_litellm.redaction import redact_bounded, redact_secrets
+
+    for text in ("short", "x" * 400, "a " * 100 + "sk-live-abcdef0123456789"):  # all <= 4 * 100
+        assert redact_bounded(text, 100) == redact_secrets(text)
+
+
+def test_a_large_cut_keeps_the_full_margin():
+    from cerberus_litellm.redaction import REDACTION_BOUNDARY_MARGIN, redact_bounded
+
+    cap = 2048
+    cut = redact_bounded("z " * 50_000, cap)
+    assert len(cut) == cap * 4 - REDACTION_BOUNDARY_MARGIN + len("...[TRUNCATED]")
+
+
+def test_a_cut_slice_never_ends_in_a_partial_token_of_any_length():
+    from cerberus_litellm.redaction import redact_bounded
+
+    # cap 101: a 404-character slice, minus a 202-character margin, keeps 202
+    # characters, which end one character into the 68th "ab" (a partial token).
+    out = redact_bounded("ab " * 300, 101)
+    assert out == "ab " * 67 + "...[TRUNCATED]"  # the partial "a" is gone; ends on a space
+    # The whole trailing non-whitespace run goes, not only token characters:
+    # here the 202 kept characters end inside "%41%42..." after 198 characters.
+    out = redact_bounded("ab " * 66 + "%41%42%43%44%45 " + "ab " * 200, 101)
+    assert out == "ab " * 66 + "...[TRUNCATED]"
+    out = redact_bounded("ab " * 66 + "user:pass@host.example/x " + "ab " * 200, 101)
+    assert out == "ab " * 66 + "...[TRUNCATED]"
+    # An unbroken run of token characters at the end, however long, is dropped.
+    out = redact_bounded("hello " + "Q" * 5_000, 100)
+    assert out == "hello " + "...[TRUNCATED]"
+    blob = "x" * 5_000  # one giant token with nothing to anchor on
+    assert redact_bounded(blob, 100) == "...[TRUNCATED]"
+
+
+def test_an_unterminated_quote_after_a_secret_name_is_still_masked():
+    from cerberus_litellm.redaction import redact_secrets
+
+    assert redact_secrets('password="hunter2') == 'password="[REDACTED]"'
+    assert redact_secrets("token='abc def") == "token='[REDACTED]'"
+    # Only to the end of the line: the next line is not swallowed.
+    assert redact_secrets('password="hunter2\nnext line stays') == (
+        'password="[REDACTED]"\nnext line stays'
+    )
+    # Properly quoted values behave as before.
+    assert redact_secrets('{"api_key": "abc def", "n": 1}') == '{"api_key": "[REDACTED]", "n": 1}'
+    assert redact_secrets("password='p w' and more") == "password='[REDACTED]' and more"
+
+
+def test_prose_with_a_lone_quote_is_not_masked_beyond_the_safe_direction():
+    from cerberus_litellm.redaction import redact_secrets
+
+    assert redact_secrets("it's fine, don't worry about the setup") == (
+        "it's fine, don't worry about the setup"
+    )
+    assert redact_secrets('he said "hello and left') == 'he said "hello and left'
+
+
+def test_a_secret_cut_without_its_closing_quote_at_the_slice_edge_is_masked():
+    from cerberus_litellm.redaction import redact_bounded
+
+    cap = 100  # slice of 400 characters
+    text = "w " * 190 + 'password="hunter2' + " tail" * 400  # the slice ends inside the value
+    out = redact_bounded(text, cap)
+    assert "hunter" not in out
+    assert out.endswith("...[TRUNCATED]")
+
+
+def test_redaction_is_fast_on_adversarial_input():
+    # The suite's only timing assertion: it exists as ReDoS insurance for the
+    # patterns above, with a bound that is generous for any linear-ish matcher
+    # and fails loudly for a catastrophic one.
+    import time
+
+    from cerberus_litellm.redaction import redact_secrets
+
+    hostile = [
+        "a_" * 50_000 + "key",
+        "key" + "=" * 100_000,
+        "key=" + '"' * 100_000,
+        "key=" + "'" * 100_000,
+        '="' * 50_000,
+        "key=" * 25_000,
+        "_key" * 25_000,
+        "password" + " " * 100_000 + "=",
+        "://" + "@" * 100_000,
+        "Bearer " + "a" * 100_000,
+    ]
+    start = time.perf_counter()
+    for text in hostile:
+        redact_secrets(text)
+    assert time.perf_counter() - start < 2.0
+
+
+def test_a_credential_cut_at_the_slice_boundary_leaves_no_fragment_after_heavy_masking(config):
+    import re
+
+    from cerberus_litellm.redaction import redact_bounded
+
+    cap = 64  # slice of 256 characters
+    # One enormous secret collapses to 13 characters, so the masked slice is far
+    # shorter than the cap; the next secret starts 5 characters before the cut.
+    first = "sk-" + "A" * 247  # 250 characters
+    text = first + " " + "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 3
+    assert 4 * cap < len(text) and text[251 : 4 * cap] == "sk-AB"  # straddles the boundary
+    out = redact_bounded(text, cap)
+    final = out if len(out) <= cap else out[:cap] + "...[TRUNCATED]"
+    assert final.endswith("...[TRUNCATED]")
+    assert not re.search(r"sk-[A-Za-z0-9]", final)  # no raw fragment survives
+    assert "sk-AB" not in final
+
+
+def test_a_heavily_masked_many_secret_text_longer_than_the_slice_ends_clean(config):
+    import copy
+    import re
+
+    cap = 128
+    cfg = replace(config, mcp_result_max_chars=cap)
+    secret = "sk-live-" + "Q" * 300
+    text = (secret + " ") * 12  # far longer than 4 * cap; every secret is masked
+    slo = copy.deepcopy(load_capture("mcp_tool_call")["standard_logging_object"])
+    slo["response"]["content"] = [{"type": "text", "text": text}]
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    summary = out["custom_data"]["result_summary"]
+    assert summary.endswith("...[TRUNCATED]")
+    assert not re.search(r"sk-[A-Za-z0-9]", summary)
+    assert len(summary) <= cap + len("...[TRUNCATED]")
+
+
+def test_credential_straddling_the_error_cut_leaves_no_prefix(config):
+    import copy
+
+    cfg = replace(config, mcp_result_max_chars=256)
+    slo = copy.deepcopy(load_capture("mcp_tool_call_error")["standard_logging_object"])
+    slo["error_information"]["error_message"] = "x" * 249 + " sk-abcdef0123456789"
+    out = finalized(Pipeline(cfg), map_mcp_event(slo, cfg), "mcp")
+    assert "sk-abc" not in out["custom_data"]["error"]
+    assert "sk-abc" not in out["custom_data"]["result_summary"]
+
+
+def test_finalize_redacts_error_and_result_summary(config):
+    event = _llm("chat", config)
+    event["custom_data"]["error"] = "failed at https://h.example/v1?key=SECRET1 sk-abcdef123456"
+    out = finalized(Pipeline(config), event, "llm")
+    assert "SECRET1" not in json.dumps(out)
+    assert "sk-abcdef123456" not in json.dumps(out)
+    assert out["custom_data"]["error"].startswith("failed at https://h.example/v1?key=[REDACTED]")
+
+    mcp = _mcp("mcp_tool_call", config)
+    mcp["custom_data"]["result_summary"] = "token=abc123 Bearer zzz.yyy"
+    out = finalized(Pipeline(config), mcp, "mcp")
+    assert out["custom_data"]["result_summary"] == "token=[REDACTED] Bearer [REDACTED]"
