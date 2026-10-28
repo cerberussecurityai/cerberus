@@ -3,9 +3,12 @@
 import importlib
 import json
 import logging
+from io import BytesIO
 from time import monotonic
 
+import boto3
 import pytest
+from botocore.awsrequest import AWSResponse
 from helpers import LambdaContext, case_names, load_case, runtime_encode
 
 from cerberus_agentcore_interceptor import handler as handler_mod
@@ -324,8 +327,21 @@ def test_an_unusable_setting_does_not_fail_the_import(monkeypatch):
     importlib.reload(handler_mod)
 
 
-def test_the_aws_client_stack_stays_quiet_when_the_runtime_logs_at_debug(caplog):
+def test_the_aws_client_stack_logs_no_payload_when_the_runtime_logs_at_debug(monkeypatch, caplog):
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    for name in ("botocore", "urllib3"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    importlib.reload(handler_mod)
     caplog.set_level(logging.DEBUG)
 
-    for name in ("botocore.endpoint", "botocore.parsers", "urllib3.connectionpool"):
-        assert not logging.getLogger(name).isEnabledFor(logging.DEBUG)
+    client = boto3.client(
+        "lambda",
+        region_name="us-east-1",
+        aws_access_key_id="AKIDEXAMPLE",
+        aws_secret_access_key="example",
+    )
+    client.meta.events.register("before-send", lambda **_: AWSResponse("", 200, {}, BytesIO()))
+    client.invoke(FunctionName="chained", Payload=b'{"body": "caller-secret"}')
+
+    assert "caller-secret" not in caplog.text
+    assert not logging.getLogger("urllib3.connectionpool").isEnabledFor(logging.DEBUG)
