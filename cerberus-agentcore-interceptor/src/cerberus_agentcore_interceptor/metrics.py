@@ -46,8 +46,8 @@ def count(metric: str, reason: str = "", **fields: Any) -> None:
                     }
                 ],
             },
-            # Lambda's log-level filter reads a line without both of these as INFO.
-            # Every metric but the per-request Captured has to survive a WARN filter.
+            # Lambda filters only logging-module lines by level, so a printed metric
+            # counts at any ApplicationLogLevel. This only grades the line for queries.
             "level": "INFO" if metric == CAPTURED else "WARN",
             "timestamp": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             metric: 1,

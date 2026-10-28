@@ -38,6 +38,11 @@ CHAIN = (
 logger = logging.getLogger("cerberus_agentcore_interceptor")
 logger.setLevel(CONFIG.log_level)
 
+# At DEBUG, botocore and urllib3 log each request they send, botocore with its
+# payload: the caller's raw body in a PutRecord or a chained invoke.
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
     if CONFIG.capturing:
         SINK.prepare()

@@ -303,7 +303,7 @@ RFC_3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:
         (metrics.UNKNOWN_SHAPE, "", "WARN"),
     ],
 )
-def test_metric_lines_carry_the_level_lambda_filters_on(capsys, metric, reason, level):
+def test_metric_lines_carry_a_level_and_timestamp(capsys, metric, reason, level):
     metrics.count(metric, reason)
     record = json.loads(capsys.readouterr().out.strip())
 
