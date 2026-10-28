@@ -69,12 +69,12 @@ class TestCerberusMCPInit:
     @patch("cerberus_mcp.server.init_client")
     def test_initializes_transport_with_complete_config(self, mock_init):
         config = {"token": "tok", "client_id": "cid", "ws_url": "wss://backend:8765"}
-        mcp = CerberusMCP("test-server", cerberus_config=config)
+        CerberusMCP("test-server", cerberus_config=config)
         mock_init.assert_called_once_with("wss://backend:8765", "tok", "cid")
 
     @patch("cerberus_mcp.server.init_client")
     def test_does_not_initialize_with_missing_config(self, mock_init):
-        mcp = CerberusMCP("test-server", cerberus_config={"token": "tok"})
+        CerberusMCP("test-server", cerberus_config={"token": "tok"})
         mock_init.assert_not_called()
 
     @patch("cerberus_mcp.server.init_client")
@@ -137,7 +137,9 @@ class TestWrapHandler:
         mock_queue.assert_called_once()
         event = mock_queue.call_args[0][0]
         assert event.method == "mcp_tool_call"
-        assert "my_tool" in event.endpoint
+        assert event.endpoint == "mcp://test/my_tool"
+        # The scheme is the string "mcp", not the HTTP-style bool
+        assert event.scheme == "mcp"
 
     @patch("cerberus_mcp.server.init_client")
     @patch("cerberus_mcp.server.queue_event")
@@ -149,11 +151,7 @@ class TestWrapHandler:
 
         with patch("cerberus_mcp.server._is_mcp_context", return_value=False):
             wrapped = mcp._wrap_handler(my_tool, "my_tool", "tool_call", "mcp_tool_call")
-            loop = asyncio.new_event_loop()
-            try:
-                result = loop.run_until_complete(wrapped(query="hello"))
-            finally:
-                loop.close()
+            result = asyncio.run(wrapped(query="hello"))
 
         assert result == "async result"
         mock_queue.assert_called_once()
@@ -199,20 +197,53 @@ class TestResourceUriCapture:
         assert event.custom_data["handler_name"] == "config://settings"
 
 
-class TestSchemeField:
-    """Tests for the scheme field using 'mcp' instead of True."""
+class TestSchemaReport:
+    """The one-time mcp_schema_report event emitted on the first handler call."""
 
     @patch("cerberus_mcp.server.init_client")
     @patch("cerberus_mcp.server.queue_event")
-    def test_scheme_is_mcp_string(self, mock_queue, mock_init):
+    def test_first_call_reports_registered_schema_once(self, mock_queue, mock_init):
         mcp = CerberusMCP("test", cerberus_config={"token": "tok"})
 
-        def my_tool():
-            return "ok"
+        @mcp.tool()
+        def get_weather(location: str) -> str:
+            """Get weather for a location."""
+            return "sunny"
+
+        @mcp.resource("config://settings")
+        def get_settings() -> str:
+            return "{}"
+
+        @mcp.resource("weather://{city}")
+        def city_weather(city: str) -> str:
+            return city
+
+        @mcp.prompt()
+        def summarize(text: str) -> str:
+            return text
 
         with patch("cerberus_mcp.server._is_mcp_context", return_value=False):
-            wrapped = mcp._wrap_handler(my_tool, "my_tool", "tool_call", "mcp_tool_call")
-            wrapped()
+            get_weather(location="NYC")
+            get_weather(location="SF")
 
-        event = mock_queue.call_args[0][0]
-        assert event.scheme == "mcp"
+        methods = [call.args[0].method for call in mock_queue.call_args_list]
+        assert methods == ["mcp_schema_report", "mcp_tool_call", "mcp_tool_call"]
+
+        report = mock_queue.call_args_list[0].args[0]
+        assert report.endpoint == "mcp://test/__schema__"
+        assert report.scheme == "mcp"
+        assert report.source_ip == "mcp-local"
+        assert report.custom_data["mcp_server"] == "test"
+        assert report.custom_data["event_type"] == "schema_report"
+
+        [tool] = report.custom_data["tools"]
+        assert tool["name"] == "get_weather"
+        assert tool["description"] == "Get weather for a location."
+        assert "location" in tool["input_schema"]["properties"]
+
+        uris = sorted(r["uri_template"] for r in report.custom_data["resources"])
+        assert uris == ["config://settings", "weather://{city}"]
+
+        [prompt] = report.custom_data["prompts"]
+        assert prompt["name"] == "summarize"
+        assert [(a["name"], a["required"]) for a in prompt["arguments"]] == [("text", True)]

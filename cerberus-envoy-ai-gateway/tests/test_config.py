@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from cerberus_envoy_ai_gateway.config import (
@@ -10,7 +12,7 @@ from cerberus_envoy_ai_gateway.config import (
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for key in list(__import__("os").environ):
+    for key in list(os.environ):
         if key.startswith("CERBERUS_"):
             monkeypatch.delenv(key)
 
@@ -41,11 +43,16 @@ def test_defaults(monkeypatch):
     assert config.backend_url is None
     assert config.client_ip_attribute == "http.client_ip"
     assert config.user_id_attribute is None
+    assert config.extra_attributes == ()
+    assert config.hash_attributes == ()
     assert config.capture_llm_content is True
     assert config.capture_mcp_arguments is True
     assert config.batch_size == 50
     assert config.flush_interval_ms == 2000
     assert config.queue_capacity == 10000
+    assert config.secret_fetch_attempts == 4
+    assert config.secret_fetch_timeout_ms == 5000
+    assert config.secret_fetch_deadline_ms == 10000
     assert config.listen_port == 4318
     assert config.log_level == "info"
     assert config.dump_spans is False
@@ -138,8 +145,7 @@ def test_ingest_service_requires_scheme(monkeypatch):
 
 
 def test_extra_attributes_parsed_and_deduped(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", " a.b , c.d ,a.b, ,")
     config = Config.from_env()
     assert config.extra_attributes == ("a.b", "c.d")
@@ -149,30 +155,14 @@ def test_extra_attribute_name_length_is_capped(monkeypatch):
     # The name becomes an unsheddable custom_data key. Values are bounded in the
     # pipeline; an unbounded name would blow the event cap and silently drop
     # every event carrying that attribute.
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", "a." + "x" * MAX_EXTRA_ATTRIBUTE_NAME_CHARS)
     with pytest.raises(ConfigError, match="over the"):
         Config.from_env()
 
 
-def test_normal_attribute_names_are_unaffected(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
-    monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", "corr.session,tenant.id")
-    assert Config.from_env().extra_attributes == ("corr.session", "tenant.id")
-
-
-def test_extra_attributes_default_empty(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
-    monkeypatch.delenv("CERBERUS_EXTRA_ATTRIBUTES", raising=False)
-    assert Config.from_env().extra_attributes == ()
-
-
 def test_extra_attributes_rejects_oversized_list(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     monkeypatch.setenv(
         "CERBERUS_EXTRA_ATTRIBUTES", ",".join(f"a{i}" for i in range(MAX_EXTRA_ATTRIBUTES + 1))
     )
@@ -181,8 +171,7 @@ def test_extra_attributes_rejects_oversized_list(monkeypatch):
 
 
 def test_secret_fetch_knobs_parsed(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     monkeypatch.setenv("CERBERUS_SECRET_FETCH_ATTEMPTS", "6")
     monkeypatch.setenv("CERBERUS_SECRET_FETCH_TIMEOUT_MS", "3000")
     monkeypatch.setenv("CERBERUS_SECRET_FETCH_DEADLINE_MS", "15000")
@@ -190,15 +179,6 @@ def test_secret_fetch_knobs_parsed(monkeypatch):
     assert config.secret_fetch_attempts == 6
     assert config.secret_fetch_timeout_ms == 3000
     assert config.secret_fetch_deadline_ms == 15000
-
-
-def test_secret_fetch_knob_defaults(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
-    config = Config.from_env()
-    assert config.secret_fetch_attempts == 4
-    assert config.secret_fetch_timeout_ms == 5000
-    assert config.secret_fetch_deadline_ms == 10000
 
 
 @pytest.mark.parametrize(
@@ -213,16 +193,14 @@ def test_secret_fetch_knob_defaults(monkeypatch):
     ],
 )
 def test_secret_fetch_knobs_out_of_range_rejected(monkeypatch, name, value):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     monkeypatch.setenv(name, value)
     with pytest.raises(ConfigError):
         Config.from_env()
 
 
 def test_hash_attributes_parsed(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", "corr.session, tenant.id")
     config = Config.from_env()
     assert config.hash_attributes == ("corr.session", "tenant.id")
@@ -231,8 +209,7 @@ def test_hash_attributes_parsed(monkeypatch):
 def test_attribute_cap_binds_on_the_union_of_both_lists(monkeypatch):
     # Each captured attribute occupies an unsheddable custom_data key, so the
     # cap has to cover both lists together, not each independently.
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     half = MAX_EXTRA_ATTRIBUTES // 2 + 1
     monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", ",".join(f"a{i}" for i in range(half)))
     monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", ",".join(f"b{i}" for i in range(half)))
@@ -241,8 +218,7 @@ def test_attribute_cap_binds_on_the_union_of_both_lists(monkeypatch):
 
 
 def test_overlapping_lists_count_once_toward_the_cap(monkeypatch):
-    monkeypatch.setenv("CERBERUS_INGEST_SERVICE", "http://ingest.test")
-    monkeypatch.setenv("CERBERUS_TOKEN", "sk_test")
+    _set_required(monkeypatch)
     names = ",".join(f"a{i}" for i in range(MAX_EXTRA_ATTRIBUTES))
     monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", names)
     monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", names)

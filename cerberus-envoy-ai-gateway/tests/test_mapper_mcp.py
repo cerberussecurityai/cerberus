@@ -9,6 +9,12 @@ def _map(name: str, config):
     return map_mcp_span(span, span_attributes(span), config)
 
 
+def _tool_call_span_and_attrs():
+    """The mcp_tool_call fixture's span plus a mutable copy of its attributes."""
+    span = single_span(load_export("mcp_tool_call"))
+    return span, span_attributes(span)
+
+
 def test_tool_call_golden(config):
     assert _map("mcp_tool_call", config) == load_expected("mcp_tool_call")
 
@@ -48,12 +54,9 @@ def test_tools_list_with_recorded_response_emits_schema_report(config):
 
 
 def test_server_fallback_when_backend_attr_missing(config):
-    # mcp_initialize has no backend attr; craft a tools/call without one by
-    # reusing the prompt fixture pattern: simplest is to check fallback via
-    # the resource fixture stripped of its backend attribute.
-    request = load_export("mcp_tool_call")
-    span = single_span(request)
-    attrs = span_attributes(span)
+    # A tools/call span stripped of its backend attribute must fall back to
+    # the configured server name.
+    span, attrs = _tool_call_span_and_attrs()
     del attrs["mcp.backend.name"]
     event = map_mcp_span(span, attrs, config)
     assert event["endpoint"] == f"mcp://{config.mcp_server_fallback}/get_weather"
@@ -61,18 +64,14 @@ def test_server_fallback_when_backend_attr_missing(config):
 
 
 def test_nested_tool_call_arguments_unwrap(config):
-    request = load_export("mcp_tool_call")
-    span = single_span(request)
-    attrs = span_attributes(span)
+    span, attrs = _tool_call_span_and_attrs()
     attrs["mcp.tool.arguments"] = '{"name": "get_weather", "arguments": {"location": "NYC"}}'
     event = map_mcp_span(span, attrs, config)
     assert event["custom_data"]["arguments"] == {"location": "NYC"}
 
 
 def test_per_argument_attribute_variant(config):
-    request = load_export("mcp_tool_call")
-    span = single_span(request)
-    attrs = span_attributes(span)
+    span, attrs = _tool_call_span_and_attrs()
     del attrs["mcp.tool.arguments"]
     attrs["mcp.request.argument.location"] = "Tokyo"
     attrs["mcp.request.argument.units"] = "imperial"
@@ -100,9 +99,7 @@ def test_arguments_drops_jsonrpc_envelope_without_arguments():
 
 
 def test_long_request_id_capped(config):
-    request = load_export("mcp_tool_call")
-    span = single_span(request)
-    attrs = span_attributes(span)
+    span, attrs = _tool_call_span_and_attrs()
     attrs["mcp.request.id"] = "x" * 5000
     event = map_mcp_span(span, attrs, config)
     assert len(event["custom_data"]["request_id"]) <= 256

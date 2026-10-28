@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 MAX_OTLP_BODY_BYTES = 16 * 1024 * 1024
 
 
+def _starting() -> Response:
+    """503 for any request that arrives before the lifespan startup finishes."""
+    return Response(
+        content='{"status": "starting"}', status_code=503, media_type="application/json"
+    )
+
+
 def create_app(config: Config) -> FastAPI:
     logging.basicConfig(
         level=config.log_level.upper(),
@@ -76,9 +83,7 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/v1/traces")
     async def receive_traces(request: Request) -> Response:
         if not state.get("ready"):
-            return Response(
-                content='{"status": "starting"}', status_code=503, media_type="application/json"
-            )
+            return _starting()
         chunks: list[bytes] = []
         received = 0
         try:
@@ -152,17 +157,13 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/ready")
     async def ready() -> Response:
         if not state["ready"]:
-            return Response(
-                content='{"status": "starting"}', status_code=503, media_type="application/json"
-            )
+            return _starting()
         return Response(content='{"status": "ready"}', media_type="application/json")
 
     @app.get("/stats", response_model=None)
     async def stats() -> Response | dict:
         if not state.get("ready"):
-            return Response(
-                content='{"status": "starting"}', status_code=503, media_type="application/json"
-            )
+            return _starting()
         pipeline: Pipeline = state["pipeline"]
         sink: Sink = state["sink"]
         return {

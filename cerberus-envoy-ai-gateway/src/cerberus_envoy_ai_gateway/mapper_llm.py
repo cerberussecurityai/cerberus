@@ -226,8 +226,7 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         "integration": "envoy-ai-gateway",
         # Short-form operation, mirroring mapper_mcp's custom_data event_type
         # (tool_call / resource_read): the namespaced form is the top-level
-        # `method` (llm_chat_completion); strip the llm_ prefix here. Was
-        # previously hardcoded "llm_call" regardless of the actual operation.
+        # `method` (llm_chat_completion); strip the llm_ prefix here.
         "event_type": method.removeprefix("llm_"),
         "provider": provider,
         "model": model,

@@ -80,94 +80,64 @@ class TestSanitizeArguments:
 class TestTruncateValue:
     """Tests for _truncate_value helper."""
 
-    def test_none_passthrough(self):
-        assert _truncate_value(None) is None
-
-    def test_bool_passthrough(self):
-        assert _truncate_value(True) is True
-        assert _truncate_value(False) is False
-
-    def test_int_passthrough(self):
-        assert _truncate_value(42) == 42
-
-    def test_float_passthrough(self):
-        assert _truncate_value(3.14) == 3.14
-
-    def test_short_string_passthrough(self):
-        assert _truncate_value("hello") == "hello"
+    @pytest.mark.parametrize(
+        "value",
+        [None, True, False, 42, 3.14, "hello"],
+        ids=["none", "true", "false", "int", "float", "short-string"],
+    )
+    def test_scalar_passthrough(self, value):
+        assert _truncate_value(value) is value
 
     def test_long_string_truncated(self):
         s = "a" * (MAX_ARG_STRING_LENGTH + 50)
         result = _truncate_value(s)
-        assert len(result) < len(s)
-        assert result.startswith("a" * MAX_ARG_STRING_LENGTH)
+        assert result == "a" * MAX_ARG_STRING_LENGTH + f"... ({len(s)} chars)"
 
-    def test_list_summarized(self):
-        result = _truncate_value([1, 2, 3])
-        assert "list" in result
-        assert "3" in result
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ([1, 2, 3], "[list, len=3]"),
+            ({"a": 1, "b": 2}, "[dict, keys=2]"),
+            (b"hello", "[bytes, len=5]"),
+            (object(), "[object]"),
+        ],
+        ids=["list", "dict", "bytes", "unknown-type"],
+    )
+    def test_container_summarized(self, value, expected):
+        assert _truncate_value(value) == expected
 
-    def test_dict_summarized(self):
-        result = _truncate_value({"a": 1, "b": 2})
-        assert "dict" in result
-        assert "2" in result
 
-    def test_bytes_summarized(self):
-        result = _truncate_value(b"hello")
-        assert "bytes" in result
-        assert "5" in result
+class _CustomSeq:
+    def __len__(self):
+        return 5
 
-    def test_unknown_type_summarized(self):
-        result = _truncate_value(object())
-        assert "object" in result
+
+class _Custom:
+    pass
 
 
 class TestSummarizeResult:
     """Tests for result summarization."""
 
-    def test_none_result(self):
-        assert summarize_result(None) == "None"
-
-    def test_string_result(self):
-        result = summarize_result("hello world")
-        assert "str" in result
-        assert "11" in result
-
-    def test_list_result(self):
-        result = summarize_result([1, 2, 3])
-        assert "list" in result
-        assert "3" in result
-
-    def test_dict_result(self):
-        result = summarize_result({"a": 1})
-        assert "dict" in result
-        assert "1" in result
-
-    def test_bytes_result(self):
-        result = summarize_result(b"data")
-        assert "bytes" in result
-        assert "4" in result
-
-    def test_bool_result(self):
-        assert summarize_result(True) == "True"
-        assert summarize_result(False) == "False"
-
-    def test_int_result(self):
-        assert summarize_result(42) == "42"
-
-    def test_float_result(self):
-        assert summarize_result(3.14) == "3.14"
-
-    def test_custom_object_with_len(self):
-        class CustomSeq:
-            def __len__(self):
-                return 5
-        result = summarize_result(CustomSeq())
-        assert "CustomSeq" in result
-        assert "5" in result
-
-    def test_custom_object_without_len(self):
-        class Custom:
-            pass
-        result = summarize_result(Custom())
-        assert result == "Custom"
+    @pytest.mark.parametrize(
+        "result, expected",
+        [
+            (None, "None"),
+            ("hello world", "str(len=11)"),
+            ([1, 2, 3], "list(len=3)"),
+            ({"a": 1}, "dict(keys=1)"),
+            (b"data", "bytes(len=4)"),
+            (True, "True"),
+            (False, "False"),
+            (42, "42"),
+            (3.14, "3.14"),
+            (_CustomSeq(), "_CustomSeq(len=5)"),
+            (_Custom(), "_Custom"),
+        ],
+        ids=[
+            "none", "str", "list", "dict", "bytes", "true", "false", "int", "float",
+            "custom-with-len", "custom-without-len",
+        ],
+    )
+    def test_summary(self, result, expected):
+        assert summarize_result(result) == expected
