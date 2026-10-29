@@ -343,10 +343,11 @@ key Cerberus gives you, and these settings:
 | Retry duration | 3600 s, so a short endpoint outage is retried rather than backed up |
 | S3 backup | Failed data only |
 
-The endpoint accepts deliveries up to 4 MiB uncompressed. A delivery, its
-base64-encoded records included, never exceeds the buffer size. A delivery over
-the limit is refused on every retry and ends up in the backup bucket. With
-response capture on, each call writes two records.
+The endpoint accepts deliveries up to 4 MiB uncompressed. Firehose keeps a
+delivery's uncompressed body, its base64-encoded records included, within the
+buffer size, but treats that size as a hint, so 2 MiB leaves room under the
+limit. A delivery over the limit is refused on every retry and ends up in the
+backup bucket. With response capture on, each call writes two records.
 
 ### Metrics
 
