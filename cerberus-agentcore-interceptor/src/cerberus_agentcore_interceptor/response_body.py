@@ -213,6 +213,10 @@ def _json_text(text: str, keys: tuple[str, ...], deadline: float | None) -> tupl
 def _sse(text: str, keys: tuple[str, ...], deadline: float | None) -> tuple[Any, str, str]:
     if not text.strip():
         return None, STATE_OMITTED, BODY_EMPTY
+    # A stream compressed other than with gzip is not framed as SSE, and one
+    # stored uncompressed would otherwise keep its data lines unsanitized.
+    if not text.lstrip().startswith(SSE_PREFIXES):
+        return None, STATE_OMITTED, BODY_DECODE_ERROR
     return storable(sanitize_sse(text, keys, deadline)), STATE_CAPTURED, ""
 
 

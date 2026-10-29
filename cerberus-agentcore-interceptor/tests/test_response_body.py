@@ -1,6 +1,7 @@
 import base64
 import gzip
 import json
+import zlib
 from time import monotonic
 
 import pytest
@@ -126,6 +127,21 @@ def test_an_event_stream_is_captured_as_sanitized_text():
 def test_an_event_stream_that_is_not_utf8_is_decoded_with_replacement():
     value, _ = read(http_input(b"data: caf\xe9\n\n", "text/event-stream"))
     assert value == "data: caf\ufffd\n\n"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(zlib.compress(b'data: {"token": "t"}\n\n'), id="deflate"),
+        pytest.param(b'!T\x00\x04data: {"token": "t"}\n\n\x03', id="brotli"),
+        pytest.param(b'(\xb5/\xfd$\x16\xb1\x00\x00data: {"token": "t"}\n\nA\xe4\\g', id="zstd"),
+    ],
+)
+def test_an_event_stream_compressed_other_than_with_gzip_is_not_kept(body):
+    value, given = read(http_input(body, "text/event-stream"))
+    assert value is None
+    assert given["state"] == "omitted"
+    assert given["reason"] == "decode_error"
 
 
 def test_an_untyped_body_is_read_as_json_then_as_sse():
