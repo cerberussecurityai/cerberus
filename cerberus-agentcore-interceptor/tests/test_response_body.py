@@ -243,6 +243,13 @@ def test_a_joined_event_keeps_its_blank_line_when_line_endings_are_mixed(text, e
     assert response_body.sanitize_sse(text, ()) == expected
 
 
+def test_a_joined_event_keeps_its_other_lines_in_place():
+    text = 'event: e\ndata: {"token":\nid: 7\ndata: "t"}\nretry: 9\n\n'
+    assert response_body.sanitize_sse(text, ()) == (
+        'event: e\nid: 7\ndata: {"token":"[REDACTED]"}\nretry: 9\n\n'
+    )
+
+
 def test_data_lines_that_are_not_json_together_are_sanitized_one_by_one():
     text = 'data: {"token":"t"}\ndata: {"n":1}\n\n'
     assert response_body.sanitize_sse(text, ()) == 'data: {"token":"[REDACTED]"}\ndata: {"n":1}\n\n'
@@ -320,6 +327,33 @@ def test_the_reduce_ladder_stops_partway_through_a_dense_listing(monkeypatch):
     with pytest.raises(CaptureDeadlineExceeded):
         response_body.attach({}, value, {"state": "captured"}, MAX, True, 1.0)
     assert 0 < calls[0] < len(tools)
+
+
+MANY_VALUES = json.dumps({"a": [0] * 20 * bounding.VALUES_PER_CHECK})
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        mcp_input(tool_result(MANY_VALUES)),
+        http_input(f"data: {MANY_VALUES}\n\n".encode(), "text/event-stream"),
+        http_input(
+            f"data: {MANY_VALUES[:1]}\ndata: {MANY_VALUES[1:]}\n\n".encode(), "text/event-stream"
+        ),
+    ],
+    ids=["mcp-text", "sse", "sse-joined"],
+)
+def test_json_inside_result_text_or_an_event_counts_toward_the_deadline(monkeypatch, given):
+    flip_clock_at_call(monkeypatch, "sanitize_storable")
+    with pytest.raises(CaptureDeadlineExceeded):
+        response_body.read(envelope_mod.parse(given), (), 1.0)
+
+
+def test_blank_sse_lines_count_toward_the_deadline(monkeypatch):
+    text = "data: x" + "\n" * 2 * bounding.VALUES_PER_CHECK
+    monkeypatch.setattr(bounding, "monotonic", lambda: 2.0)
+    with pytest.raises(CaptureDeadlineExceeded):
+        response_body.sanitize_sse(text, (), bounding.Ticker(1.0))
 
 
 @pytest.mark.parametrize(
