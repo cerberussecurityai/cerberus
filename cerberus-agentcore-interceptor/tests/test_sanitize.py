@@ -1,10 +1,11 @@
 import itertools
 import json
+import random
 from pathlib import Path
 
 import pytest
 import yaml
-from cerberus_core import SENSITIVE_HEADERS, sanitize_dict
+from cerberus_core import SENSITIVE_HEADERS, SENSITIVE_KEYS, sanitize_dict
 
 from cerberus_agentcore_interceptor import CaptureDeadlineExceeded, bounding, sanitize
 
@@ -129,6 +130,36 @@ def test_sanitize_storable_matches_sanitize_dict_on_the_parity_cases(case):
     keys = tuple(case.get("custom_sensitive_keys", ()))
     expected = bounding.storable(sanitize_dict(case["input"], extra_keys=keys))
     assert sanitize.sanitize_storable(case["input"], keys) == expected
+
+
+FUZZ_EXTRA_KEYS = ("member_number", " X-Custom ", " ", "a\x00", *sanitize.ECHOED_HEADER_KEYS)
+FUZZ_KEYS = (*sorted(SENSITIVE_KEYS), *FUZZ_EXTRA_KEYS, "x_api_key", "user", "")
+FUZZ_SCALARS = ("v", "a\x00", "\ud800", "\ud83d\ude00", 1, 2.5, float("nan"), -float("inf"), None)
+
+
+def random_key(rng):
+    key = "".join(rng.choice((c, c.upper())) for c in rng.choice(FUZZ_KEYS))
+    variants = (key, f" {key}", f"{key}s", key.replace("_", "-"), key.replace("s", "\u017f"))
+    return rng.choice(variants)
+
+
+def random_body(rng, size):
+    if size <= 0 or rng.random() < 0.3:
+        return rng.choice(FUZZ_SCALARS)
+    if rng.random() < 0.5:
+        return [random_body(rng, size - 1) for _ in range(rng.randint(0, 3))]
+    return {random_key(rng): random_body(rng, size - 1) for _ in range(rng.randint(0, 3))}
+
+
+def test_sanitize_storable_matches_sanitize_dict_on_random_bodies():
+    rng = random.Random(0)
+    for _ in range(2000):
+        body = random_body(rng, 4)
+        for _ in range(rng.randint(0, sanitize.MAX_SANITIZE_DEPTH + 3)):
+            body = rng.choice(([body, "x"], {random_key(rng): body}))
+        keys = rng.choice(((), FUZZ_EXTRA_KEYS))
+        expected = bounding.storable(sanitize_dict(body, extra_keys=keys))
+        assert json.dumps(sanitize.sanitize_storable(body, keys)) == json.dumps(expected)
 
 
 def test_sanitize_storable_checks_the_deadline_as_it_walks(monkeypatch):
