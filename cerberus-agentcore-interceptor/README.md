@@ -115,12 +115,16 @@ An `mcp` response event also carries the request, which the gateway still hands
 over at RESPONSE, handled as on a request event. An `http` response event has no
 request to carry: no method, path, headers or caller identity.
 
-JSON bodies are sanitized as request bodies are, JSON inside an MCP result's
+JSON bodies are sanitized as request bodies are, JSON inside a tool result's
 text included, and credential header names are redacted as keys too, since a
 body can echo the request's headers. Event streams are sanitized event by event.
-A gzip body is recorded as `{"body_skipped_encoding": "gzip"}`. A body that is
-absent, empty or unreadable, or of another content type, is not kept, and the
-note's `reason` says which. One that does not fit whole is reduced on `mcp` to
+Redaction matches key names, so text that is not JSON is kept as sent: a secret
+in plain-text tool output, or in an event-stream line that is not a JSON object
+or array, reaches Cerberus as written. A gzip body is recorded as
+`{"body_skipped_encoding": "gzip"}`. An `http` body with no content type is read
+as JSON, or as an event stream when it is framed as one. A body that is absent,
+empty or unreadable, or of another content type, is not kept, and the note's
+`reason` says which. One that does not fit whole is reduced on `mcp` to
 its JSON-RPC id, error and the result's names and clipped text, then cut to the
 head and tail of its text, then shed. On `mcp` the request and the response
 share one event's cap.
