@@ -46,7 +46,8 @@ SSE_LINE_BREAK = re.compile(r"(\r\n|\r|\n)")
 # How many SSE lines are read between deadline checks.
 SSE_LINES_PER_CHECK = 256
 
-# The share of a truncated body's room that goes to its head.
+# The share of a truncated body's room that goes to its head: the 24 KiB to
+# 16 KiB split flex and Django use.
 HEAD_PERCENT = 60
 
 MCP_ENVELOPE_KEYS = ("jsonrpc", "id")
