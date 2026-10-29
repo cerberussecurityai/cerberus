@@ -197,8 +197,8 @@ def test_the_raw_response_is_read_from_an_mcp_response():
     assert mcp_response({"mcp": {"gatewayRequest": {}, "gatewayResponse": response}}) is response
 
 
-def test_the_raw_echo_hands_the_body_back_as_given():
-    body = {"result": {"text": "cut \ud83c", "n": float("inf")}}
+def test_the_raw_echo_hands_an_encodable_body_back_as_given():
+    body = {"result": {"text": "ok", "n": 1}}
     result = response_echo({"body": body, "statusCode": 200})
 
     assert result == {
@@ -206,6 +206,14 @@ def test_the_raw_echo_hands_the_body_back_as_given():
         "mcp": {"transformedGatewayResponse": {"body": body, "statusCode": 200}},
     }
     assert result["mcp"]["transformedGatewayResponse"]["body"] is body
+
+
+def test_the_raw_echo_repairs_what_the_runtime_cannot_encode():
+    result = response_echo({"body": {"text": "cut \ud83c", "n": float("inf")}, "statusCode": 200})
+    assert result["mcp"]["transformedGatewayResponse"]["body"] == {
+        "text": "cut �",
+        "n": "Infinity",
+    }
 
 
 @pytest.mark.parametrize("response", [{"statusCode": 200}, {"body": None, "statusCode": 200}])

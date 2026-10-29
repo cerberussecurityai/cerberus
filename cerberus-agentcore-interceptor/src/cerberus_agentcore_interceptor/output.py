@@ -64,13 +64,13 @@ def mcp_response(event: Any) -> dict[str, Any] | None:
 def response_echo(response: dict[str, Any]) -> dict[str, Any]:
     """An `mcp` output echoing a raw gatewayResponse, for when parse() or passthrough() fails.
 
-    The body comes back as given, without repair, and the status code only
-    when it is an int.
+    The body is repaired as passthrough() repairs it, and the status code comes
+    back only when it is an int.
     """
     status = response.get("statusCode")
     if isinstance(status, bool) or not isinstance(status, int):
         status = None
-    return _response_echo(MCP, response.get("body"), status)
+    return _response_echo(MCP, encodable(response.get("body")), status)
 
 
 def is_valid_output(value: Any) -> bool:

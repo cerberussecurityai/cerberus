@@ -563,13 +563,22 @@ def test_an_output_that_cannot_be_built_echoes_the_raw_response(sink, monkeypatc
     assert invoke(name) == echo(name)
 
 
-def test_the_raw_echo_hands_the_body_back_as_given(responses, monkeypatch):
-    monkeypatch.setattr(output, "passthrough", _boom)
+@pytest.mark.parametrize(
+    ("module", "attribute"),
+    [(handler_mod, "parse"), (output, "passthrough")],
+    ids=["parse", "passthrough"],
+)
+def test_the_raw_echo_survives_the_runtime_encode(responses, monkeypatch, module, attribute):
+    monkeypatch.setattr(module, attribute, _boom)
     case = load_case("mcp-tools-call-lambda-response")
     body = {"jsonrpc": "2.0", "id": 1, "result": {"text": "cut \ud83c", "n": float("inf")}}
     case["input"]["mcp"]["gatewayResponse"]["body"] = body
 
-    assert invoke_case(case)["mcp"]["transformedGatewayResponse"]["body"] is body
+    wire = json.loads(runtime_encode(invoke_case(case)))
+    assert wire["mcp"]["transformedGatewayResponse"]["body"]["result"] == {
+        "text": "cut �",
+        "n": "Infinity",
+    }
 
 
 @pytest.mark.parametrize("status", ["200", True, 200.0, None])
