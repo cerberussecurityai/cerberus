@@ -1,0 +1,24 @@
+{
+  "name": "inference-chat-payload-filter-response",
+  "options": {
+    "identity_mode": "jwt"
+  },
+  "client_context": {
+    "GATEWAY_ARN": "arn:aws:bedrock-agentcore:us-west-2:123456789012:gateway/example-gateway-abcdefghij",
+    "GATEWAY_ACCOUNT_ID": "123456789012",
+    "REQUEST_ID": "request-id-19",
+    "SOURCE_IP": "192.0.2.10"
+  },
+  "input": {
+    "interceptorInputVersion": "1.0",
+    "http": {
+      "gatewayRequest": null,
+      "gatewayResponse": {
+        "statusCode": 200,
+        "headers": null,
+        "body": null,
+        "contentType": "application/json"
+      }
+    }
+  }
+}

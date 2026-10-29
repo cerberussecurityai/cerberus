@@ -1,0 +1,25 @@
+{
+  "custom_data": {
+    "agentcore": {
+      "account_id": "123456789012",
+      "gateway_id": "example-gateway-abcdefghij",
+      "kind": "http",
+      "phase": "response",
+      "region": "us-west-2",
+      "request_id": "request-id-10",
+      "response": {
+        "content_type": "text/event-stream",
+        "state": "captured"
+      },
+      "version": "0.2.0"
+    },
+    "integration": "agentcore-gateway"
+  },
+  "event_id": "request-id-10#response",
+  "host": "example-gateway-abcdefghij.gateway.bedrock-agentcore.us-west-2.amazonaws.com",
+  "remote_addr": "192.0.2.10",
+  "response_body": "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0,\"obfuscation\":\"7bTKnpr6SSww7zd3ZnjRdYcQzy8S0WuLu3615PoCQXoS0d927rw1vFYbUcc0DTEeB3JTrkt3YKnp2dKFBlutDqmg9mvjAX5gWPJdhbJDbyI\"}],\"created\":1789885458,\"id\":\"chatcmpl-00000000-0000-0000-0000-0000000000b3\",\"model\":\"openai.gpt-oss-20b\",\"obfuscation\":\"08Duzhd7iVEVcj38JX2FNEQ0LAr0otJzX8NqwlJfj5MgUIW8590ODjR4amT0yl1RKLe8Qt8FXEtNQBQ6zGnt6g2F7sfcq2\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"default\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":null,\"index\":0,\"obfuscation\":\"RftNftuJgaGOsyeF71fJCYDfE75T0atOZ7YMYHAvaxrP3bNAXZ5fUTrrrDYRtERg7tGPBirnPPE6YrYUTNhoLR\"}],\"created\":1789885458,\"id\":\"chatcmpl-00000000-0000-0000-0000-0000000000b3\",\"model\":\"openai.gpt-oss-20b\",\"obfuscation\":\"NjzDj1HxBHgjuSYaSK1xymxfL3WF1V9sxYr3NQAY7a6tUHjaJxuzNAh3kadHT5If7wr2aCykGtsdlsfRfId8Df9RJL\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"default\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":null,\"index\":0,\"obfuscation\":\"FIjydx5wiTUXpk7pUW4mY2fanKS4zYFCBxeDQiNDPtAIsNU\"}],\"created\":1789885458,\"id\":\"chatcmpl-00000000-0000-0000-0000-0000000000b3\",\"model\":\"openai.gpt-oss-20b\",\"obfuscation\":\"hy22HX4b5WJCNfRxoUte06mudIsu4GxiMiqjBu43hiKL6BMZXPuk7Bk5ziibEi0bAl9kPF2hQM6JmmluswHKfulzTEFSJontDvFnO\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"default\"}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":null,\"index\":0,\"obfuscation\":\"uCOJCw7Bj7iyoZK4yxnbz69wLqHEZ9fBo92kmKWjnJEz3X2W60IWRA\"}],\"created\":1789885458,\"id\":\"chatcmpl-00000000-0000-0000-0000-0000000000b3\",\"model\":\"openai.gpt-oss-20b\",\"obfuscation\":\"krzgHx6b6cN9ZjS9m7rKo1O1Xz4g8FLKuDKvB7Thz5qLZeAiYHVCIQ\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"default\"}\n\ndata: {\"choices\":[{\"delta\":{\"reasoning\":\"The user says: \\\"Say OK. CERBCANARY-inferencechats-98f6fc23c1\\\"\\n\\nThey want\"},\"finish_reason\":null,\"index\":0,\"obfuscation\":\"rrlKabLAoXPrPLGN9CbS9eOg33E7uqQiVdvWf1ypXRrEH9pa8WLrhMcjLmSeMNxxtSgsfARrUA0L3psCT8Ei3ErXNBX1Iwf1Ot8UFtmQpfv0triCfmy7xB\"}],\"created\":1789885458,\"id\":\"chatcmpl-00000000-0000-0000-0000-0000000000b3\",\"model\":\"openai.gpt-oss-20b\",\"obfuscation\":\"GQgTmsaXLjiqeLAFVf4N0g2hmRwDCrMT3VDkrXre51xlCEOS9FBR9hprV4krCdZynHzB5iVfVN4EyGlDcYuK9ev0w\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"default\"}\n\ndata: {\"choices\":[{\"delta\":{\"reasoning\":\" me to respond with \\\"OK\\\" presumably. There's no additional context. Just give OK.\"},\"finish_reason\":\"length\",\"index\":0,\"obfuscation\":\"JHAZK9LXioChlH4d0RwSGVjLZUCmxT6DXWtYEcmzZyfoqsAtr8LgI4WoOm3bCKvHwfW8XeJOFq83jD7KhrKgwIF1uiRDFg9cvAva7\"}],\"created\":1789885458,\"id\":\"chatcmpl-00000000-0000-0000-0000-0000000000b3\",\"model\":\"openai.gpt-oss-20b\",\"obfuscation\":\"5B2S2pSvsk6iXih88XV47O3OTXkjBvrgQ3Tqg4GXv5Zf8Nm6VE7wSYMlUzg5v7IVauNTPyVXhRmqTC0YElKIO5lKf3\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"default\"}\n\n",
+  "scheme": true,
+  "status_code": 200,
+  "timestamp": "2026-09-20T06:24:30.123456+00:00"
+}

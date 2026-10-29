@@ -189,6 +189,22 @@ def test_cap_strings_leaves_the_original_alone():
     assert value == original
 
 
+def test_fit_leaves_what_the_event_shares_alone():
+    arguments = {f"a{index}": "x" * 9000 for index in range(9)}
+    params = {"name": "t", "arguments": arguments}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "t", "params": params}
+    headers = {"User-Agent": "u" * 900}
+    body_note = {"state": "captured"}
+    pruned = {"kind": "mcp"}
+    shared = copy.deepcopy((body, headers, body_note, pruned))
+    event = {"body": body, "headers": headers, "custom_data": {"agentcore": {"body": body_note}}}
+
+    fitted = bounding.fit(event, 8192, None, pruned)
+
+    assert fitted["custom_data"]["agentcore"]["body"]["state"] == "reduced"
+    assert (body, headers, body_note, pruned) == shared
+
+
 def test_serialize_is_what_the_ladder_measures():
     event = {"a": "é"}
     assert bounding.serialize(event) == b'{"a":"\\u00e9"}'

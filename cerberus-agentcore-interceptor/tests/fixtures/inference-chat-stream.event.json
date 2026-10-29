@@ -24,9 +24,11 @@
         "username": "example-user"
       },
       "kind": "http",
+      "phase": "request",
       "region": "us-west-2",
       "request_id": "request-id-10",
-      "version": "0.1.0"
+      "response_expected": false,
+      "version": "0.2.0"
     },
     "integration": "agentcore-gateway"
   },
