@@ -6,7 +6,7 @@ import base64
 import binascii
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from .bounding import (
@@ -15,6 +15,7 @@ from .bounding import (
     STATE_OMITTED,
     STATE_REDUCED,
     STATE_SHED,
+    Ticker,
     check_deadline,
     clip_text,
     serialize,
@@ -30,7 +31,7 @@ from .envelope import (
     MCP,
     Envelope,
 )
-from .sanitize import ECHOED_HEADER_KEYS, sanitize_body
+from .sanitize import ECHOED_HEADER_KEYS, sanitize_storable
 
 STATE_SKIPPED = "skipped"
 STATE_TRUNCATED = "truncated"
@@ -43,8 +44,8 @@ MAX_CONTENT_TYPE_CHARS = 255
 GZIP_MAGIC = b"\x1f\x8b"
 SSE_PREFIXES = ("data:", "event:", ":", "id:", "retry:")
 SSE_LINE_BREAK = re.compile(r"(\r\n|\r|\n)")
-# How many SSE lines are read between deadline checks.
-SSE_LINES_PER_CHECK = 256
+# Collecting an SSE line costs little, so lines are counted this many at a time.
+SSE_LINE_BLOCK = 256
 
 # The share of a truncated body's room that goes to its head: the 24 KiB to
 # 16 KiB split flex and Django use.
@@ -64,11 +65,12 @@ def read(
     """
     check_deadline(deadline)
     keys = (*extra_keys, *ECHOED_HEADER_KEYS)
+    ticker = Ticker(deadline)
     if envelope.kind == MCP:
-        value, state, reason = _mcp(envelope.response_body, keys, deadline)
+        value, state, reason = _mcp(envelope.response_body, keys, ticker)
     else:
         body, content_type = envelope.response_body, envelope.content_type
-        value, state, reason = _http(body, content_type, keys, deadline)
+        value, state, reason = _http(body, content_type, keys, ticker)
     return value, note(envelope, state, reason)
 
 
@@ -82,27 +84,29 @@ def note(envelope: Envelope, state: str, reason: str = "") -> dict[str, Any]:
     return result
 
 
-def sanitize_sse(text: str, keys: tuple[str, ...], deadline: float | None = None) -> str:
+def sanitize_sse(text: str, keys: tuple[str, ...], ticker: Ticker | None = None) -> str:
     """SSE text with each event's JSON data key-sanitized and compact. Other lines are kept as sent.
 
     An event's data lines are read joined, as an SSE client reads them. When
-    they hold JSON together, they are written back as one data line.
+    they hold JSON together, they are written back as one data line. Raises
+    CaptureDeadlineExceeded at a check past the ticker's deadline.
     """
+    clock = Ticker() if ticker is None else ticker
     parts = SSE_LINE_BREAK.split(text)
     # split() puts each line's ending in the slot after it; the last line has none.
     lines = zip(parts[::2], [*parts[1::2], ""], strict=True)
     out: list[str] = []
     event: list[tuple[str, str]] = []
     for index, (line, ending) in enumerate(lines):
-        if index % SSE_LINES_PER_CHECK == 0:
-            check_deadline(deadline)
+        if not index % SSE_LINE_BLOCK:
+            clock.tick(SSE_LINE_BLOCK)
         if line:
             event.append((line, ending))
             continue
-        out.extend(_sse_event(event, keys, deadline))
+        out.extend(_sse_event(event, keys, clock))
         out.append(ending)
         event = []
-    out.extend(_sse_event(event, keys, deadline))
+    out.extend(_sse_event(event, keys, clock))
     return "".join(out)
 
 
@@ -128,7 +132,7 @@ def attach(
         if response_note["state"] == STATE_CAPTURED:
             if reducible and isinstance(value, (dict, list)):
                 reduced_note = {**response_note, "state": STATE_REDUCED}
-                for reduced in _reductions(value, deadline):
+                for reduced in _reductions(value, Ticker(deadline)):
                     if _fits_with(event, reduced, reduced_note, max_bytes, deadline):
                         return event
             if _truncate(event, text, response_note, max_bytes, deadline):
@@ -148,18 +152,18 @@ def fits_whole(
     return _whole(event, value, _text(value), response_note, max_bytes, deadline)
 
 
-def _mcp(body: Any, keys: tuple[str, ...], deadline: float | None) -> tuple[Any, str, str]:
+def _mcp(body: Any, keys: tuple[str, ...], ticker: Ticker) -> tuple[Any, str, str]:
     if body is None:
         return None, STATE_OMITTED, BODY_ABSENT
     if isinstance(body, (dict, list)):
-        return _json(body, keys, deadline), STATE_CAPTURED, ""
+        return _json(body, keys, ticker), STATE_CAPTURED, ""
     if isinstance(body, str):
-        return _untyped(body, keys, BODY_NOT_JSON, deadline)
+        return _untyped(body, keys, BODY_NOT_JSON, ticker)
     return None, STATE_OMITTED, BODY_NOT_OBJECT
 
 
 def _http(
-    body: Any, content_type: str, keys: tuple[str, ...], deadline: float | None
+    body: Any, content_type: str, keys: tuple[str, ...], ticker: Ticker
 ) -> tuple[Any, str, str]:
     if body is None:
         return None, STATE_OMITTED, BODY_ABSENT
@@ -175,31 +179,31 @@ def _http(
     if raw.startswith(GZIP_MAGIC):
         return {"body_skipped_encoding": "gzip"}, STATE_SKIPPED, ""
 
-    check_deadline(deadline)
+    check_deadline(ticker.deadline)
     text = raw.decode("utf-8", "replace")
     kind = content_type.lower()
     if "json" in kind:
-        return _json_text(text, keys, deadline)
+        return _json_text(text, keys, ticker)
     if "text/event-stream" in kind:
-        return _sse(text, keys, deadline)
+        return _sse(text, keys, ticker)
     if not content_type:
-        return _untyped(text, keys, BODY_UNSUPPORTED_TYPE, deadline)
+        return _untyped(text, keys, BODY_UNSUPPORTED_TYPE, ticker)
     return None, STATE_OMITTED, BODY_UNSUPPORTED_TYPE
 
 
 def _untyped(
-    text: str, keys: tuple[str, ...], otherwise: str, deadline: float | None
+    text: str, keys: tuple[str, ...], otherwise: str, ticker: Ticker
 ) -> tuple[Any, str, str]:
     """Text of no stated type: JSON when it parses, SSE when it is framed like SSE."""
-    parsed = _json_text(text, keys, deadline)
+    parsed = _json_text(text, keys, ticker)
     if parsed[2] != BODY_NOT_JSON:
         return parsed
     if text.lstrip().startswith(SSE_PREFIXES):
-        return _sse(text, keys, deadline)
+        return _sse(text, keys, ticker)
     return None, STATE_OMITTED, otherwise
 
 
-def _json_text(text: str, keys: tuple[str, ...], deadline: float | None) -> tuple[Any, str, str]:
+def _json_text(text: str, keys: tuple[str, ...], ticker: Ticker) -> tuple[Any, str, str]:
     if not text.strip():
         return None, STATE_OMITTED, BODY_EMPTY
     try:
@@ -208,47 +212,42 @@ def _json_text(text: str, keys: tuple[str, ...], deadline: float | None) -> tupl
         return None, STATE_OMITTED, BODY_NOT_JSON
     if not isinstance(value, (dict, list)):
         return None, STATE_OMITTED, BODY_NOT_OBJECT
-    return _json(value, keys, deadline), STATE_CAPTURED, ""
+    return _json(value, keys, ticker), STATE_CAPTURED, ""
 
 
-def _sse(text: str, keys: tuple[str, ...], deadline: float | None) -> tuple[Any, str, str]:
+def _sse(text: str, keys: tuple[str, ...], ticker: Ticker) -> tuple[Any, str, str]:
     if not text.strip():
         return None, STATE_OMITTED, BODY_EMPTY
     # A stream compressed other than with gzip is not framed as SSE, and one
     # stored uncompressed would otherwise keep its data lines unsanitized.
     if not text.lstrip().startswith(SSE_PREFIXES):
         return None, STATE_OMITTED, BODY_DECODE_ERROR
-    return storable(sanitize_sse(text, keys, deadline)), STATE_CAPTURED, ""
+    return storable(sanitize_sse(text, keys, ticker)), STATE_CAPTURED, ""
 
 
-def _sse_event(
-    lines: list[tuple[str, str]], keys: tuple[str, ...], deadline: float | None
-) -> list[str]:
+def _sse_event(lines: list[tuple[str, str]], keys: tuple[str, ...], ticker: Ticker) -> list[str]:
     """One SSE event's lines with their endings, its JSON data sanitized."""
-    data = [index for index, (line, _) in enumerate(lines) if line.startswith("data:")]
-    if len(data) > 1:
-        payload = "\n".join(_sse_payload(lines[index][0]) for index in data)
-        joined = _sse_json(payload, keys, deadline)
+    payloads: list[str] = []
+    others: list[str] = []
+    # How many other lines come before the last data line, whose ending closes the event.
+    before, closing = 0, ""
+    for line, ending in _checked(lines, ticker):
+        if line.startswith("data:"):
+            payloads.append(_sse_payload(line))
+            before, closing = len(others), ending
+        else:
+            others.append(line + ending)
+    if len(payloads) > 1:
+        joined = _sse_json("\n".join(payloads), keys, ticker)
         if joined is not None:
-            # The last data line's ending is the one that closes the event.
-            last, rest = data[-1], set(data[:-1])
-            return [
-                f"data: {joined}{ending}" if index == last else line + ending
-                for index, (line, ending) in enumerate(lines)
-                if index not in rest
-            ]
-    out: list[str] = []
-    for index, (line, ending) in enumerate(lines):
-        if index % SSE_LINES_PER_CHECK == 0:
-            check_deadline(deadline)
-        out.append(_sse_line(line, keys, deadline) + ending)
-    return out
+            return [*others[:before], f"data: {joined}{closing}", *others[before:]]
+    return [_sse_line(line, keys, ticker) + ending for line, ending in _checked(lines, ticker)]
 
 
-def _sse_line(line: str, keys: tuple[str, ...], deadline: float | None) -> str:
+def _sse_line(line: str, keys: tuple[str, ...], ticker: Ticker) -> str:
     if not line.startswith("data:"):
         return line
-    value = _sse_json(_sse_payload(line), keys, deadline)
+    value = _sse_json(_sse_payload(line), keys, ticker)
     return line if value is None else f"data: {value}"
 
 
@@ -256,7 +255,7 @@ def _sse_payload(line: str) -> str:
     return line[len("data:") :].lstrip(" ")
 
 
-def _sse_json(payload: str, keys: tuple[str, ...], deadline: float | None) -> str | None:
+def _sse_json(payload: str, keys: tuple[str, ...], ticker: Ticker) -> str | None:
     """A data payload sanitized and compact, or None when it is not a JSON object or array."""
     try:
         value = json.loads(payload)
@@ -264,27 +263,27 @@ def _sse_json(payload: str, keys: tuple[str, ...], deadline: float | None) -> st
         return None
     if not isinstance(value, (dict, list)):
         return None
-    return _dumps(_json(value, keys, deadline))
+    return _dumps(_json(value, keys, ticker))
 
 
-def _json(value: Any, keys: tuple[str, ...], deadline: float | None) -> Any:
+def _json(value: Any, keys: tuple[str, ...], ticker: Ticker) -> Any:
     """A JSON body sanitized, MCP result text included, and made storable."""
-    sanitized = sanitize_body(value, keys)
-    for message in sanitized if isinstance(sanitized, list) else (sanitized,):
-        check_deadline(deadline)
-        _sanitize_result_text(message, keys, deadline)
-    check_deadline(deadline)
-    return storable(sanitized)
+    sanitized = sanitize_storable(value, keys, ticker)
+    if isinstance(sanitized, list):
+        for message in _checked(sanitized, ticker):
+            _sanitize_result_text(message, keys, ticker)
+    else:
+        _sanitize_result_text(sanitized, keys, ticker)
+    return sanitized
 
 
-def _sanitize_result_text(message: Any, keys: tuple[str, ...], deadline: float | None) -> None:
+def _sanitize_result_text(message: Any, keys: tuple[str, ...], ticker: Ticker) -> None:
     """Sanitize in place each MCP result text that holds a JSON object or array."""
     result = message.get("result") if isinstance(message, dict) else None
     content = result.get("content") if isinstance(result, dict) else None
     if not isinstance(content, list):
         return
-    for item in content:
-        check_deadline(deadline)
+    for item in _checked(content, ticker):
         text = item.get("text") if isinstance(item, dict) else None
         if not isinstance(text, str):
             continue
@@ -293,7 +292,21 @@ def _sanitize_result_text(message: Any, keys: tuple[str, ...], deadline: float |
         except (ValueError, RecursionError):
             continue
         if isinstance(parsed, (dict, list)):
-            item["text"] = _dumps(storable(sanitize_body(parsed, keys)))
+            item["text"] = _dumps(sanitize_storable(parsed, keys, ticker))
+
+
+def _checked(items: list[Any], ticker: Ticker) -> Iterable[Any]:
+    """items, with a tick for each. A list too short to reach a check comes back as is."""
+    if len(items) < ticker.left:
+        ticker.tick(len(items))
+        return items
+    return _ticking(items, ticker)
+
+
+def _ticking(items: list[Any], ticker: Ticker) -> Iterator[Any]:
+    for item in items:
+        ticker.tick()
+        yield item
 
 
 def _dumps(value: Any) -> str:
@@ -381,16 +394,20 @@ def _clip_tail(text: str, max_bytes: int) -> str:
     return clip_text(end[::-1], max_bytes, max_bytes)[::-1]
 
 
-def _reductions(value: Any, deadline: float | None) -> Iterator[Any]:
+def _reductions(value: Any, ticker: Ticker) -> Iterator[Any]:
     for limit in ARGUMENT_CHAR_LIMITS:
-        check_deadline(deadline)
+        check_deadline(ticker.deadline)
         if isinstance(value, list):
-            yield [_reduce_mcp(item, limit) for item in value if isinstance(item, dict)]
+            yield [
+                _reduce_mcp(item, limit, ticker)
+                for item in _checked(value, ticker)
+                if isinstance(item, dict)
+            ]
         else:
-            yield _reduce_mcp(value, limit)
+            yield _reduce_mcp(value, limit, ticker)
 
 
-def _reduce_mcp(message: dict[str, Any], limit: int) -> dict[str, Any]:
+def _reduce_mcp(message: dict[str, Any], limit: int, ticker: Ticker) -> dict[str, Any]:
     """A JSON-RPC response cut to its id, its error, and the result's names, flags and text."""
     reduced = {key: message[key] for key in MCP_ENVELOPE_KEYS if key in message}
     error = message.get("error")
@@ -401,21 +418,29 @@ def _reduce_mcp(message: dict[str, Any], limit: int) -> dict[str, Any]:
         reduced["error"] = kept
     result = message.get("result")
     if isinstance(result, dict):
-        reduced["result"] = _reduce_result(result, limit)
+        reduced["result"] = _reduce_result(result, limit, ticker)
     return reduced
 
 
-def _reduce_result(result: dict[str, Any], limit: int) -> dict[str, Any]:
+def _reduce_result(result: dict[str, Any], limit: int, ticker: Ticker) -> dict[str, Any]:
     kept: dict[str, Any] = {"isError": result["isError"]} if "isError" in result else {}
     for key in MCP_LISTING_KEYS:
         items = result.get(key)
         if isinstance(items, list):
-            kept[key] = [_listing_item(item, limit) for item in items if isinstance(item, dict)]
+            kept[key] = [
+                _listing_item(item, limit)
+                for item in _checked(items, ticker)
+                if isinstance(item, dict)
+            ]
     if isinstance(result.get("nextCursor"), str):
         kept["nextCursor"] = clip_text(result["nextCursor"], limit)
     content = result.get("content")
     if isinstance(content, list):
-        kept["content"] = [_content_item(item, limit) for item in content if isinstance(item, dict)]
+        kept["content"] = [
+            _content_item(item, limit)
+            for item in _checked(content, ticker)
+            if isinstance(item, dict)
+        ]
     return kept
 
 

@@ -10,7 +10,9 @@ from cerberus_agentcore_interceptor.output import (
     OUTPUT_VERSION,
     encodable,
     is_valid_output,
+    mcp_response,
     passthrough,
+    response_echo,
 )
 
 LONE_SURROGATE_CALL = (
@@ -171,6 +173,61 @@ def test_is_valid_output_rejects_the_wrong_version_and_shape():
     assert not is_valid_output({"http": {}})
     assert not is_valid_output("ok")
     assert not is_valid_output(None)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        None,
+        "text",
+        {"interceptorInputVersion": "1.0", "mcp": [1]},
+        {"interceptorInputVersion": "1.0", "mcp": {"gatewayRequest": {}, "gatewayResponse": None}},
+        {"interceptorInputVersion": "1.0", "mcp": {"gatewayResponse": "text"}},
+        {"interceptorInputVersion": "1.0", "http": {"gatewayResponse": {"body": "e30="}}},
+        {"interceptorInputVersion": "1.0", "grpc": {"gatewayResponse": {"body": {}}}},
+    ],
+    ids=["none", "text", "mcp-list", "mcp-request", "mcp-text-response", "http", "unknown-shape"],
+)
+def test_only_an_mcp_response_has_a_raw_response_to_echo(event):
+    assert mcp_response(event) is None
+
+
+def test_the_raw_response_is_read_from_an_mcp_response():
+    response = {"body": {"result": {}}, "statusCode": 200}
+    assert mcp_response({"mcp": {"gatewayRequest": {}, "gatewayResponse": response}}) is response
+
+
+def test_the_raw_echo_hands_an_encodable_body_back_as_given():
+    body = {"result": {"text": "ok", "n": 1}}
+    result = response_echo({"body": body, "statusCode": 200})
+
+    assert result == {
+        "interceptorOutputVersion": OUTPUT_VERSION,
+        "mcp": {"transformedGatewayResponse": {"body": body, "statusCode": 200}},
+    }
+    assert result["mcp"]["transformedGatewayResponse"]["body"] is body
+
+
+def test_the_raw_echo_repairs_what_the_runtime_cannot_encode():
+    result = response_echo({"body": {"text": "cut \ud83c", "n": float("inf")}, "statusCode": 200})
+    assert result["mcp"]["transformedGatewayResponse"]["body"] == {
+        "text": "cut �",
+        "n": "Infinity",
+    }
+
+
+@pytest.mark.parametrize("response", [{"statusCode": 200}, {"body": None, "statusCode": 200}])
+def test_the_raw_echo_of_a_bodyless_response_is_the_empty_form(response):
+    assert response_echo(response) == {"interceptorOutputVersion": OUTPUT_VERSION, "mcp": {}}
+
+
+@pytest.mark.parametrize(
+    ("status", "kept"), [(200, True), (502, True), (True, False), ("200", False), (200.0, False)]
+)
+def test_the_raw_echo_keeps_only_an_int_status_code(status, kept):
+    result = response_echo({"body": {}, "statusCode": status})
+    expected = {"body": {}, "statusCode": status} if kept else {"body": {}}
+    assert result["mcp"]["transformedGatewayResponse"] == expected
 
 
 def test_a_string_body_too_deep_to_parse_echoes_like_any_unparseable_one():

@@ -36,6 +36,9 @@ PRUNE_FACTOR = 4
 
 MAX_WALK_DEPTH = 24
 
+# How many values walked, or items or lines read, between deadline checks.
+VALUES_PER_CHECK = 1024
+
 STATE_CAPTURED = "captured"
 STATE_CAPPED = "capped"
 STATE_REDUCED = "reduced"
@@ -65,6 +68,27 @@ def check_deadline(deadline: float | None) -> None:
     """Raise CaptureDeadlineExceeded once time.monotonic() reaches deadline."""
     if deadline is not None and monotonic() >= deadline:
         raise CaptureDeadlineExceeded
+
+
+class Ticker:
+    """Counts work toward a deadline and checks it once every VALUES_PER_CHECK ticks.
+
+    The loops of one read share a ticker, so many short loops add up to one
+    check instead of each paying for its own.
+    """
+
+    __slots__ = ("deadline", "left")
+
+    def __init__(self, deadline: float | None = None) -> None:
+        self.deadline = deadline
+        self.left = VALUES_PER_CHECK
+
+    def tick(self, count: int = 1) -> None:
+        """Count work done. Raises CaptureDeadlineExceeded at a check past the deadline."""
+        self.left -= count
+        if self.left <= 0:
+            self.left = VALUES_PER_CHECK
+            check_deadline(self.deadline)
 
 
 def serialize(event: dict[str, Any]) -> bytes:
@@ -187,11 +211,9 @@ def storable(value: Any) -> Any:
 
     def walk(node: Any, depth: int) -> Any:
         if isinstance(node, str):
-            return _storable_text(node)
+            return storable_text(node)
         if isinstance(node, float) and not math.isfinite(node):
-            if math.isnan(node):
-                return "NaN"
-            return "Infinity" if node > 0 else "-Infinity"
+            return non_finite_text(node)
         # A body reaches here through sanitize_dict, which already cut it shallower.
         if depth > MAX_WALK_DEPTH:
             return node
@@ -202,6 +224,27 @@ def storable(value: Any) -> Any:
         return node
 
     return walk(value, 0)
+
+
+def storable_text(value: str) -> str:
+    """value as storable() writes it: U+0000 and lone surrogates become U+FFFD."""
+    if "\x00" in value:
+        value = value.replace("\x00", "\ufffd")
+    if value.isascii():
+        return value
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Joins a pair held as two code points; a lone half becomes U+FFFD.
+        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    return value
+
+
+def non_finite_text(number: float) -> str:
+    """NaN or an infinity as storable() writes it."""
+    if math.isnan(number):
+        return "NaN"
+    return "Infinity" if number > 0 else "-Infinity"
 
 
 def set_note(event: dict[str, Any], key: str, note: dict[str, Any]) -> None:
@@ -261,19 +304,6 @@ def _rungs(value: Any, deadline: float | None) -> Iterator[tuple[int, Any]]:
 
 def _escaped_len(value: str) -> int:
     return len(json.dumps(value, ensure_ascii=True)) - 2
-
-
-def _storable_text(value: str) -> str:
-    if "\x00" in value:
-        value = value.replace("\x00", "\ufffd")
-    if value.isascii():
-        return value
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        # Joins a pair held as two code points; a lone half becomes U+FFFD.
-        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
-    return value
 
 
 def _needs_storable(event: dict[str, Any], data: bytes) -> bool:

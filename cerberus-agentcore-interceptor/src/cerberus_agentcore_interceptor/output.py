@@ -1,8 +1,9 @@
-"""Interceptor outputs that hand the caller's payload back to the gateway.
+"""Interceptor outputs that hand the gateway its payload back.
 
 The `mcp` shape has no empty pass-through: `{"mcp": {}}` is accepted, answers
 HTTP 200 and replaces the payload. An `mcp` output has to echo the body back.
-`{"http": {}}` is a true pass-through in both phases.
+`{"http": {}}` is a true pass-through everywhere except an `mcp` RESPONSE, where
+the caller receives `{}`.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import math
 import re
 from typing import Any
 
-from .envelope import HTTP, REQUEST, RESPONSE, Envelope
+from .envelope import HTTP, MCP, REQUEST, RESPONSE, Envelope
 
 OUTPUT_VERSION = "1.0"
 
@@ -42,17 +43,7 @@ def passthrough(envelope: Envelope) -> dict[str, Any]:
     key = envelope.shape_key
     if envelope.phase == RESPONSE:
         response = envelope.response or {}
-        body = response.get("body")
-        if body is None:
-            return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
-        transformed: dict[str, Any] = {"body": encodable(body)}
-        status = response.get("statusCode")
-        if status is not None:
-            transformed["statusCode"] = status
-        return {
-            "interceptorOutputVersion": OUTPUT_VERSION,
-            key: {"transformedGatewayResponse": transformed},
-        }
+        return _response_echo(key, encodable(response.get("body")), response.get("statusCode"))
 
     body = _request_body(envelope)
     if body is None:
@@ -61,6 +52,25 @@ def passthrough(envelope: Envelope) -> dict[str, Any]:
         "interceptorOutputVersion": OUTPUT_VERSION,
         key: {"transformedGatewayRequest": {"body": body}},
     }
+
+
+def mcp_response(event: Any) -> dict[str, Any] | None:
+    """The raw gatewayResponse of an `mcp` RESPONSE event, or None for any other event."""
+    shape = event.get(MCP) if isinstance(event, dict) else None
+    response = shape.get("gatewayResponse") if isinstance(shape, dict) else None
+    return response if isinstance(response, dict) else None
+
+
+def response_echo(response: dict[str, Any]) -> dict[str, Any]:
+    """An `mcp` output echoing a raw gatewayResponse, for when parse() or passthrough() fails.
+
+    The body is repaired as passthrough() repairs it, and the status code comes
+    back only when it is an int.
+    """
+    status = response.get("statusCode")
+    if isinstance(status, bool) or not isinstance(status, int):
+        status = None
+    return _response_echo(MCP, encodable(response.get("body")), status)
 
 
 def is_valid_output(value: Any) -> bool:
@@ -98,6 +108,23 @@ def finite(value: Any) -> Any:
     if isinstance(value, list):
         return [finite(item) for item in value]
     return value
+
+
+def _response_echo(key: str, body: Any, status: Any) -> dict[str, Any]:
+    if body is None:
+        return _bodyless_response(key)
+    transformed: dict[str, Any] = {"body": body}
+    if status is not None:
+        transformed["statusCode"] = status
+    return {
+        "interceptorOutputVersion": OUTPUT_VERSION,
+        key: {"transformedGatewayResponse": transformed},
+    }
+
+
+def _bodyless_response(key: str) -> dict[str, Any]:
+    """The answer to a response with no body to echo."""
+    return {"interceptorOutputVersion": OUTPUT_VERSION, key: {}}
 
 
 def _request_body(envelope: Envelope) -> Any:

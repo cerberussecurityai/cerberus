@@ -39,13 +39,14 @@ def read(given, keys=()):
     return response_body.read(envelope_mod.parse(given), keys)
 
 
-def event_for(given, case_name="mcp-tools-call-lambda-response", **overrides):
+def event_for(given, case_name="mcp-tools-call-lambda-response", deadline=None, **overrides):
     case = load_case(case_name)
     return response_event(
         envelope_mod.parse(given),
         envelope_mod.gateway_context(LambdaContext(case["client_context"])),
         options(case, **overrides),
         TIMESTAMP,
+        deadline=deadline,
     )
 
 
@@ -242,6 +243,13 @@ def test_a_joined_event_keeps_its_blank_line_when_line_endings_are_mixed(text, e
     assert response_body.sanitize_sse(text, ()) == expected
 
 
+def test_a_joined_event_keeps_its_other_lines_in_place():
+    text = 'event: e\ndata: {"token":\nid: 7\ndata: "t"}\nretry: 9\n\n'
+    assert response_body.sanitize_sse(text, ()) == (
+        'event: e\nid: 7\ndata: {"token":"[REDACTED]"}\nretry: 9\n\n'
+    )
+
+
 def test_data_lines_that_are_not_json_together_are_sanitized_one_by_one():
     text = 'data: {"token":"t"}\ndata: {"n":1}\n\n'
     assert response_body.sanitize_sse(text, ()) == 'data: {"token":"[REDACTED]"}\ndata: {"n":1}\n\n'
@@ -261,6 +269,20 @@ def test_sse_text_and_the_content_type_are_made_storable():
     assert given["content_type"] == "text/event-stream\ufffd"
 
 
+def flip_clock_at_call(monkeypatch, name, call=1):
+    """Count calls to a response_body function; the clock passes 1.0 from call number `call`."""
+    calls = [0]
+    real = getattr(response_body, name)
+
+    def counted(*args):
+        calls[0] += 1
+        return real(*args)
+
+    monkeypatch.setattr(response_body, name, counted)
+    monkeypatch.setattr(bounding, "monotonic", lambda: 2.0 if calls[0] >= call else 0.0)
+    return calls
+
+
 @pytest.mark.parametrize(
     "given",
     [
@@ -269,19 +291,82 @@ def test_sse_text_and_the_content_type_are_made_storable():
     ],
     ids=["sse", "mcp"],
 )
-def test_reading_stops_at_the_deadline_after_one_sanitizing_pass(monkeypatch, given):
-    clock = [0.0]
-    real = response_body.sanitize_body
-
-    def sanitize_body(body, keys):
-        clock[0] += 1
-        return real(body, keys)
-
-    monkeypatch.setattr("cerberus_agentcore_interceptor.bounding.monotonic", lambda: clock[0])
-    monkeypatch.setattr(response_body, "sanitize_body", sanitize_body)
+def test_short_payloads_add_up_to_a_deadline_check(monkeypatch, given):
+    calls = flip_clock_at_call(monkeypatch, "sanitize_storable", 2)
     with pytest.raises(CaptureDeadlineExceeded):
-        response_body.read(envelope_mod.parse(given), (), 0.5)
-    assert clock[0] == 1
+        response_body.read(envelope_mod.parse(given), (), 1.0)
+    assert 2 <= calls[0] < 1000
+
+
+def test_short_sse_events_share_their_deadline_checks(monkeypatch):
+    reads = [0]
+
+    def monotonic():
+        reads[0] += 1
+        return 0.0
+
+    events = 4 * bounding.VALUES_PER_CHECK
+    given = http_input(b"data: {}\n\n" * events, "text/event-stream")
+    monkeypatch.setattr(bounding, "monotonic", monotonic)
+    response_body.read(envelope_mod.parse(given), (), 1.0)
+    assert reads[0] < events / 100
+
+
+def test_an_sse_event_stops_partway_through_its_data_lines(monkeypatch):
+    data = ["data: [", *["data: 0,"] * 20 * bounding.VALUES_PER_CHECK, "data: 0]"]
+    calls = flip_clock_at_call(monkeypatch, "_sse_payload")
+    with pytest.raises(CaptureDeadlineExceeded):
+        response_body.sanitize_sse("\n".join(data) + "\n\n", (), bounding.Ticker(1.0))
+    assert 0 < calls[0] < len(data)
+
+
+def test_the_reduce_ladder_stops_partway_through_a_dense_listing(monkeypatch):
+    tools = [{"name": "t", "description": "d"}] * 20 * bounding.VALUES_PER_CHECK
+    value = {"jsonrpc": "2.0", "id": 1, "result": {"tools": tools}}
+    calls = flip_clock_at_call(monkeypatch, "_listing_item")
+    with pytest.raises(CaptureDeadlineExceeded):
+        response_body.attach({}, value, {"state": "captured"}, MAX, True, 1.0)
+    assert 0 < calls[0] < len(tools)
+
+
+MANY_VALUES = json.dumps({"a": [0] * 20 * bounding.VALUES_PER_CHECK})
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        mcp_input(tool_result(MANY_VALUES)),
+        http_input(f"data: {MANY_VALUES}\n\n".encode(), "text/event-stream"),
+        http_input(
+            f"data: {MANY_VALUES[:1]}\ndata: {MANY_VALUES[1:]}\n\n".encode(), "text/event-stream"
+        ),
+    ],
+    ids=["mcp-text", "sse", "sse-joined"],
+)
+def test_json_inside_result_text_or_an_event_counts_toward_the_deadline(monkeypatch, given):
+    flip_clock_at_call(monkeypatch, "sanitize_storable")
+    with pytest.raises(CaptureDeadlineExceeded):
+        response_body.read(envelope_mod.parse(given), (), 1.0)
+
+
+def test_blank_sse_lines_count_toward_the_deadline(monkeypatch):
+    text = "data: x" + "\n" * 2 * bounding.VALUES_PER_CHECK
+    monkeypatch.setattr(bounding, "monotonic", lambda: 2.0)
+    with pytest.raises(CaptureDeadlineExceeded):
+        response_body.sanitize_sse(text, (), bounding.Ticker(1.0))
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        mcp_input(tool_result(*['{"a": [1, {"token": "t"}]}'] * 2000)),
+        http_input(json.dumps([{"a": [1, {"token": "t"}]}] * 5000).encode()),
+        http_input(b'data: {"a": [1, {"token": "t"}]}\n\n' * 2000, "text/event-stream"),
+    ],
+    ids=["mcp", "json", "sse"],
+)
+def test_a_future_deadline_changes_no_response_event(given):
+    assert event_for(given, deadline=monotonic() + 60) == event_for(given)
 
 
 def test_mcp_result_text_holding_json_is_sanitized_in_place():
@@ -294,6 +379,11 @@ def test_mcp_result_text_holding_json_is_sanitized_in_place():
         "password: x",
         "42",
     ]
+
+
+def test_mcp_result_text_holding_a_raw_nul_is_sanitized():
+    value, _ = read(mcp_input(tool_result('{"password": "x\x00y", "n": "a\x00b"}')))
+    assert value["result"]["content"][0]["text"] == '{"password":"[REDACTED]","n":"a\ufffdb"}'
 
 
 def test_mcp_result_text_inside_an_sse_frame_is_sanitized():
