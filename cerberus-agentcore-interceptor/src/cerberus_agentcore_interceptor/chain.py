@@ -1,8 +1,8 @@
-"""Invoking the customer's own REQUEST interceptor.
+"""Invoking the customer's own interceptor, at REQUEST or at RESPONSE.
 
-When the gateway's REQUEST slot is already taken, their function runs first and
-its answer is returned as it came, so our failures can never skip or alter it.
-Headers reach it only when CERBERUS_CHAIN_PASS_HEADERS is true, and a lone
+When the gateway's slot is already taken, their function runs first and its
+answer is returned as it came, so our failures can never skip or alter it.
+Headers reach it only when its pass-headers setting is true, and a lone
 surrogate in its answer becomes U+FFFD.
 """
 
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
 
-from .envelope import Envelope
+from .envelope import MCP, RESPONSE, Envelope
 from .output import encodable, finite, is_valid_output
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,8 @@ class ChainResult:
     outcome: str
     output: dict[str, Any] | None = None
     body: Any = None
+    # At RESPONSE, the response the caller receives once their function answered.
+    response: dict[str, Any] | None = None
     note: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -58,6 +60,11 @@ class ChainResult:
     @property
     def transformed(self) -> bool:
         return self.outcome == OUTCOME_TRANSFORMED
+
+    @property
+    def ends_call(self) -> bool:
+        """True when the gateway goes no further with the call: a refusal or an invalid output."""
+        return self.outcome in (OUTCOME_ERROR, OUTCOME_INVALID_OUTPUT)
 
 
 class ChainClient:
@@ -175,6 +182,8 @@ class ChainClient:
 def _classify(output: dict[str, Any], envelope: Envelope) -> ChainResult:
     shape = output.get(envelope.shape_key) if envelope.shape_key else None
     shape = shape if isinstance(shape, dict) else {}
+    if envelope.phase == RESPONSE:
+        return _classify_response(output, shape, envelope)
 
     response = shape.get("transformedGatewayResponse")
     if isinstance(response, dict):
@@ -187,12 +196,41 @@ def _classify(output: dict[str, Any], envelope: Envelope) -> ChainResult:
     request = shape.get("transformedGatewayRequest")
     if isinstance(request, dict) and "body" in request:
         body = request["body"]
-        if body != (envelope.request or {}).get("body"):
+        if _differs(body, (envelope.request or {}).get("body")):
             return ChainResult(
                 OUTCOME_TRANSFORMED, output=output, body=body, note={"outcome": OUTCOME_TRANSFORMED}
             )
 
     return ChainResult(OUTCOME_PASSED, output=output, note={"outcome": OUTCOME_PASSED})
+
+
+def _classify_response(
+    output: dict[str, Any], shape: dict[str, Any], envelope: Envelope
+) -> ChainResult:
+    """At RESPONSE an answer passes or transforms the response; nothing is short-circuited.
+
+    The outcome is read from the body alone, and the response kept is the one
+    the caller receives.
+    """
+    original = envelope.response or {}
+    answer = shape.get("transformedGatewayResponse")
+    answer = answer if isinstance(answer, dict) else {}
+    # An absent or null field keeps the target's, except an mcp body: without
+    # one the caller gets {}.
+    changed = {key: value for key, value in answer.items() if value is not None}
+    if envelope.kind == MCP and "body" not in changed and original.get("body") is not None:
+        changed["body"] = {}
+    transformed = "body" in changed and _differs(changed["body"], original.get("body"))
+    outcome = OUTCOME_TRANSFORMED if transformed else OUTCOME_PASSED
+    return ChainResult(
+        outcome, output=output, response={**original, **changed}, note={"outcome": outcome}
+    )
+
+
+def _differs(body: Any, original: Any) -> bool:
+    # The function was handed non-finite numbers as strings, and a lone surrogate
+    # in its answer became U+FFFD, so an echo of either is no change.
+    return bool(body != original and body != encodable(original))
 
 
 def _payload(response: dict[str, Any]) -> Any:
@@ -229,16 +267,19 @@ def _json(event: Any, ensure_ascii: bool) -> bytes:
 
 
 def _without_headers(value: Any, levels: int = 3) -> Any:
-    """A copy of an event with no headers in it, its shapes, or any part of a shape.
+    """A copy of an event with no request headers in it, its shapes, or any part of a shape.
 
     The chain also runs on input versions we do not know, which may carry headers
     beside the shapes or beside gatewayRequest. A body sits a level deeper and keeps
-    its own keys.
+    its own keys. gatewayResponse keeps its headers, which the gateway hands a
+    RESPONSE interceptor whatever passRequestHeaders says.
     """
     if not isinstance(value, dict) or levels == 0:
         return value
     return {
-        key: _without_headers(part, levels - 1) for key, part in value.items() if key != "headers"
+        key: part if key == "gatewayResponse" else _without_headers(part, levels - 1)
+        for key, part in value.items()
+        if key != "headers"
     }
 
 

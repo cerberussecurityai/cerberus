@@ -184,13 +184,13 @@ make bundle          # assemble the customer distribution tarball into dist/
 
 ### cerberus-agentcore-interceptor
 
-Lambda interceptor for Amazon Bedrock AgentCore Gateway, attached at REQUEST, and at RESPONSE too when `CERBERUS_RESPONSE_CAPTURE` is on (default off). It runs in the customer's account, maps each intercepted request or response to a CoreData-shaped event and writes it to a Firehose delivery stream there. The stream's HTTP endpoint delivers to Cerberus, so the function holds no Cerberus credential.
+Lambda interceptor for Amazon Bedrock AgentCore Gateway, attached at REQUEST, and at RESPONSE too when `CERBERUS_RESPONSE_CAPTURE` is on (default off) or `CERBERUS_CHAIN_RESPONSE_ARN` is set. It runs in the customer's account, maps each intercepted request, and each response when response capture is on, to a CoreData-shaped event and writes it to a Firehose delivery stream there. The stream's HTTP endpoint delivers to Cerberus, so the function holds no Cerberus credential.
 
 **Key behavior:**
 - The gateway fails closed on interceptor failure, at RESPONSE after the target has run, so every capture step runs under its own guard and nothing capture does changes what the gateway gets back
-- `CERBERUS_CHAIN_REQUEST_ARN` chains to the customer's own REQUEST interceptor, whose answer is returned as given. A request that cannot get that answer is refused, never served without it. With a chain set, response capture is unavailable and RESPONSE invocations are refused
+- `CERBERUS_CHAIN_REQUEST_ARN` and `CERBERUS_CHAIN_RESPONSE_ARN` chain to the customer's own interceptor at each point, whose answer is returned as given. A call that cannot get that answer is refused, never served without it
 - An `mcp`-shape output must echo the body, the request's at REQUEST and the response's at RESPONSE, since `{"mcp": {}}` replaces the payload. `{"http": {}}` is the true pass-through except at an `mcp` RESPONSE
-- Request events carry the gateway's raw method and path plus `custom_data.agentcore`, with `phase: "request"` and `response_expected`. Response events have `phase: "response"`, an `event_id` ending in `#response`, a `custom_data.agentcore.response` note, and `status_code` and `response_body` when present. On `mcp` they carry the request too; on `http` there is no request at RESPONSE, so no method or path. The interceptor builds no `mcp://` or `llm://` endpoints
+- Request events carry the gateway's raw method and path plus `custom_data.agentcore`, with `phase: "request"` and `response_expected`. Response events have `phase: "response"`, an `event_id` ending in `#response`, a `custom_data.agentcore.response` note, and `status_code` and `response_body` when present. On `mcp` they carry the request too, except under a REQUEST chain, since the RESPONSE input holds the request as it was before the customer's interceptor; on `http` there is no request at RESPONSE, so no method or path. The interceptor builds no `mcp://` or `llm://` endpoints
 - Bodies are sanitized with `cerberus-core` and bounded to fit one Firehose record. A capture that cannot be built or written is counted as a `CaptureDropped` EMF metric, by reason and by phase
 - Logs carry request ids and outcomes, never bodies, headers or exception messages
 
