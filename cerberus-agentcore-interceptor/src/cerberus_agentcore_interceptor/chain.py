@@ -196,7 +196,7 @@ def _classify(output: dict[str, Any], envelope: Envelope) -> ChainResult:
     request = shape.get("transformedGatewayRequest")
     if isinstance(request, dict) and "body" in request:
         body = request["body"]
-        if body != (envelope.request or {}).get("body"):
+        if _differs(body, (envelope.request or {}).get("body")):
             return ChainResult(
                 OUTCOME_TRANSFORMED, output=output, body=body, note={"outcome": OUTCOME_TRANSFORMED}
             )
@@ -220,11 +220,17 @@ def _classify_response(
     changed = {key: value for key, value in answer.items() if value is not None}
     if envelope.kind == MCP and "body" not in changed and original.get("body") is not None:
         changed["body"] = {}
-    transformed = "body" in changed and changed["body"] != original.get("body")
+    transformed = "body" in changed and _differs(changed["body"], original.get("body"))
     outcome = OUTCOME_TRANSFORMED if transformed else OUTCOME_PASSED
     return ChainResult(
         outcome, output=output, response={**original, **changed}, note={"outcome": outcome}
     )
+
+
+def _differs(body: Any, original: Any) -> bool:
+    # The function was handed non-finite numbers as strings, and a lone surrogate
+    # in its answer became U+FFFD, so an echo of either is no change.
+    return bool(body != original and body != encodable(original))
 
 
 def _payload(response: dict[str, Any]) -> Any:

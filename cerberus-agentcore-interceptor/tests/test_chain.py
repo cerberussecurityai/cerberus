@@ -101,6 +101,21 @@ def test_a_changed_body_is_the_one_captured():
     assert result.body == {"jsonrpc": "2.0", "method": "tools/call", "id": 1}
 
 
+REPAIRED = [(float("inf"), "Infinity"), (float("nan"), "NaN"), ("a\ud800", "a\ud800")]
+REPAIRED_IDS = ["infinity", "nan", "lone-surrogate"]
+
+
+@pytest.mark.parametrize(("given", "echoed"), REPAIRED, ids=REPAIRED_IDS)
+def test_an_echo_of_a_body_the_runtime_repairs_passes(given, echoed):
+    case = load_case("mcp-tools-call-lambda")
+    request = case["input"]["mcp"]["gatewayRequest"]
+    chain, _ = client(mcp_output({**request["body"], "n": echoed}))
+    request["body"]["n"] = given
+    result = chain.invoke({}, context(), env.parse(case["input"]))
+
+    assert result.outcome == chain_mod.OUTCOME_PASSED
+
+
 def test_a_short_circuit_records_its_status():
     chain, _ = client(mcp_output(status=403))
     result = chain.invoke({}, context(), parsed())
@@ -227,6 +242,17 @@ def test_an_http_response_answer_with_no_body_keeps_the_targets(answer):
 
     assert result.outcome == chain_mod.OUTCOME_PASSED
     assert result.response == original
+
+
+@pytest.mark.parametrize(("given", "echoed"), REPAIRED, ids=REPAIRED_IDS)
+def test_an_echo_of_a_response_body_the_runtime_repairs_passes(given, echoed):
+    case = load_case(MCP_RESPONSE)
+    response = case["input"]["mcp"]["gatewayResponse"]
+    chain, _ = client(response_output({**response["body"], "n": echoed}))
+    response["body"]["n"] = given
+    result = chain.invoke({}, context(MCP_RESPONSE), env.parse(case["input"]))
+
+    assert result.outcome == chain_mod.OUTCOME_PASSED
 
 
 def test_without_pass_headers_a_response_chain_still_gets_the_responses_headers():
