@@ -184,7 +184,7 @@ make bundle          # assemble the customer distribution tarball into dist/
 
 ### cerberus-agentcore-interceptor
 
-Lambda interceptor for Amazon Bedrock AgentCore Gateway, attached at REQUEST, and at RESPONSE too when `CERBERUS_RESPONSE_CAPTURE` is on (default off) or `CERBERUS_CHAIN_RESPONSE_ARN` is set. It runs in the customer's account, maps each intercepted request or response to a CoreData-shaped event and writes it to a Firehose delivery stream there. The stream's HTTP endpoint delivers to Cerberus, so the function holds no Cerberus credential.
+Lambda interceptor for Amazon Bedrock AgentCore Gateway, attached at REQUEST, and at RESPONSE too when `CERBERUS_RESPONSE_CAPTURE` is on (default off) or `CERBERUS_CHAIN_RESPONSE_ARN` is set. It runs in the customer's account, maps each intercepted request, and each response when response capture is on, to a CoreData-shaped event and writes it to a Firehose delivery stream there. The stream's HTTP endpoint delivers to Cerberus, so the function holds no Cerberus credential.
 
 **Key behavior:**
 - The gateway fails closed on interceptor failure, at RESPONSE after the target has run, so every capture step runs under its own guard and nothing capture does changes what the gateway gets back

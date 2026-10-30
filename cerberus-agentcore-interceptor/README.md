@@ -72,7 +72,7 @@ surrogates in captured text become U+FFFD, and NaN and infinite numbers become
 the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
 
 Each request event's `custom_data.agentcore` carries `phase`, `"request"`, and
-`response_expected`: true when this function also intercepts this call's
+`response_expected`: true when this function also captures this call's
 response.
 
 ### Identity
@@ -205,15 +205,21 @@ rather than served without it.
 `CERBERUS_CHAIN_REQUEST_ARN` chains the REQUEST point and
 `CERBERUS_CHAIN_RESPONSE_ARN` the RESPONSE point. If your interceptor is
 attached at both in one configuration entry, set both ARNs to your function and
-attach this one at both points in its place. An input this function cannot read
-goes to the chained function, and is refused when the two chains differ, since
-it could be for either.
+attach this one at both points in its place. A point without a chain is served
+by this function alone, so set the ARN for each point where it takes your
+interceptor's place. One left out is skipped, and the only sign is
+`UnexpectedPhase`, counted at RESPONSE while response capture is off. An input
+this function cannot read goes to the chained function, and is refused when the
+two chains differ, since it could be for either.
 
-At RESPONSE, yours runs first and its answer is what gets captured, since that
-is what the caller receives: what it removed is never seen. With a REQUEST chain
-set, an `mcp` response event carries no request side, as on `http`: the gateway
-hands RESPONSE the caller's request as it was before your interceptor ran, so
-only the request event records the request.
+At RESPONSE, yours runs first, and with response capture on its answer is what
+gets captured, since that is what the caller receives. If it fails or answers
+with an invalid output, the call is refused and the target's response is
+captured as it came, labelled `error` or `invalid_output`. With response
+capture off, a RESPONSE chain still runs but nothing is captured at RESPONSE.
+With a REQUEST chain set, an `mcp` response event carries no request side, as
+on `http`: the gateway hands RESPONSE the caller's request as it was before
+your interceptor ran, so only the request event records the request.
 
 Set `CERBERUS_CHAIN_REQUEST_ARN` and `CERBERUS_CHAIN_RESPONSE_ARN` to qualified
 ARNs, `CERBERUS_GATEWAY_IDS` to the ids or ARNs of the gateways this function
