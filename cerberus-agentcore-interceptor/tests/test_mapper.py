@@ -251,8 +251,8 @@ def test_status_code_is_omitted_unless_it_is_an_int(status):
 
 def test_response_headers_are_never_sent():
     case = load_case("mcp-tools-call-lambda-response")
-    case["input"]["mcp"]["gatewayResponse"]["headers"] = {"Content-Type": "application/json"}
-    assert "response_headers" not in map_response(case)
+    case["input"]["mcp"]["gatewayResponse"]["headers"] = {"X-Amzn-Trace-Id": "from-response"}
+    assert "from-response" not in json.dumps(map_response(case))
 
 
 def test_a_chain_note_rides_on_a_response_event():

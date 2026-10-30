@@ -194,11 +194,12 @@ def test_a_changed_response_is_transformed_never_short_circuited():
 def test_a_changed_http_response_keeps_what_the_answer_leaves_out():
     original = load_case(HTTP_RESPONSE)["input"]["http"]["gatewayResponse"]
     body = base64.b64encode(b'{"choices": []}').decode()
-    chain, _ = client(response_output(body, None, shape="http", contentType="application/json"))
+    content_type = "application/json; charset=utf-8"
+    chain, _ = client(response_output(body, None, shape="http", contentType=content_type))
     result = chain.invoke({}, context(HTTP_RESPONSE), parsed(HTTP_RESPONSE))
 
     assert result.outcome == chain_mod.OUTCOME_TRANSFORMED
-    assert result.response == {**original, "body": body, "contentType": "application/json"}
+    assert result.response == {**original, "body": body, "contentType": content_type}
 
 
 BODYLESS_MCP_ANSWERS = [
@@ -242,6 +243,14 @@ def test_an_http_response_answer_with_no_body_keeps_the_targets(answer):
 
     assert result.outcome == chain_mod.OUTCOME_PASSED
     assert result.response == original
+
+
+def test_an_http_answer_that_empties_the_body_is_transformed():
+    chain, _ = client(response_output("", None, shape="http"))
+    result = chain.invoke({}, context(HTTP_RESPONSE), parsed(HTTP_RESPONSE))
+
+    assert result.outcome == chain_mod.OUTCOME_TRANSFORMED
+    assert result.response["body"] == ""
 
 
 @pytest.mark.parametrize(("given", "echoed"), REPAIRED, ids=REPAIRED_IDS)
@@ -641,16 +650,19 @@ def test_the_response_chain_needs_its_own_pass_headers():
         Config.from_env(settings)
 
 
+EITHER_ARN = "CERBERUS_CHAIN_REQUEST_ARN or CERBERUS_CHAIN_RESPONSE_ARN"
+
+
 @pytest.mark.parametrize(
-    "setting",
+    ("setting", "anchors"),
     [
-        {"CERBERUS_GATEWAY_IDS": GATEWAY_ID},
-        {"CERBERUS_CHAIN_READ_MS": "5000"},
-        {"CERBERUS_CHAIN_PASS_HEADERS": "false"},
+        ({"CERBERUS_GATEWAY_IDS": GATEWAY_ID}, EITHER_ARN),
+        ({"CERBERUS_CHAIN_READ_MS": "5000"}, EITHER_ARN),
+        ({"CERBERUS_CHAIN_PASS_HEADERS": "false"}, "CERBERUS_CHAIN_REQUEST_ARN"),
     ],
 )
-def test_a_chain_setting_without_the_chain_arn_fails_init(setting):
-    with pytest.raises(ConfigError, match="set without CERBERUS_CHAIN_REQUEST_ARN"):
+def test_a_chain_setting_without_the_chain_arn_fails_init(setting, anchors):
+    with pytest.raises(ConfigError, match=f"set without {anchors}$"):
         Config.from_env({**MINIMAL, **setting})
 
 
@@ -1012,6 +1024,15 @@ def test_a_chain_error_expects_no_response(chained, monkeypatch):
     assert chained.sink.events[0]["custom_data"]["agentcore"]["response_expected"] is False
 
 
+def test_an_http_short_circuit_still_expects_a_response(chained, monkeypatch):
+    chained(response_output("e30=", status=403, shape="http"))
+    monkeypatch.setattr(handler_mod, "CONFIG", replace(handler_mod.CONFIG, response_capture=True))
+    invoke("inference-chat-sigv4")
+    agentcore = chained.sink.events[0]["custom_data"]["agentcore"]
+    assert agentcore["chain"] == {"outcome": "short_circuit", "status_code": 403}
+    assert agentcore["response_expected"] is True
+
+
 def test_an_invalid_chained_output_is_handed_back_as_it_came(chained):
     chained({"interceptorOutputVersion": "9.9"})
     assert invoke() == {"interceptorOutputVersion": "9.9"}
@@ -1324,7 +1345,9 @@ def test_the_status_an_echoing_answer_gives_is_captured(response_chained):
 
 
 @pytest.mark.parametrize("name", RESPONSE_SHAPES)
-def test_a_timed_out_response_chain_is_captured_and_then_raised(response_chained, name):
+def test_a_timed_out_response_chain_is_captured_and_then_raised(
+    response_chained, monkeypatch, name
+):
     response_chained(TIMED_OUT, function_error="Unhandled")
     with pytest.raises(handler_mod.InterceptorError) as raised:
         invoke(name)
@@ -1334,6 +1357,10 @@ def test_a_timed_out_response_chain_is_captured_and_then_raised(response_chained
     event = response_chained.sink.events[0]
     assert event["custom_data"]["agentcore"]["phase"] == "response"
     assert event["custom_data"]["agentcore"]["chain"] == {"outcome": "error"}
+
+    monkeypatch.setattr(handler_mod, "CHAINS", {})
+    invoke(name)
+    assert event["response_body"] == response_chained.sink.events[1]["response_body"]
 
 
 @pytest.mark.parametrize("name", RESPONSE_SHAPES)
@@ -1364,6 +1391,22 @@ def test_an_unlisted_gateway_is_refused_at_response_before_the_chain_runs(respon
         invoke_case(case)
     assert fake.calls == []
     assert response_chained.sink.events == []
+
+
+@pytest.mark.parametrize(
+    ("phases", "name"),
+    [((env.REQUEST,), MCP_RESPONSE), ((env.RESPONSE,), "mcp-tools-call-lambda")],
+    ids=["request-chain-at-response", "response-chain-at-request"],
+)
+def test_an_unlisted_gateway_is_refused_at_a_point_with_no_chain(chained, phases, name):
+    fake = chained(mcp_output({}), phases=phases)
+    case = load_case(name)
+    gateway_arn = case["client_context"]["GATEWAY_ARN"]
+    case["client_context"]["GATEWAY_ARN"] = gateway_arn.replace(GATEWAY_ID, "unlisted-gateway")
+
+    with pytest.raises(handler_mod.InterceptorError):
+        invoke_case(case)
+    assert fake.calls == []
 
 
 @pytest.mark.parametrize("name", RESPONSE_SHAPES)

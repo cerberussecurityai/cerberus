@@ -203,6 +203,7 @@ def _event(
         chain=note,
         body_override=chain.body if chain is not None and chain.transformed else ORIGINAL_BODY,
         deadline=deadline,
+        # The gateway still invokes RESPONSE after a short-circuit, on http too.
         response_expected=CONFIG.response_capture and not (chain is not None and chain.ends_call),
     )
 
