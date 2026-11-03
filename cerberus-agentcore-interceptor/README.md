@@ -145,6 +145,11 @@ this function at both points, in one interceptor configuration entry with
 so set the variable only on a function attached at both points. Response
 capture needs `enableResponseStreaming` off on the gateway.
 
+Turn it on in this order: publish a version with the variable set and the
+RESPONSE memory and timeout from Deployment, move the alias to it, then update
+the gateway to attach the function at both points. Do the last two steps back to
+back: in between, request events say a response follows and none comes.
+
 A RESPONSE attachment changes how the gateway serves every call on it, whatever
 this function does:
 
@@ -188,12 +193,14 @@ carry what your interceptor removed.
 ### Turning it off
 
 Detaching is the kill switch. Settings are read at init, and none of them can
-undo what the attachment does to the gateway. To stop response capture, update
-the gateway with this function's entry at `["REQUEST"]` only, or drop the entry
-to detach the function. The change takes effect about a second after the
-update, a few seconds before the gateway reports `READY` again. A point you
-detach takes the interceptor this function chains there with it, so give that
-one its own entry at the points you detach, in the same update. Then set
+undo what the attachment does to the gateway. To stop response capture, first
+delete or disable the alarm on RESPONSE not running, under Metrics: it goes to
+`ALARM` once the gateway invokes the function at REQUEST only. Then update the
+gateway with this function's entry at `["REQUEST"]` only, or drop the entry to
+detach the function. The change takes effect about a second after the update, a
+few seconds before the gateway reports `READY` again. A point you detach takes
+the interceptor this function chains there with it, so give that one its own
+entry at the points you detach, in the same update. Then set
 `CERBERUS_RESPONSE_CAPTURE` to false on a new version and move the alias, so
 request events stop saying a response follows.
 
@@ -379,7 +386,8 @@ line in its log means capture is off until the setting is fixed; a line naming
 `CERBERUS_RESPONSE_CAPTURE` means only response capture is. With a chain
 set, the invoke is refused instead, as from an unlisted gateway, and its log
 names gateway `''`. That line is expected; the test invoke never reaches the
-chained function.
+chained function. The refusal counts in the function's Lambda `Errors`, so it
+can trip your `Errors` alarm.
 
 Leave `exceptionLevel` unset on the gateway. It keeps the interceptor's error
 text away from MCP callers. Inference callers still receive a refusal as
@@ -411,7 +419,21 @@ The endpoint accepts deliveries up to 4 MiB uncompressed. Firehose keeps a
 delivery's uncompressed body, its base64-encoded records included, within the
 buffer size, but treats that size as a hint, so 2 MiB leaves room under the
 limit. A delivery over the limit is refused on every retry and ends up in the
-backup bucket. With response capture on, each call writes two records.
+backup bucket.
+
+Each stream also has a Direct PUT throughput quota: 500,000 records, 2,000
+requests and 5 MiB per second in US East (N. Virginia), US West (Oregon) and
+Europe (Ireland), and 100,000 records, 1,000 requests and 1 MiB per second in
+every other region; see
+[Amazon Data Firehose quotas](https://docs.aws.amazon.com/firehose/latest/dev/limits.html).
+The function writes each record in a request of its own, and with response
+capture on each call writes two records, so the stream takes twice your peak
+call rate in requests. Records that average over about 2.5 KiB, or about 1 KiB
+outside those three regions, reach the byte quota first, and records with
+captured bodies often average more. Records past the quota are refused and
+dropped, and counted as `CaptureDropped` with reason `throttle` or `timeout`;
+see Metrics. Leave headroom under both quotas, and if your traffic comes close,
+request an increase from AWS.
 
 ### Metrics
 
