@@ -1,0 +1,53 @@
+# cerberus-litellm playground: LiteLLM (with the plugin) + mocks + stub ingest.
+#   make image && cd playground && docker compose up -d && ./drive.sh
+#   docker compose down -v   # before every re-run (postgres state)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: litellm, POSTGRES_PASSWORD: litellm, POSTGRES_DB: litellm }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U litellm"], interval: 2s, timeout: 2s, retries: 30 }
+
+  mock-llm:
+    build: ../../cerberus-envoy-ai-gateway      # reuses that image: fastapi/uvicorn present
+    command: ["python", "/playground/mocks/mock_llm.py"]
+    volumes: ["./:/playground:ro"]
+    ports: ["127.0.0.1:9081:9081"]
+
+  mock-mcp:
+    build: ../../cerberus-envoy-ai-gateway
+    command: ["python", "/playground/mocks/mock_mcp.py"]
+    volumes: ["./:/playground:ro"]
+    ports: ["127.0.0.1:9082:9082"]
+
+  stub-ingest:
+    build: ../../cerberus-envoy-ai-gateway
+    command: ["python", "/playground/stub_ingest.py"]
+    environment: { CAPTURE_DIR: /captures }
+    volumes: ["./:/playground:ro", "./captures:/captures"]
+    ports: ["127.0.0.1:9089:9089"]
+
+  litellm:
+    image: cerberus-litellm-proxy:dev
+    command: ["--config", "/playground/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: sk-playground-master
+      DATABASE_URL: postgresql://litellm:litellm@postgres:5432/litellm
+      STORE_MODEL_IN_DB: "False"
+      # Interpolated so a shell variable can override these to point at another
+      # ingest: shell env wins, the stub is the default.
+      CERBERUS_INGEST_SERVICE: ${CERBERUS_INGEST_SERVICE:-http://stub-ingest:9089}
+      CERBERUS_TOKEN: ${CERBERUS_TOKEN:-sk_test_playground}
+      CERBERUS_CAPTURE_LLM_CONTENT: ${CERBERUS_CAPTURE_LLM_CONTENT:-true}
+      # The stub ingest is plain http on a Docker network name (not loopback).
+      # Stub only: use an https ingest URL for anything real.
+      CERBERUS_ALLOW_PLAIN_HTTP: "true"
+      CERBERUS_FLUSH_INTERVAL_MS: "1000"
+      CERBERUS_LOG_LEVEL: debug
+      CERBERUS_STATS_LOG_INTERVAL_S: "10"
+    volumes: ["./:/playground:ro"]
+    ports: ["127.0.0.1:4000:4000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      mock-llm: { condition: service_started }
+      mock-mcp: { condition: service_started }
+      stub-ingest: { condition: service_started }
