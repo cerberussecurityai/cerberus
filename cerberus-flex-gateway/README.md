@@ -379,9 +379,10 @@ What ships in `response_body`:
 - **Whole body** — when it fits within `responseHeadBytes` +
   `responseTailBytes`. JSON is parsed and sanitized exactly like a
   request body (`SENSITIVE_KEYS` + custom rules). An SSE stream ships
-  as one string, sanitized per `data:` frame — JSON frames are
-  key-sanitized in place, all other lines get `customPiiPatterns`
-  value rules — with framing preserved.
+  as one string, sanitized per event — JSON data, including JSON
+  spread across several `data:` lines, is key-sanitized in place, all
+  other lines get `customPiiPatterns` value rules — with event framing
+  preserved.
 - **Truncation marker** — when the body exceeds the budget:
   `{"body_truncated": true, "body_bytes_total": N,
   "body_bytes_dropped": M, "head": "...", "tail": "..."}` — the first
@@ -405,9 +406,8 @@ headroom for typical events. Setting both to `0` gives a valid
 slices.
 
 **PII caveat.** Full key-based sanitization applies to whole JSON
-bodies and complete SSE data frames. Truncated head/tail slices, the
-SSE frame split by each truncation cut, and an SSE payload spread
-across multiple `data:` lines are unparseable text — only
+bodies and complete SSE events. Truncated head/tail slices and the
+SSE event split by each truncation cut are unparseable text — only
 `customPiiPatterns` value rules run over them (regex-shaped PII such
 as SSNs and account numbers is still scrubbed). Prose PII with no
 stable shape (a name in generated text) is beyond key matching or

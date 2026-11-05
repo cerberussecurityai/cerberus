@@ -13,7 +13,7 @@
 // markers so truncation is never silent.
 //
 // The one syntactic concession, for PII's sake: SSE text is sanitized
-// per `data:` line. A data line whose payload is a complete JSON
+// per event. An event whose data lines, joined, are a complete JSON
 // object/array is parsed, key-sanitized exactly like a JSON body, and
 // re-serialized in place; every other line (event/id/comment lines,
 // non-JSON data such as `[DONE]`, and the partial frames at a
@@ -226,48 +226,121 @@ fn scrub_text(text: String, rules: &CompiledPiiRules, secret: Option<&str>) -> S
     }
 }
 
-/// Sanitize SSE text line by line, preserving framing byte-for-byte
-/// where it matters (line terminators, field prefixes, blank-line event
-/// boundaries) so downstream SSE parsing is unaffected.
+/// Sanitize SSE text event by event, preserving framing where it
+/// matters (line terminators, field prefixes, blank-line event
+/// boundaries) so downstream SSE parsing is unaffected. Lines end at
+/// CRLF, LF or a lone CR, as an SSE client reads them.
 ///
-/// - `data:` line whose payload parses as a JSON object/array → the
-///   payload is key-sanitized like a JSON body (`SENSITIVE_KEYS`,
-///   `customSensitiveKeys`, `customPiiPatterns` key + value scope) and
-///   re-serialized (compact form; whitespace inside JSON is not
-///   significant to any consumer).
+/// - An event whose `data:` payloads, joined with `\n`, parse as a JSON
+///   object/array → the payload is key-sanitized like a JSON body
+///   (`SENSITIVE_KEYS`, `customSensitiveKeys`, `customPiiPatterns` key +
+///   value scope) and re-serialized compactly as one `data:` line in
+///   place of the last, keeping the terminator that ends the event.
+///   Whitespace inside JSON is not significant to any consumer.
+/// - Otherwise each `data:` line whose own payload parses as a JSON
+///   object/array is key-sanitized the same way.
 /// - Any other line — `event:` / `id:` / `retry:` / comments, non-JSON
 ///   data (`[DONE]`), a bare primitive, or a data line cut mid-payload
 ///   at a truncation boundary — → `customPiiPatterns` value rules only.
 ///   A parse failure can never make a line *less* scrubbed than before.
 pub fn sanitize_sse_text(text: &str, rules: &CompiledPiiRules, secret: Option<&str>) -> String {
     let mut out = String::with_capacity(text.len());
-    for piece in text.split_inclusive('\n') {
-        let (content, terminator) = match piece.strip_suffix("\r\n") {
-            Some(c) => (c, "\r\n"),
-            None => match piece.strip_suffix('\n') {
-                Some(c) => (c, "\n"),
-                None => (piece, ""),
-            },
-        };
-        out.push_str(&sanitize_sse_line(content, rules, secret));
-        out.push_str(terminator);
+    let mut event: Vec<(&str, &str)> = Vec::new();
+    for (line, terminator) in sse_lines(text) {
+        if line.is_empty() {
+            sanitize_sse_event(&event, rules, secret, &mut out);
+            event.clear();
+            out.push_str(terminator);
+        } else {
+            event.push((line, terminator));
+        }
     }
+    sanitize_sse_event(&event, rules, secret, &mut out);
     out
 }
 
-fn sanitize_sse_line(line: &str, rules: &CompiledPiiRules, secret: Option<&str>) -> String {
-    if let Some(payload) = line.strip_prefix("data:") {
-        // SSE strips exactly one leading space after the colon; we
-        // strip any run, since the parser side does the same.
-        let payload = payload.trim_start_matches(' ');
-        if let Ok(parsed @ (Value::Object(_) | Value::Array(_))) =
-            serde_json::from_str::<Value>(payload)
-        {
-            let sanitized = sanitize_value_with(parsed, rules, secret);
-            return format!("data: {}", sanitized);
+/// Split SSE text into lines, each with its terminator ("" for a last
+/// line that has none).
+fn sse_lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (line, terminator, next) = match rest.find(['\r', '\n']) {
+            None => (rest, "", ""),
+            Some(at) => {
+                let len = if rest[at..].starts_with("\r\n") { 2 } else { 1 };
+                (&rest[..at], &rest[at..at + len], &rest[at + len..])
+            }
+        };
+        rest = next;
+        Some((line, terminator))
+    })
+}
+
+fn sanitize_sse_event(
+    lines: &[(&str, &str)],
+    rules: &CompiledPiiRules,
+    secret: Option<&str>,
+    out: &mut String,
+) {
+    let payloads = || lines.iter().filter_map(|(line, _)| sse_data_payload(line));
+    if payloads().nth(1).is_some() {
+        let joined = payloads().collect::<Vec<_>>().join("\n");
+        if let Some(sanitized) = sanitize_sse_json(&joined, rules, secret) {
+            let last = lines
+                .iter()
+                .rposition(|(line, _)| sse_data_payload(line).is_some());
+            for (index, (line, terminator)) in lines.iter().enumerate() {
+                if Some(index) == last {
+                    out.push_str("data: ");
+                    out.push_str(&sanitized);
+                } else if sse_data_payload(line).is_some() {
+                    continue;
+                } else {
+                    out.push_str(&scrub_text(line.to_string(), rules, secret));
+                }
+                out.push_str(terminator);
+            }
+            return;
         }
     }
+    for (line, terminator) in lines {
+        out.push_str(&sanitize_sse_line(line, rules, secret));
+        out.push_str(terminator);
+    }
+}
+
+fn sanitize_sse_line(line: &str, rules: &CompiledPiiRules, secret: Option<&str>) -> String {
+    if let Some(sanitized) =
+        sse_data_payload(line).and_then(|payload| sanitize_sse_json(payload, rules, secret))
+    {
+        return format!("data: {}", sanitized);
+    }
     scrub_text(line.to_string(), rules, secret)
+}
+
+fn sse_data_payload(line: &str) -> Option<&str> {
+    // SSE strips exactly one leading space after the colon; we strip
+    // any run, since the parser side does the same.
+    line.strip_prefix("data:")
+        .map(|payload| payload.trim_start_matches(' '))
+}
+
+/// A data payload key-sanitized and re-serialized compactly, or `None`
+/// when it is not a JSON object/array.
+fn sanitize_sse_json(
+    payload: &str,
+    rules: &CompiledPiiRules,
+    secret: Option<&str>,
+) -> Option<String> {
+    match serde_json::from_str::<Value>(payload) {
+        Ok(parsed @ (Value::Object(_) | Value::Array(_))) => {
+            Some(sanitize_value_with(parsed, rules, secret).to_string())
+        }
+        _ => None,
+    }
 }
 
 
@@ -279,13 +352,13 @@ fn sanitize_sse_line(line: &str, rules: &CompiledPiiRules, secret: Option<&str>)
 ///   wrapper, on custom paths), else full sanitize — identical treatment
 ///   to the request side.
 /// - `Complete` + parse failure or bare primitive → SSE ships as one
-///   string, sanitized per data frame (`sanitize_sse_text`) — unless
+///   string, sanitized per event (`sanitize_sse_text`) — unless
 ///   `captureAiContent` is off and the text carries a model-output
 ///   signature; JSON kinds are discarded (mirrors the Django agent).
 /// - `Truncated` → the same textual AI-shape check on the head first
 ///   (an over-budget completion is still a completion), then an explicit
 ///   marker with lossy-decoded head/tail slices: SSE slices sanitized per
-///   data frame (partial frames at the cuts fall back to value rules),
+///   event (partial events at the cuts fall back to value rules),
 ///   JSON-document slices value-scrubbed.
 pub fn finalize_response_body(
     outcome: AccumulatedBody,
@@ -822,6 +895,72 @@ mod tests {
         assert_eq!(
             out,
             ": trace [REDACTED]\ndata: {\"text\":\"call [REDACTED]\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn sse_json_across_data_lines_key_sanitized_as_one() {
+        for eol in ["\n", "\r\n", "\r"] {
+            let sse = [
+                "id: 1",
+                "data: {",
+                "data:   \"result\": {\"api_key\": \"sk-1\",",
+                "data:   \"name\": \"x\"}",
+                "data: }",
+                "",
+                "data: [DONE]",
+                "",
+                "",
+            ]
+            .join(eol);
+            let expected = [
+                "id: 1",
+                "data: {\"result\":{\"api_key\":\"[REDACTED]\",\"name\":\"x\"}}",
+                "",
+                "data: [DONE]",
+                "",
+                "",
+            ]
+            .join(eol);
+            assert_eq!(sanitize_sse_text(&sse, &no_rules(), None), expected, "{eol:?}");
+        }
+    }
+
+    #[test]
+    fn sse_joined_event_keeps_its_blank_line_with_mixed_line_endings() {
+        let sse = "data: {\"a\":\rdata: 1}\n\ndata: {\"ok\":true}\n\n";
+        assert_eq!(
+            sanitize_sse_text(sse, &no_rules(), None),
+            "data: {\"a\":1}\n\ndata: {\"ok\":true}\n\n"
+        );
+        let sse = "data: {\n: c\rdata: }\n\n";
+        assert_eq!(sanitize_sse_text(sse, &no_rules(), None), ": c\rdata: {}\n\n");
+    }
+
+    #[test]
+    fn sse_lone_cr_line_endings_split_events() {
+        let sse = "data: {\"token\":\"t-1\"}\r\rdata: {\"ok\":true}\r\r";
+        assert_eq!(
+            sanitize_sse_text(sse, &no_rules(), None),
+            "data: {\"token\":\"[REDACTED]\"}\r\rdata: {\"ok\":true}\r\r"
+        );
+    }
+
+    #[test]
+    fn sse_data_lines_that_are_json_alone_still_sanitized_alone() {
+        let sse = "data: {\"token\":\"t-1\"}\ndata: {\"secret\":\"s\"}\ndata: tick\n\n";
+        assert_eq!(
+            sanitize_sse_text(sse, &no_rules(), None),
+            "data: {\"token\":\"[REDACTED]\"}\ndata: {\"secret\":\"[REDACTED]\"}\ndata: tick\n\n"
+        );
+    }
+
+    #[test]
+    fn sse_value_rules_apply_to_other_fields_of_a_joined_event() {
+        let sse = "event: 078-05-1120\ndata: {\ndata: \"note\": \"ssn 123-45-6789\"\ndata: }\n\n";
+        assert_eq!(
+            sanitize_sse_text(sse, &ssn_rule(), None),
+            "event: [REDACTED]\ndata: {\"note\":\"ssn [REDACTED]\"}\n\n"
         );
     }
 
