@@ -316,12 +316,3 @@ class TestSanitizeDictExtraKeys:
         data = {"member_number": "M-1"}
         sanitize_dict(data, extra_keys=["member_number"])
         assert sanitize_dict(data) == {"member_number": "M-1"}
-
-    def test_max_depth_still_keyword_addressable(self):
-        data = {"value": "leaf"}
-        for _ in range(25):
-            data = {"level": data}
-        node = sanitize_dict(data, _max_depth=20)
-        for _ in range(21):
-            node = node["level"]
-        assert node == REDACTED

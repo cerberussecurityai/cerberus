@@ -2,6 +2,7 @@
 permanent failure, and the built-in-placeholder-key warning."""
 
 import asyncio
+import logging
 from dataclasses import replace
 
 import httpx
@@ -103,8 +104,6 @@ async def test_total_deadline_bails_to_unhashed(backend_config, monkeypatch, cap
     # otherwise keep the FastAPI lifespan blocking past the Kubernetes startup
     # budget. The retry loop's own accounting can't help — only the outer
     # wait_for can cut this one — and it falls back to unhashed.
-    import logging
-
     async def _hang(*_args, **_kwargs):
         await asyncio.Event().wait()  # never completes
 
@@ -126,8 +125,6 @@ async def test_slow_failures_are_bounded_by_the_budget_not_the_attempt_cap(
     # full-length timeout the backstop would cancel mid-flight, and name the bound
     # it hit so an operator who raised CERBERUS_SECRET_FETCH_ATTEMPTS can see why
     # they didn't get that many attempts.
-    import logging
-
     timeouts: list[float] = []
 
     async def _hang(_url, _token, timeout_seconds):
@@ -183,8 +180,6 @@ async def test_no_backend_and_no_key_returns_none(config):
 async def test_public_default_key_is_used_but_warns(backend_config, monkeypatch, caplog):
     default = "default-hmac-secret-change-in-production"
     _mock_backend(monkeypatch, lambda n, r: httpx.Response(200, json={"secret_key": default}))
-    import logging
-
     with caplog.at_level(logging.WARNING):
         result = await resolve_secret_key(backend_config)
     assert result == default  # still used, not refused
@@ -192,8 +187,6 @@ async def test_public_default_key_is_used_but_warns(backend_config, monkeypatch,
 
 
 async def test_inline_default_key_also_warns(config, caplog):
-    import logging
-
     default = "default-hmac-secret-change-in-production"
     with caplog.at_level(logging.WARNING):
         result = await resolve_secret_key(replace(config, secret_key=default))

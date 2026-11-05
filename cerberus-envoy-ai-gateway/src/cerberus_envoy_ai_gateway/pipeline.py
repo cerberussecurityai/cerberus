@@ -2,7 +2,7 @@
 
 All privacy-affecting work happens here, before anything reaches the queue:
 - source IPs are normalized and HMAC-SHA256 hashed via cerberus-core
-  (same contract as cerberus-django / cerberus-mcp / the flex-gateway port);
+  (same contract as cerberus-django / cerberus-mcp);
 - MCP arguments and optional LLM content pass through
   ``cerberus_core.sanitize_dict`` so SENSITIVE_KEYS values are redacted;
 - long string values are truncated and oversized events dropped so a single
@@ -217,7 +217,7 @@ def bound_extra_value(value: Any) -> Any:
     credential-shaped keys from it, shipping an inner secret in cleartext under
     a benign-looking outer key.
     """
-    if isinstance(value, bool) or isinstance(value, (int, float)):
+    if isinstance(value, (bool, int, float)):
         return value
     return fit_encoded(stable_text(value), MAX_EXTRA_VALUE_BYTES)
 

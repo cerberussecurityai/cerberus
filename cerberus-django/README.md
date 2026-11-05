@@ -62,6 +62,8 @@ All configuration is done via the `CERBERUS_CONFIG` dictionary in your Django se
 | `client_id` | Yes | Unique identifier for your application |
 | `backend_url` | No | HTTP URL to auto-fetch the HMAC secret key |
 | `secret_key` | No | HMAC secret key for PII hashing (auto-fetched if `backend_url` is set) |
+| `capture_response_body` | No | Capture non-streaming JSON response bodies, sanitized like request bodies (default `False`) |
+| `response_head_bytes` / `response_tail_bytes` | No | Size caps for captured response bodies: a sanitized body whose serialized form is larger than head + tail ships as its first and last bytes with truncation markers (defaults 24576 / 16384) |
 
 ### Example Configurations
 
@@ -130,7 +132,7 @@ Each event sent to your analytics backend includes:
     "api_key": "your-api-key",
     "client_id": "your-client-id",
     "token": "your-api-key",
-    "source_ip": "hashed-ip-address",
+    "remote_addr": "hashed-ip-address",
     "endpoint": "/api/users/",
     "scheme": true,
     "method": "POST",
@@ -170,7 +172,7 @@ When a `secret_key` is configured, source IP addresses are hashed using HMAC-SHA
 
 | Field | Description | Privacy |
 |-------|-------------|---------|
-| `source_ip` | Client IP address | Hashed if `secret_key` configured |
+| `remote_addr` | Client IP address | Hashed if `secret_key` configured |
 | `endpoint` | Request path | Sent as-is |
 | `method` | HTTP method (GET, POST, etc.) | Sent as-is |
 | `scheme` | Whether HTTPS was used | Sent as-is |
@@ -190,7 +192,7 @@ Sensitive values are automatically redacted before transmission:
 
 ### What's NOT Captured
 
-- Response bodies
+- Response bodies, unless `capture_response_body` is enabled
 - Non-JSON request bodies (form data, multipart uploads, etc.)
 - Server-internal variables (only HTTP headers are extracted)
 
@@ -251,7 +253,7 @@ This architecture ensures:
 ```bash
 # Clone the repository
 git clone https://github.com/gpotrock/cerberus.git
-cd cerberus
+cd cerberus/cerberus-django
 
 # Install development dependencies
 pip install -e ".[dev]"

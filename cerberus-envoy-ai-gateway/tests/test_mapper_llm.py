@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from helpers import load_expected, load_export, single_span
+from opentelemetry.proto.trace.v1.trace_pb2 import Span
 
 from cerberus_envoy_ai_gateway.mapper_llm import map_llm_span
 from cerberus_envoy_ai_gateway.otlp import span_attributes
@@ -51,8 +52,6 @@ def test_embedding_span_classified_and_model_from_embedding_attrs(config):
     # OpenAI embeddings: span-kind EMBEDDING, model in embedding.model_name
     # (ai-gateway v0.7), not llm.model_name. classify() must route them to the
     # LLM path and the mapper must read the embedding model.
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     from cerberus_envoy_ai_gateway.classify import KIND_LLM, classify
 
     attrs = {
@@ -69,8 +68,6 @@ def test_embedding_span_classified_and_model_from_embedding_attrs(config):
 
 
 def test_embedding_model_falls_back_to_invocation_parameters(config):
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     attrs = {
         "openinference.span.kind": "EMBEDDING",
         "embedding.invocation_parameters": '{"model": "text-embedding-3-large"}',
@@ -80,8 +77,6 @@ def test_embedding_model_falls_back_to_invocation_parameters(config):
 
 
 def test_embedding_provider_inferred_else_unknown(config):
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     def provider(model: str) -> str:
         attrs = {"openinference.span.kind": "EMBEDDING", "embedding.model_name": model}
         return map_llm_span(Span(name="Embeddings"), attrs, config)["custom_data"]["provider"]
@@ -95,8 +90,6 @@ def test_embedding_provider_inferred_else_unknown(config):
 def test_chat_output_reconstructs_tool_calls(config):
     # v0.7 chat completions set no output.value; tool-call outputs live in
     # flattened llm.output_messages.*.tool_calls.* — capture them, not just text.
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     config = replace(config, capture_llm_content=True)
     attrs = {
         "llm.model_name": "gpt-4o",
@@ -113,8 +106,6 @@ def test_chat_output_reconstructs_tool_calls(config):
 
 def test_v07_cache_and_reasoning_token_keys(config):
     # ai-gateway v0.7 uses prompt_details.cache_read / completion_details.reasoning.
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     attrs = {
         "llm.model_name": "gpt-4o",
         "llm.token_count.prompt_details.cache_read": 12,
@@ -128,8 +119,6 @@ def test_v07_cache_and_reasoning_token_keys(config):
 
 
 def test_streaming_flag_coerces_non_bool_values(config):
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     def streaming(stream_json: str):
         attrs = {"llm.model_name": "gpt-4o", "llm.invocation_parameters": stream_json}
         return map_llm_span(Span(name="ChatCompletion"), attrs, config)["custom_data"]["streaming"]
@@ -143,8 +132,6 @@ def test_streaming_flag_coerces_non_bool_values(config):
 def test_overlong_model_is_capped(config):
     # An overlong model name feeds the endpoint, which _enforce_size can't shed;
     # cap it at the mapper so it can't push the event over the byte cap.
-    from opentelemetry.proto.trace.v1.trace_pb2 import Span
-
     from cerberus_envoy_ai_gateway.spanfields import MAX_LABEL_CHARS
 
     attrs = {"llm.model_name": "m" * 5000, "llm.system": "openai"}

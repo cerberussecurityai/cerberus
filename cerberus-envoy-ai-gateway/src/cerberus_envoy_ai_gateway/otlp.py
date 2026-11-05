@@ -31,11 +31,16 @@ class OTLPDecodeError(ValueError):
     """Raised when an OTLP request body cannot be decoded."""
 
 
+def _is_json(content_type: str | None) -> bool:
+    """True for an OTLP/JSON media type (parameters ignored); missing means protobuf."""
+    base_type = (content_type or PROTOBUF_CONTENT_TYPE).split(";")[0].strip().lower()
+    return base_type == JSON_CONTENT_TYPE
+
+
 def decode_traces_request(body: bytes, content_type: str | None) -> ExportTraceServiceRequest:
     """Decode an OTLP/HTTP traces request body (protobuf or JSON)."""
     request = ExportTraceServiceRequest()
-    base_type = (content_type or PROTOBUF_CONTENT_TYPE).split(";")[0].strip().lower()
-    if base_type == JSON_CONTENT_TYPE:
+    if _is_json(content_type):
         try:
             json_format.Parse(body.decode("utf-8"), request)
         # RecursionError: deeply-nested JSON blows json.loads' stack; catch it so
@@ -52,8 +57,7 @@ def decode_traces_request(body: bytes, content_type: str | None) -> ExportTraceS
 
 def success_response_body(content_type: str | None) -> tuple[bytes, str]:
     """Build the (body, content_type) for a full-success OTLP export response."""
-    base_type = (content_type or PROTOBUF_CONTENT_TYPE).split(";")[0].strip().lower()
-    if base_type == JSON_CONTENT_TYPE:
+    if _is_json(content_type):
         return b"{}", JSON_CONTENT_TYPE
     return ExportTraceServiceResponse().SerializeToString(), PROTOBUF_CONTENT_TYPE
 
