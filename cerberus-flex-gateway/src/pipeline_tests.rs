@@ -31,42 +31,53 @@ const INGEST_AUTHORITY: &str = "ingest.cerberus.test";
 //
 // NOTE: with that config in place this lock is currently redundant — all tests
 // are already serialized. It is kept as a safeguard: if the thread count is
-// ever raised it still serializes the two harness-driven tests against each
+// ever raised it still serializes the harness-driven tests against each
 // other. Poison is ignored — a panicking test has already reported its own
 // failure.
 static HARNESS_LOCK: Mutex<()> = Mutex::new(());
 
 // No secretKey / backendUrl → secret resolves to None, so Authorization
-// must redact (not hash) and source IP ships raw.
+// must redact (not hash).
 fn config() -> String {
     format!(r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key"}}"#)
 }
 
-// Drive `request`, then advance past one flush interval (default 2000ms)
-// so the flush loop drains the queue and POSTs the batch to the ingest
-// upstream, where the TraceBackend captures it. Returns the parsed
-// `{"events":[...]}` array, or None if no batch was sent.
-fn capture_events(req: UnitHttpRequest) -> Option<Vec<Value>> {
-    capture_events_with_config(req, config())
+// `config()` plus extra top-level members, given as raw JSON (e.g.
+// `"captureAiContent":false`), for tests that exercise config-gated
+// behavior.
+fn config_with(extra: &str) -> String {
+    format!(r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key",{extra}}}"#)
 }
 
-// Same as `capture_events` but with an explicit policy config, for tests that
-// exercise config-gated behavior.
-fn capture_events_with_config(req: UnitHttpRequest, config: String) -> Option<Vec<Value>> {
-    run_pipeline(req, config, UnitHttpResponse::new(200)).0
+fn https_get(path: impl Into<String>) -> UnitHttpRequest {
+    UnitHttpRequest::get()
+        .with_header(":scheme", "https")
+        .with_path(path)
 }
 
-// Full driver: sends `req` through the policy with `upstream` as the
-// backend response, then flushes. Returns the flushed events AND the
-// client-visible response, so response-capture tests can assert the
+fn https_post(path: impl Into<String>) -> UnitHttpRequest {
+    UnitHttpRequest::post()
+        .with_header(":scheme", "https")
+        .with_path(path)
+}
+
+// An OpenAI-shaped chat prompt — the canonical LLM/AI request body.
+const CHAT_PROMPT_BODY: &str = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
+
+// Full driver: one policy instance sends each of `reqs` through the policy
+// with `upstream` as the backend response, then advances past one flush
+// interval (default 2000ms) so the flush loop drains the queue and POSTs
+// the batch to the ingest upstream, where the TraceBackend captures it.
+// Returns the client-visible responses (pdk-unit reassembles the
+// Continue'd chunks into them, so response-capture tests can assert the
 // observe-only invariant: what the client receives is byte-identical to
-// what the backend sent (pdk-unit reassembles the Continue'd chunks
-// into the client-visible response).
-fn run_pipeline(
-    req: UnitHttpRequest,
+// what the backend sent), every flushed batch's parsed `{"events":[...]}`
+// array, and the policy logs.
+fn drive(
+    reqs: Vec<UnitHttpRequest>,
     config: String,
     upstream: UnitHttpResponse,
-) -> (Option<Vec<Value>>, UnitHttpResponse) {
+) -> (Vec<UnitHttpResponse>, Vec<Vec<Value>>, Vec<String>) {
     let _guard = HARNESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let trace = Rc::new(TraceBackend::new(UnitHttpResponse::new(200)));
@@ -76,29 +87,63 @@ fn run_pipeline(
         .with_http_upstream_from_authority(INGEST_AUTHORITY, Rc::clone(&trace))
         .with_entrypoint(crate::configure);
 
-    let response = tester.request(req);
+    let responses: Vec<UnitHttpResponse> =
+        reqs.into_iter().map(|req| tester.request(req)).collect();
     tester.sleep(Duration::from_millis(2500));
 
-    let events = trace.next().map(|batch| {
+    let mut batches = Vec::new();
+    while let Some(batch) = trace.next() {
         assert_eq!(
             batch.header("x-api-key"),
             Some("test-api-key"),
             "batch must carry the API key header"
         );
         let body: Value = serde_json::from_slice(batch.body()).expect("batch body is JSON");
-        body["events"]
-            .as_array()
-            .expect("batch envelope has an events array")
-            .clone()
-    });
-    (events, response)
+        batches.push(
+            body["events"]
+                .as_array()
+                .expect("batch envelope has an events array")
+                .clone(),
+        );
+    }
+    (responses, batches, tester.logs())
+}
+
+// Single request: the flushed events (None if no batch was sent) and the
+// client-visible response.
+fn run_pipeline(
+    req: UnitHttpRequest,
+    config: String,
+    upstream: UnitHttpResponse,
+) -> (Option<Vec<Value>>, UnitHttpResponse) {
+    let (mut responses, batches, _) = drive(vec![req], config, upstream);
+    (batches.into_iter().next(), responses.remove(0))
+}
+
+// Several requests through one policy instance: all flushed events across
+// batches, plus the policy logs.
+fn run_pipeline_multi(
+    reqs: Vec<UnitHttpRequest>,
+    config: String,
+    upstream: UnitHttpResponse,
+) -> (Vec<Value>, Vec<String>) {
+    let (_, batches, logs) = drive(reqs, config, upstream);
+    (batches.into_iter().flatten().collect(), logs)
+}
+
+// Drive `req` against a plain 200 upstream and return the flushed events,
+// or None if no batch was sent.
+fn capture_events(req: UnitHttpRequest) -> Option<Vec<Value>> {
+    capture_events_with_config(req, config())
+}
+
+fn capture_events_with_config(req: UnitHttpRequest, config: String) -> Option<Vec<Value>> {
+    run_pipeline(req, config, UnitHttpResponse::new(200)).0
 }
 
 #[test]
 fn post_request_produces_sanitized_event() {
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/api/orders?token=secret123&page=2")
+    let req = https_post("/api/orders?token=secret123&page=2")
         .with_header("authorization", "Bearer abc")
         .with_header("cookie", "sid=1")
         .with_header("user-agent", "testagent")
@@ -150,19 +195,13 @@ fn post_request_produces_sanitized_event() {
     assert!(ts.ends_with("+00:00"), "expected UTC offset suffix: {ts}");
 }
 
-// Mixed-case allowlist entries prove matching is case-insensitive
-// (Envoy presents header names lowercased).
-fn allowlist_config() -> String {
-    format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":["content-type","X-CUSTOM","Authorization","cookie"]}}"#
-    )
-}
-
 #[test]
 fn header_allowlist_filters_headers_map() {
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/api/orders")
+    // Mixed-case allowlist entries prove matching is case-insensitive
+    // (Envoy presents header names lowercased).
+    let config =
+        config_with(r#""captureHeaders":["content-type","X-CUSTOM","Authorization","cookie"]"#);
+    let req = https_post("/api/orders")
         .with_header("authorization", "Bearer abc")
         .with_header("cookie", "sid=1")
         // Sensitive AND non-allowlisted: must be absent entirely, not
@@ -175,8 +214,7 @@ fn header_allowlist_filters_headers_map() {
         .with_header("content-type", "application/json")
         .with_body(r#"{"name":"alice"}"#);
 
-    let events = capture_events_with_config(req, allowlist_config())
-        .expect("expected a flushed batch");
+    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
     assert_eq!(events.len(), 1);
     let e = &events[0];
 
@@ -202,53 +240,30 @@ fn header_allowlist_filters_headers_map() {
 }
 
 #[test]
-fn header_allowlist_empty_array_captures_all() {
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":[]}}"#
-    );
-    let req = UnitHttpRequest::get()
-        .with_header(":scheme", "https")
-        .with_path("/api/orders")
-        .with_header("user-agent", "testagent")
-        .with_header("x-custom", "keep")
-        .with_header("x-other", "also-kept");
-
-    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
-    let headers = events[0]["headers"].as_object().expect("headers object");
-    // Empty allowlist = unset = capture everything.
-    assert_eq!(headers["X-Custom"], "keep");
-    assert_eq!(headers["X-Other"], "also-kept");
-    assert_eq!(headers["User-Agent"], "testagent");
-}
-
-#[test]
-fn header_allowlist_blank_entries_capture_all() {
-    // Non-empty array whose entries are all blank (e.g. a config-templating
-    // bug or an empty row in the Anypoint UI array editor) collapses to
+fn header_allowlist_without_usable_entries_captures_all() {
+    // An empty allowlist = unset = capture everything. A non-empty array
+    // whose entries are all blank (e.g. a config-templating bug or an empty
+    // row in the Anypoint UI array editor) collapses to the same
     // capture-all — the documented fail-open, surfaced by a startup warning.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":["  ", ""]}}"#
-    );
-    let req = UnitHttpRequest::get()
-        .with_header(":scheme", "https")
-        .with_path("/api/orders")
-        .with_header("x-custom", "keep")
-        .with_header("x-other", "also-kept");
+    for allowlist in ["[]", r#"["  ", ""]"#] {
+        let req = https_get("/api/orders")
+            .with_header("user-agent", "testagent")
+            .with_header("x-custom", "keep")
+            .with_header("x-other", "also-kept");
+        let config = config_with(&format!(r#""captureHeaders":{allowlist}"#));
 
-    let events = capture_events_with_config(req, config).expect("expected a flushed batch");
-    let headers = events[0]["headers"].as_object().expect("headers object");
-    assert_eq!(headers["X-Custom"], "keep");
-    assert_eq!(headers["X-Other"], "also-kept");
+        let events = capture_events_with_config(req, config).expect("expected a flushed batch");
+        let headers = events[0]["headers"].as_object().expect("headers object");
+        assert_eq!(headers["X-Custom"], "keep", "{allowlist}");
+        assert_eq!(headers["X-Other"], "also-kept", "{allowlist}");
+        assert_eq!(headers["User-Agent"], "testagent", "{allowlist}");
+    }
 }
 
 #[test]
 fn header_allowlist_no_survivors_omits_headers_field() {
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureHeaders":["x-never-sent"]}}"#
-    );
-    let req = UnitHttpRequest::get()
-        .with_header(":scheme", "https")
-        .with_path("/api/orders")
+    let config = config_with(r#""captureHeaders":["x-never-sent"]"#);
+    let req = https_get("/api/orders")
         .with_header("user-agent", "testagent")
         .with_header("x-custom", "drop");
 
@@ -268,12 +283,10 @@ fn custom_pii_rules_scrub_params_and_body() {
     // config fields must deserialize, compile, and scrub both query
     // params and JSON bodies. secretKey present → the hash-action rule
     // must produce a digest, not a redaction.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","secretKey":"test-hmac-secret","customSensitiveKeys":["member_number"],"customPiiPatterns":[{{"pattern":"\\b\\d{{3}}-\\d{{2}}-\\d{{4}}\\b","label":"ssn"}},{{"pattern":"^ACC-\\d+$","label":"account","action":"hash"}}]}}"#
+    let config = config_with(
+        r#""secretKey":"test-hmac-secret","customSensitiveKeys":["member_number"],"customPiiPatterns":[{"pattern":"\\b\\d{3}-\\d{2}-\\d{4}\\b","label":"ssn"},{"pattern":"^ACC-\\d+$","label":"account","action":"hash"}]"#,
     );
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/api/claims?member_number=M-1&status=open")
+    let req = https_post("/api/claims?member_number=M-1&status=open")
         .with_header("content-type", "application/json")
         .with_body(
             r#"{"note":"ssn 123-45-6789 on file","account":"ACC-42","password":"hunter2","ok":"keep"}"#,
@@ -301,9 +314,7 @@ fn custom_pii_rules_scrub_params_and_body() {
 fn invalid_custom_pii_pattern_fails_policy_load() {
     // A rule that fails to compile must fail policy load (no events, no
     // silent not-scrubbing) — mirrors PathFilter's bad-glob behavior.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","customPiiPatterns":[{{"pattern":"([unclosed"}}]}}"#
-    );
+    let config = config_with(r#""customPiiPatterns":[{"pattern":"([unclosed"}]"#);
     assert!(
         capture_events_with_config(minimal_post(), config).is_none(),
         "policy with an invalid scrub pattern must not capture events"
@@ -335,71 +346,45 @@ fn config_parse_failure_does_not_log_sensitive_values() {
 
 #[test]
 fn health_endpoint_is_skipped() {
-    let req = UnitHttpRequest::get()
-        .with_header(":scheme", "https")
-        .with_path("/health");
-
     assert!(
-        capture_events(req).is_none(),
+        capture_events(https_get("/health")).is_none(),
         "health-check requests must not generate events"
     );
 }
 
-// Minimal capturable request for the sampling tests — a POST to a
-// non-health path that survives the default (empty) path filters.
+// Minimal capturable request — a POST to a non-health path that survives
+// the default (empty) path filters.
 fn minimal_post() -> UnitHttpRequest {
-    UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/api/orders")
+    https_post("/api/orders")
 }
 
-// Baseline config plus a raw sampleRate JSON value (number, out-of-range,
-// etc. — passed through verbatim so tests can exercise the clamp).
-fn config_with_sample_rate(rate: &str) -> String {
-    format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":{rate}}}"#
-    )
+// Baseline config plus a sampleRate, passed through unclamped so tests can
+// exercise the clamp. sampleBy defaults to "session", and the token is the
+// key material `find_key` searches under.
+fn config_with_sample_rate(rate: f64) -> String {
+    config_with(&format!(r#""sampleRate":{rate}"#))
 }
 
 #[test]
-fn sample_rate_zero_suppresses_all_events() {
-    assert!(
-        capture_events_with_config(minimal_post(), config_with_sample_rate("0")).is_none(),
-        "sampleRate 0 must capture nothing"
-    );
-}
-
-#[test]
-fn sample_rate_one_captures() {
-    let events = capture_events_with_config(minimal_post(), config_with_sample_rate("1"))
-        .expect("sampleRate 1 must capture every request");
-    assert_eq!(events.len(), 1, "one request → one event");
-    let e = &events[0];
-    assert_eq!(e["method"], "POST");
-    assert_eq!(e["endpoint"], "/api/orders");
-}
-
-#[test]
-fn sample_rate_out_of_range_clamps() {
-    // Above range clamps to 1 → still captures.
-    let events = capture_events_with_config(minimal_post(), config_with_sample_rate("7.5"))
-        .expect("sampleRate 7.5 clamps to 1 and captures");
-    assert_eq!(events.len(), 1);
-
-    // Below range clamps to 0 → captures nothing.
-    assert!(
-        capture_events_with_config(minimal_post(), config_with_sample_rate("-3")).is_none(),
-        "sampleRate -3 clamps to 0 and captures nothing"
-    );
+fn sample_rate_bounds_and_out_of_range_clamp() {
+    // 0 captures nothing and 1 captures every request; out-of-range values
+    // clamp to the nearer bound (7.5 → 1, -3 → 0).
+    for (rate, captures) in [(0.0, false), (1.0, true), (7.5, true), (-3.0, false)] {
+        let events = capture_events_with_config(minimal_post(), config_with_sample_rate(rate));
+        assert_eq!(events.is_some(), captures, "sampleRate {rate}");
+        if let Some(events) = events {
+            assert_eq!(events.len(), 1, "one request → one event");
+            assert_eq!(events[0]["method"], "POST");
+            assert_eq!(events[0]["endpoint"], "/api/orders");
+        }
+    }
 }
 
 #[test]
 fn ai_prompt_body_captured_by_default() {
     // captureAiContent defaults to true — a well-known LLM path buffers
     // and captures the body, SENSITIVE_KEYS-sanitized like any JSON body.
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/v1/chat/completions")
+    let req = https_post("/v1/chat/completions")
         .with_header("user-agent", "openai-python")
         .with_header("content-type", "application/json")
         .with_body(
@@ -425,16 +410,12 @@ fn ai_prompt_body_captured_by_default() {
 fn ai_prompt_body_withheld_when_disabled() {
     // captureAiContent: false → the well-known LLM path short-circuits
     // body buffering and the event ships without a body.
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/v1/chat/completions")
+    let req = https_post("/v1/chat/completions")
         .with_header("user-agent", "openai-python")
         .with_header("content-type", "application/json")
-        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+        .with_body(CHAT_PROMPT_BODY);
 
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureAiContent":false}}"#
-    );
+    let config = config_with(r#""captureAiContent":false"#);
     let events = capture_events_with_config(req, config).expect("expected a flushed batch");
     assert_eq!(events.len(), 1);
     let e = &events[0];
@@ -455,15 +436,11 @@ fn ai_prompt_body_withheld_when_disabled() {
 fn ai_prompt_shaped_body_on_custom_path_withheld_when_disabled() {
     // captureAiContent: false, non-LLM path → the body is buffered, so the
     // post-parse body-shape heuristic must still withhold it.
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/internal/ai/ask")
+    let req = https_post("/internal/ai/ask")
         .with_header("content-type", "application/json")
-        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+        .with_body(CHAT_PROMPT_BODY);
 
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureAiContent":false}}"#
-    );
+    let config = config_with(r#""captureAiContent":false"#);
     let events = capture_events_with_config(req, config).expect("expected a flushed batch");
     assert_eq!(events.len(), 1);
     let e = &events[0];
@@ -478,16 +455,20 @@ fn ai_prompt_shaped_body_on_custom_path_withheld_when_disabled() {
 // ---------------------------------------------------------------------
 // Response-body capture (captureResponseBody).
 //
-// Every test here asserts the observe-only invariant via `assert_pass_through`:
-// the client-visible response is byte-identical to what the backend sent.
-// The harness delivers response bodies to the policy in 3-byte chunks, so
-// multi-chunk accumulation is exercised for free.
+// Every test here asserts the observe-only invariant via `assert_pass_through`
+// (directly or through `observe`): the client-visible response is
+// byte-identical to what the backend sent. The harness delivers response
+// bodies to the policy in 3-byte chunks, so multi-chunk accumulation is
+// exercised for free.
 // ---------------------------------------------------------------------
 
 fn response_capture_config() -> String {
-    format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true}}"#
-    )
+    config_with(r#""captureResponseBody":true"#)
+}
+
+// captureResponseBody on, AI/LLM content withheld.
+fn response_capture_ai_off_config() -> String {
+    config_with(r#""captureResponseBody":true,"captureAiContent":false"#)
 }
 
 fn assert_pass_through(client: &UnitHttpResponse, expected: &UnitHttpResponse) {
@@ -503,17 +484,25 @@ fn assert_pass_through(client: &UnitHttpResponse, expected: &UnitHttpResponse) {
     );
 }
 
+// `run_pipeline` for response-capture tests: asserts the observe-only
+// invariant, then returns the request's flushed event.
+fn observe(req: UnitHttpRequest, config: String, upstream: UnitHttpResponse) -> Value {
+    let (events, client) = run_pipeline(req, config, upstream.clone());
+    assert_pass_through(&client, &upstream);
+    events
+        .expect("expected a flushed batch")
+        .into_iter()
+        .next()
+        .expect("expected an event")
+}
+
 #[test]
 fn response_whole_json_captured_and_sanitized() {
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"password":"hunter2","item":"widget"}"#);
-    let (events, client) =
-        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), response_capture_config(), upstream);
 
-    let events = events.expect("expected a flushed batch");
-    let e = &events[0];
     // Sensitive keys in the response body sanitize like request bodies.
     assert_eq!(e["response_body"]["password"], "[REDACTED]");
     assert_eq!(e["response_body"]["item"], "widget");
@@ -529,11 +518,8 @@ fn response_capture_off_by_default_status_latency_still_ship() {
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"item":"widget"}"#);
-    let (events, client) = run_pipeline(minimal_post(), config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config(), upstream);
 
-    let events = events.expect("expected a flushed batch");
-    let e = &events[0];
     assert!(
         e.get("response_body").is_none(),
         "default config must not capture response bodies: {e}"
@@ -548,11 +534,8 @@ fn response_non_json_non_sse_content_type_skipped() {
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "text/html")
         .with_body("<html><body>hi</body></html>");
-    let (events, client) =
-        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), response_capture_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert!(
         e.get("response_body").is_none(),
         "text/html must not be captured: {e}"
@@ -567,11 +550,8 @@ fn response_compressed_body_ships_encoding_marker() {
         .with_header("content-encoding", "gzip")
         // Not real gzip — the policy must not read the stream at all.
         .with_body(b"\x1f\x8b compressed bytes".to_vec());
-    let (events, client) =
-        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), response_capture_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert_eq!(
         e["response_body"],
         serde_json::json!({"body_skipped_encoding": "gzip"}),
@@ -585,11 +565,8 @@ fn response_sse_within_budget_ships_raw_string() {
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "text/event-stream")
         .with_body(sse);
-    let (events, client) =
-        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), response_capture_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert_eq!(
         e["response_body"], sse,
         "in-budget SSE ships whole as a raw string: {e}"
@@ -599,17 +576,14 @@ fn response_sse_within_budget_ships_raw_string() {
 #[test]
 fn response_sse_truncated_with_tiny_budgets() {
     let sse = "data: 0123456789abcdefghijklmnopqrstuvwxyz\n\n"; // 44 bytes
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":10,"responseTailBytes":8}}"#
-    );
+    let config =
+        config_with(r#""captureResponseBody":true,"responseHeadBytes":10,"responseTailBytes":8"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "text/event-stream")
         .with_body(sse);
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
     // The client stream must be intact even though the capture truncated.
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     let marker = e["response_body"]
         .as_object()
         .expect("truncation marker object");
@@ -625,16 +599,13 @@ fn response_oversized_json_document_truncates_too() {
     // JSON documents go through the same head+tail path as SSE — an
     // over-budget JSON body yields the marker, not a parse attempt.
     let big = format!(r#"{{"data":"{}"}}"#, "x".repeat(100));
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":16,"responseTailBytes":8}}"#
-    );
+    let config =
+        config_with(r#""captureResponseBody":true,"responseHeadBytes":16,"responseTailBytes":8"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(big.clone());
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     let marker = e["response_body"]
         .as_object()
         .expect("truncation marker object");
@@ -649,21 +620,14 @@ fn response_oversized_json_document_truncates_too() {
 
 #[test]
 fn response_llm_path_withheld_when_ai_capture_disabled() {
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
-    );
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/v1/chat/completions")
+    let req = https_post("/v1/chat/completions")
         .with_header("content-type", "application/json")
-        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+        .with_body(CHAT_PROMPT_BODY);
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"choices":[{"message":{"role":"assistant","content":"hello"}}]}"#);
-    let (events, client) = run_pipeline(req, config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(req, response_capture_ai_off_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert!(
         e.get("response_body").is_none(),
         "LLM response body must be withheld when captureAiContent is off: {e}"
@@ -680,22 +644,15 @@ fn response_sse_on_custom_path_withheld_when_request_was_ai_suppressed() {
     // check. The response is SSE, which never reaches a parsed-shape
     // check, so the request-side decision must carry over: model output
     // is withheld too.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
-    );
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/internal/ai/ask")
+    let req = https_post("/internal/ai/ask")
         .with_header("content-type", "application/json")
-        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+        .with_body(CHAT_PROMPT_BODY);
     let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello there\"}}]}\n\ndata: [DONE]\n\n";
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "text/event-stream")
         .with_body(sse);
-    let (events, client) = run_pipeline(req, config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(req, response_capture_ai_off_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert!(e.get("body").is_none(), "prompt body must be withheld: {e}");
     assert!(
         e.get("response_body").is_none(),
@@ -711,21 +668,14 @@ fn response_completion_json_on_custom_path_withheld_without_prompt_shaped_reques
     // internal wrapper API), and a whole-JSON response that is a real
     // OpenAI-shaped completion. captureAiContent: false must still withhold
     // it — the response-shape check is what does that.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false}}"#
-    );
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/internal/assistant/answer")
+    let req = https_post("/internal/assistant/answer")
         .with_header("content-type", "application/json")
         .with_body(r#"{"question":"what is our refund policy?","ticket":"T-1"}"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Refunds within 30 days."},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":6}}"#);
-    let (events, client) = run_pipeline(req, config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(req, response_capture_ai_off_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     // The request was not AI-shaped, so its body ships as usual...
     assert_eq!(e["body"]["ticket"], "T-1");
     // ...but the completion-shaped response is model output → withheld.
@@ -740,19 +690,15 @@ fn response_completion_json_on_custom_path_withheld_without_prompt_shaped_reques
 fn response_sse_on_custom_path_captured_when_ai_capture_on() {
     // Positive control for the test above: same traffic with the default
     // captureAiContent (true) captures the SSE output.
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/internal/ai/ask")
+    let req = https_post("/internal/ai/ask")
         .with_header("content-type", "application/json")
-        .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#);
+        .with_body(CHAT_PROMPT_BODY);
     let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hello there\"}}]}\n\n";
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "text/event-stream")
         .with_body(sse);
-    let (events, client) = run_pipeline(req, response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(req, response_capture_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert!(e["body"].is_object(), "prompt body captured by default: {e}");
     assert!(
         e["response_body"].is_string(),
@@ -763,20 +709,15 @@ fn response_sse_on_custom_path_captured_when_ai_capture_on() {
 #[test]
 fn response_mcp_tools_list_result_captured_whole() {
     // The schema-report enabler: a captured tools/list JSON-RPC result.
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/mcp")
+    let req = https_post("/mcp")
         .with_header("content-type", "application/json")
         .with_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
     let result = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search","description":"find things","inputSchema":{"type":"object"}}]}}"#;
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(result);
-    let (events, client) =
-        run_pipeline(req, response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(req, response_capture_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert_eq!(e["response_body"]["result"]["tools"][0]["name"], "search");
     assert_eq!(
         e["response_body"]["result"]["tools"][0]["inputSchema"]["type"],
@@ -789,9 +730,7 @@ fn response_mcp_sse_result_key_sanitized_client_untouched() {
     // Structured PII inside an SSE-transported MCP tool result is key-
     // redacted on the retained copy — while the client still receives the
     // original bytes (the tap never mutates the wire).
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/mcp")
+    let req = https_post("/mcp")
         .with_header("content-type", "application/json")
         .with_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lookup","arguments":{"q":"x"}}}"#);
     let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"structuredContent\":{\"api_key\":\"sk-live-1\",\"user\":\"alice\"}}}\n\n";
@@ -820,17 +759,15 @@ fn response_budgets_clamp_to_schema_maximum() {
     // Out-of-range values clamp (with a startup warning) instead of driving
     // an unbounded accumulator: a 60 KB body under a "1 MB" head budget
     // must still truncate at 49152.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"responseHeadBytes":1048576,"responseTailBytes":0}}"#
+    let config = config_with(
+        r#""captureResponseBody":true,"responseHeadBytes":1048576,"responseTailBytes":0"#,
     );
     let big = "x".repeat(60_000);
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "text/event-stream")
         .with_body(big.clone());
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     let marker = e["response_body"].as_object().expect("truncation marker");
     assert_eq!(marker["body_truncated"], true);
     assert_eq!(marker["head"].as_str().unwrap().len(), 49_152);
@@ -842,12 +779,10 @@ fn response_truncated_completion_on_custom_path_withheld_when_ai_capture_off() {
     // Over budget + captureAiContent: false + custom path + non-prompt-
     // shaped request: the pre-stream gate can't see the shape, so the
     // finalizer's head sniff must withhold the truncated model output.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseBody":true,"captureAiContent":false,"responseHeadBytes":256,"responseTailBytes":128}}"#
+    let config = config_with(
+        r#""captureResponseBody":true,"captureAiContent":false,"responseHeadBytes":256,"responseTailBytes":128"#,
     );
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/internal/assistant/answer")
+    let req = https_post("/internal/assistant/answer")
         .with_header("content-type", "application/json")
         .with_body(r#"{"question":"tell me a long story","ticket":"T-2"}"#);
     let long = "Once upon a time ".repeat(200);
@@ -857,10 +792,8 @@ fn response_truncated_completion_on_custom_path_withheld_when_ai_capture_off() {
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_body(body);
-    let (events, client) = run_pipeline(req, config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(req, config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert!(
         e.get("response_body").is_none(),
         "truncated completion must be withheld: {e}"
@@ -869,22 +802,26 @@ fn response_truncated_completion_on_custom_path_withheld_when_ai_capture_off() {
 }
 
 #[test]
-fn response_bodyless_with_content_encoding_ships_nothing() {
-    // A 304 (or HEAD) may carry Content-Encoding with no body; the
-    // body-presence gate must win over the compression marker.
-    let upstream = UnitHttpResponse::new(304)
-        .with_header("content-type", "application/json")
-        .with_header("content-encoding", "gzip");
-    let (events, client) =
-        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+fn response_bodyless_ships_no_response_body() {
+    // 204 has no body. A 304 (or HEAD) may carry Content-Encoding with no
+    // body; the body-presence gate must win over the compression marker.
+    let upstreams = [
+        UnitHttpResponse::new(204).with_header("content-type", "application/json"),
+        UnitHttpResponse::new(304)
+            .with_header("content-type", "application/json")
+            .with_header("content-encoding", "gzip"),
+    ];
+    for upstream in upstreams {
+        let status = upstream.status_code();
+        let e = observe(minimal_post(), response_capture_config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
-    assert!(
-        e.get("response_body").is_none(),
-        "body-less response must not ship an encoding marker: {e}"
-    );
-    assert_eq!(e["status_code"], 304);
+        assert!(
+            e.get("response_body").is_none(),
+            "body-less {status} response must not produce a response_body or encoding marker: {e}"
+        );
+        assert_eq!(e["status_code"], status);
+        assert!(e["latency_ms"].is_u64());
+    }
 }
 
 #[test]
@@ -896,10 +833,8 @@ fn response_header_allowlist_captures_default_mcp_session_id() {
         .with_header("mcp-session-id", "4bbd920a-sess")
         .with_header("x-internal-shard", "not-listed")
         .with_body(r#"{"ok":true}"#);
-    let (events, client) = run_pipeline(minimal_post(), config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config(), upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     let rh = e["response_headers"].as_object().expect("response_headers");
     assert_eq!(rh["Mcp-Session-Id"], "4bbd920a-sess");
     assert_eq!(
@@ -911,16 +846,12 @@ fn response_header_allowlist_captures_default_mcp_session_id() {
 
 #[test]
 fn response_header_allowlist_empty_captures_none() {
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":[]}}"#
-    );
+    let config = config_with(r#""captureResponseHeaders":[]"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("mcp-session-id", "4bbd920a-sess")
         .with_body("ok");
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     assert!(
         e.get("response_headers").is_none(),
         "empty captureResponseHeaders must capture nothing: {e}"
@@ -931,17 +862,13 @@ fn response_header_allowlist_empty_captures_none() {
 fn response_header_allowlist_sensitive_header_still_redacts() {
     // Listing a sensitive response header controls presence, not value —
     // same contract as the request-side allowlist.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":["Set-Cookie","X-Trace-Id"]}}"#
-    );
+    let config = config_with(r#""captureResponseHeaders":["Set-Cookie","X-Trace-Id"]"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("set-cookie", "sid=supersecret")
         .with_header("x-trace-id", "trace-1")
         .with_body("ok");
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     let rh = e["response_headers"].as_object().expect("response_headers");
     assert_eq!(rh["Set-Cookie"], "[REDACTED]");
     assert_eq!(rh["X-Trace-Id"], "trace-1");
@@ -952,19 +879,15 @@ fn response_header_allowlist_multi_value_collapses_after_sanitization() {
     // Repeated response headers (Set-Cookie is the canonical case) collapse
     // with ", " AFTER per-value sanitization — same contract as request
     // headers, exercised here in the direction where Set-Cookie lives.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":["set-cookie","x-shard"]}}"#
-    );
+    let config = config_with(r#""captureResponseHeaders":["set-cookie","x-shard"]"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("set-cookie", "sid=one")
         .with_header("set-cookie", "csrf=two")
         .with_header("x-shard", "a")
         .with_header("x-shard", "b")
         .with_body("ok");
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
-    assert_pass_through(&client, &upstream);
+    let e = observe(minimal_post(), config, upstream);
 
-    let e = &events.expect("expected a flushed batch")[0];
     let rh = e["response_headers"].as_object().expect("response_headers");
     assert_eq!(rh["Set-Cookie"], "[REDACTED], [REDACTED]");
     assert_eq!(rh["X-Shard"], "a, b");
@@ -974,24 +897,18 @@ fn response_header_allowlist_multi_value_collapses_after_sanitization() {
 fn response_header_allowlist_absent_header_omits_field_or_key() {
     // Allowlisted-but-absent headers simply don't appear: no key when others
     // are present, and no response_headers field at all when none matched.
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","captureResponseHeaders":["mcp-session-id","x-trace-id"]}}"#
-    );
+    let config = config_with(r#""captureResponseHeaders":["mcp-session-id","x-trace-id"]"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("x-trace-id", "t-1")
         .with_body("ok");
-    let (events, client) = run_pipeline(minimal_post(), config.clone(), upstream.clone());
-    assert_pass_through(&client, &upstream);
-    let e = &events.expect("expected a flushed batch")[0];
+    let e = observe(minimal_post(), config.clone(), upstream);
     let rh = e["response_headers"].as_object().expect("response_headers");
     assert_eq!(rh.len(), 1);
     assert_eq!(rh["X-Trace-Id"], "t-1");
     assert!(rh.get("Mcp-Session-Id").is_none());
 
     let upstream = UnitHttpResponse::new(200).with_body("ok");
-    let (events, client) = run_pipeline(minimal_post(), config, upstream.clone());
-    assert_pass_through(&client, &upstream);
-    let e = &events.expect("expected a flushed batch")[0];
+    let e = observe(minimal_post(), config, upstream);
     assert!(
         e.get("response_headers").is_none(),
         "no allowlisted header present → field omitted: {e}"
@@ -999,28 +916,10 @@ fn response_header_allowlist_absent_header_omits_field_or_key() {
 }
 
 #[test]
-fn response_bodyless_204_no_response_body() {
-    let upstream = UnitHttpResponse::new(204).with_header("content-type", "application/json");
-    let (events, client) =
-        run_pipeline(minimal_post(), response_capture_config(), upstream.clone());
-    assert_pass_through(&client, &upstream);
-
-    let e = &events.expect("expected a flushed batch")[0];
-    assert!(
-        e.get("response_body").is_none(),
-        "body-less response must not produce a response_body: {e}"
-    );
-    assert_eq!(e["status_code"], 204);
-    assert!(e["latency_ms"].is_u64());
-}
-
-#[test]
 fn mcp_jsonrpc_body_still_captured() {
     // MCP carve-out: JSON-RPC bodies always ship (discovery depends on
     // the arguments), with standard sanitization applied.
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/mcp")
+    let req = https_post("/mcp")
         .with_header("content-type", "application/json")
         .with_body(
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"x","api_key":"sk-123"}}}"#,
@@ -1050,48 +949,6 @@ fn mcp_jsonrpc_body_still_captured() {
 // assert consistency and provenance instead.
 // ---------------------------------------------------------------------
 
-/// Multi-request driver: one tester (one policy instance), all flushed
-/// events across batches, plus the policy logs.
-fn run_pipeline_multi(
-    reqs: Vec<UnitHttpRequest>,
-    config: String,
-    upstream: UnitHttpResponse,
-) -> (Vec<Value>, Vec<String>) {
-    let _guard = HARNESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-    let trace = Rc::new(TraceBackend::new(UnitHttpResponse::new(200)));
-    let mut tester = UnitTestBuilder::default()
-        .with_config(config)
-        .with_backend(upstream)
-        .with_http_upstream_from_authority(INGEST_AUTHORITY, Rc::clone(&trace))
-        .with_entrypoint(crate::configure);
-
-    for req in reqs {
-        let _ = tester.request(req);
-    }
-    tester.sleep(Duration::from_millis(2500));
-
-    let mut events = Vec::new();
-    while let Some(batch) = trace.next() {
-        let body: Value = serde_json::from_slice(batch.body()).expect("batch body is JSON");
-        events.extend(
-            body["events"]
-                .as_array()
-                .expect("batch envelope has an events array")
-                .iter()
-                .cloned(),
-        );
-    }
-    (events, tester.logs())
-}
-
-fn session_sampling_config(rate: f64) -> String {
-    // sampleBy defaults to "session"; token matches keyed-key searches.
-    format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":{rate}}}"#
-    )
-}
-
 /// Search for a key whose keyed decision under the default test config's
 /// key material (its token — it sets no secretKey) is `want`.
 fn find_key(domain: &str, prefix: &str, rate: f64, want: bool) -> String {
@@ -1109,9 +966,7 @@ fn find_key(domain: &str, prefix: &str, rate: f64, want: bool) -> String {
 /// media types (spec-required), no session id, no MCP-Protocol-Version
 /// (legacy-era clients only send it after negotiation).
 fn mcp_initialize_request() -> UnitHttpRequest {
-    UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/mcp")
+    https_post("/mcp")
         .with_header("content-type", "application/json")
         .with_header("accept", "application/json, text/event-stream")
         .with_body(
@@ -1122,9 +977,7 @@ fn mcp_initialize_request() -> UnitHttpRequest {
 /// Post-initialize MCP call: echoes the session id, carries the
 /// protocol-version header.
 fn mcp_tools_call_request(session_id: &str) -> UnitHttpRequest {
-    UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path("/mcp")
+    https_post("/mcp")
         .with_header("content-type", "application/json")
         .with_header("accept", "application/json, text/event-stream")
         .with_header("mcp-protocol-version", "2025-06-18")
@@ -1144,7 +997,7 @@ fn session_request_header_decides_at_header_time() {
             mcp_tools_call_request(&kept),
             mcp_tools_call_request(&dropped),
         ],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         UnitHttpResponse::new(200),
     );
 
@@ -1168,7 +1021,7 @@ fn handshake_decided_on_response_minted_session_id() {
         .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"srv"}}}"#);
     let (events, _) = run_pipeline_multi(
         vec![mcp_initialize_request()],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         upstream,
     );
     assert_eq!(events.len(), 1, "kept handshake must ship: {events:?}");
@@ -1184,7 +1037,7 @@ fn handshake_decided_on_response_minted_session_id() {
         .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
     let (events, _) = run_pipeline_multi(
         vec![mcp_initialize_request()],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         upstream,
     );
     assert!(events.is_empty(), "dropped handshake must not ship: {events:?}");
@@ -1203,7 +1056,7 @@ fn handshake_and_followup_land_together() {
 
     let (events, _) = run_pipeline_multi(
         vec![mcp_initialize_request(), mcp_tools_call_request(&kept)],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         upstream,
     );
 
@@ -1236,7 +1089,7 @@ fn handshake_without_minted_id_resolves_to_stashed_fallback() {
             mcp_initialize_request().with_header("authorization", kept_auth.as_str()),
             mcp_initialize_request().with_header("authorization", dropped_auth.as_str()),
         ],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         stateless_upstream,
     );
 
@@ -1251,15 +1104,10 @@ fn authorization_tier_is_deterministic_and_provenance_stamped() {
     let kept = find_key(DOMAIN_AUTHORIZATION, "Bearer tok-keep-", 0.5, true);
     let dropped = find_key(DOMAIN_AUTHORIZATION, "Bearer tok-drop-", 0.5, false);
 
-    let make = |auth: &str| {
-        UnitHttpRequest::post()
-            .with_header(":scheme", "https")
-            .with_path("/api/orders")
-            .with_header("authorization", auth)
-    };
+    let make = |auth: &str| https_post("/api/orders").with_header("authorization", auth);
     let (events, _) = run_pipeline_multi(
         vec![make(&kept), make(&dropped)],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         UnitHttpResponse::new(200),
     );
 
@@ -1283,11 +1131,11 @@ fn principal_tier_consistent_across_replicas() {
     let make_reqs = || -> Vec<UnitHttpRequest> {
         (0..12)
             .map(|i| {
-                let mut auth = AuthenticationData::default();
-                auth.principal = Some(format!("principal-{i}"));
-                UnitHttpRequest::post()
-                    .with_header(":scheme", "https")
-                    .with_path("/api/orders")
+                let auth = AuthenticationData {
+                    principal: Some(format!("principal-{i}")),
+                    ..Default::default()
+                };
+                https_post("/api/orders")
                     .with_header("x-req", format!("p{i}"))
                     .with_authentication_data(auth)
             })
@@ -1296,12 +1144,12 @@ fn principal_tier_consistent_across_replicas() {
 
     let (events_a, _) = run_pipeline_multi(
         make_reqs(),
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         UnitHttpResponse::new(200),
     );
     let (events_b, _) = run_pipeline_multi(
         make_reqs(),
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         UnitHttpResponse::new(200),
     );
 
@@ -1331,16 +1179,9 @@ fn principal_tier_consistent_across_replicas() {
 
 #[test]
 fn user_id_tier_stamps_provenance() {
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":0.5,"userIdHeader":"X-User-Id"}}"#
-    );
+    let config = config_with(r#""sampleRate":0.5,"userIdHeader":"X-User-Id""#);
     let reqs: Vec<UnitHttpRequest> = (0..12)
-        .map(|i| {
-            UnitHttpRequest::post()
-                .with_header(":scheme", "https")
-                .with_path("/api/orders")
-                .with_header("x-user-id", format!("user-{i}"))
-        })
+        .map(|i| https_post("/api/orders").with_header("x-user-id", format!("user-{i}")))
         .collect();
     let (events, _) = run_pipeline_multi(reqs, config, UnitHttpResponse::new(200));
 
@@ -1360,16 +1201,9 @@ fn session_key_header_keys_the_decision_without_shipping() {
     let domain = "header:x-conversation-id";
     let kept = find_key(domain, "conv-keep-", 0.5, true);
     let dropped = find_key(domain, "conv-drop-", 0.5, false);
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":0.5,"sessionKeyHeader":["X-Conversation-Id"]}}"#
-    );
+    let config = config_with(r#""sampleRate":0.5,"sessionKeyHeader":["X-Conversation-Id"]"#);
 
-    let make = |conv: &str| {
-        UnitHttpRequest::post()
-            .with_header(":scheme", "https")
-            .with_path("/api/agent")
-            .with_header("x-conversation-id", conv)
-    };
+    let make = |conv: &str| https_post("/api/agent").with_header("x-conversation-id", conv);
     let (events, _) = run_pipeline_multi(
         vec![make(&kept), make(&dropped)],
         config,
@@ -1388,15 +1222,13 @@ fn session_key_header_keys_the_decision_without_shipping() {
 #[test]
 fn legacy_query_param_session_id_keys_the_decision() {
     let kept = find_key(DOMAIN_SESSION, "legacy-keep-", 0.5, true);
-    let req = UnitHttpRequest::post()
-        .with_header(":scheme", "https")
-        .with_path(format!("/messages?session_id={kept}"))
+    let req = https_post(format!("/messages?session_id={kept}"))
         .with_header("content-type", "application/json")
         .with_body(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
 
     let (events, _) = run_pipeline_multi(
         vec![req],
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         UnitHttpResponse::new(200),
     );
     assert_eq!(events.len(), 1, "{events:?}");
@@ -1413,17 +1245,15 @@ fn llm_paths_sample_per_request_even_in_session_mode() {
     let auth = find_key(DOMAIN_AUTHORIZATION, "Bearer llm-keep-", 0.5, true);
     let reqs: Vec<UnitHttpRequest> = (0..32)
         .map(|_| {
-            UnitHttpRequest::post()
-                .with_header(":scheme", "https")
-                .with_path("/v1/chat/completions")
+            https_post("/v1/chat/completions")
                 .with_header("authorization", auth.as_str())
                 .with_header("content-type", "application/json")
-                .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#)
+                .with_body(CHAT_PROMPT_BODY)
         })
         .collect();
     let (events, _) = run_pipeline_multi(
         reqs,
-        session_sampling_config(0.5),
+        config_with_sample_rate(0.5),
         UnitHttpResponse::new(200),
     );
 
@@ -1443,9 +1273,7 @@ fn llm_paths_sample_per_request_even_in_session_mode() {
 
 #[test]
 fn sample_by_request_ignores_session_keys() {
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":0.5,"sampleBy":"request"}}"#
-    );
+    let config = config_with(r#""sampleRate":0.5,"sampleBy":"request""#);
     // Same session id on every request: session mode would decide these
     // all-or-nothing; request mode flips a coin each time.
     let reqs: Vec<UnitHttpRequest> = (0..32)
@@ -1490,9 +1318,7 @@ fn decision_independent_of_capture_response_headers() {
     // must not change the decision — the sampler reads the raw response
     // header, and the kept handshake still carries session_id.
     let kept = find_key(DOMAIN_SESSION, "rawread-keep-", 0.5, true);
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":0.5,"captureResponseHeaders":[]}}"#
-    );
+    let config = config_with(r#""sampleRate":0.5,"captureResponseHeaders":[]"#);
     let upstream = UnitHttpResponse::new(200)
         .with_header("content-type", "application/json")
         .with_header("mcp-session-id", kept.as_str())
@@ -1527,9 +1353,7 @@ fn sampling_keys_derive_from_resolved_secret_when_present() {
                 && !keyed_decision("test-api-key", DOMAIN_SESSION, s, None, 0.5).1
         })
         .expect("a session id kept under the secret but dropped under the token");
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","secretKey":"{secret}","sampleRate":0.5}}"#
-    );
+    let config = config_with(&format!(r#""secretKey":"{secret}","sampleRate":0.5"#));
     let (events, _) = run_pipeline_multi(
         vec![mcp_tools_call_request(&sid)],
         config,
@@ -1554,16 +1378,12 @@ fn session_key_header_outranks_llm_carve_out() {
     let domain = "header:traceparent";
     let kept = find_key(domain, "00-keeptrace-", 0.5, true);
     let dropped = find_key(domain, "00-droptrace-", 0.5, false);
-    let config = format!(
-        r#"{{"ingestService":"http://{INGEST_AUTHORITY}","token":"test-api-key","sampleRate":0.5,"sessionKeyHeader":["traceparent"]}}"#
-    );
+    let config = config_with(r#""sampleRate":0.5,"sessionKeyHeader":["traceparent"]"#);
     let make = |trace: &str| {
-        UnitHttpRequest::post()
-            .with_header(":scheme", "https")
-            .with_path("/v1/chat/completions")
+        https_post("/v1/chat/completions")
             .with_header("traceparent", trace)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#)
+            .with_body(CHAT_PROMPT_BODY)
     };
     let (events, _) = run_pipeline_multi(
         vec![make(&kept), make(&dropped)],

@@ -1392,15 +1392,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_string_sanitizes_via_caller() {
+    fn parse_query_string_groups_repeated_keys() {
         // parse_query_string itself doesn't sanitize — sanitize_value
         // is applied by the caller. Verifies the parse side only.
         let map = parse_query_string("a=1&b=2&a=3").unwrap();
         assert_eq!(map["b"], json!("2"));
-        let a_values = match &map["a"] {
-            Value::Array(arr) => arr.clone(),
-            other => panic!("expected array, got {:?}", other),
-        };
-        assert_eq!(a_values.len(), 2);
+        assert_eq!(map["a"], json!(["1", "3"]));
     }
 }

@@ -408,12 +408,27 @@ mod tests {
     }
 
     #[test]
-    fn one_over_budget_truncates_with_one_dropped() {
-        let (total, head, tail) = expect_truncated(accumulate(4, 4, &[b"abcdefghi"]));
-        assert_eq!(total, 9);
-        assert_eq!(head, b"abcd");
-        assert_eq!(tail, b"fghi");
-        assert_eq!(total - (head.len() + tail.len()) as u64, 1);
+    fn single_chunk_over_budget_keeps_head_and_tail() {
+        // (head_cap, tail_cap, chunk, retained head, retained tail)
+        let cases = [
+            // One byte over budget: exactly one dropped.
+            (4, 4, "abcdefghi", "abcd", "fghi"),
+            // A single chunk larger than both caps.
+            (2, 3, "the quick brown fox", "th", "fox"),
+            // "Response size telemetry" mode: nothing retained, counts kept.
+            (0, 0, "hello", "", ""),
+            // Zero tail budget keeps the head only, and vice versa.
+            (4, 0, "abcdef", "abcd", ""),
+            (0, 4, "abcdef", "", "cdef"),
+        ];
+        for (head_cap, tail_cap, chunk, want_head, want_tail) in cases {
+            let case = format!("caps {head_cap}+{tail_cap}, chunk {chunk:?}");
+            let (total, head, tail) =
+                expect_truncated(accumulate(head_cap, tail_cap, &[chunk.as_bytes()]));
+            assert_eq!(total, chunk.len() as u64, "{case}");
+            assert_eq!(head, want_head.as_bytes(), "{case}");
+            assert_eq!(tail, want_tail.as_bytes(), "{case}");
+        }
     }
 
     #[test]
@@ -436,15 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn single_chunk_larger_than_both_caps() {
-        let (total, head, tail) =
-            expect_truncated(accumulate(2, 3, &[b"the quick brown fox"]));
-        assert_eq!(total, 19);
-        assert_eq!(head, b"th");
-        assert_eq!(tail, b"fox");
-    }
-
-    #[test]
     fn complete_reconstruction_across_chunk_sizes() {
         // Whatever the chunking, an in-budget body reconstructs exactly.
         let data = b"abcdefghijklmno"; // 15 bytes, budget 8+8
@@ -455,31 +461,6 @@ mod tests {
                 _ => panic!("chunk_size {chunk_size}: expected Complete"),
             }
         }
-    }
-
-    #[test]
-    fn zero_budgets_yield_empty_slices_marker() {
-        // "Response size telemetry" mode: nothing retained, counts kept.
-        let (total, head, tail) = expect_truncated(accumulate(0, 0, &[b"hello"]));
-        assert_eq!(total, 5);
-        assert!(head.is_empty());
-        assert!(tail.is_empty());
-    }
-
-    #[test]
-    fn zero_tail_budget_keeps_head_only() {
-        let (total, head, tail) = expect_truncated(accumulate(4, 0, &[b"abcdef"]));
-        assert_eq!(total, 6);
-        assert_eq!(head, b"abcd");
-        assert!(tail.is_empty());
-    }
-
-    #[test]
-    fn zero_head_budget_keeps_tail_only() {
-        let (total, head, tail) = expect_truncated(accumulate(0, 4, &[b"abcdef"]));
-        assert_eq!(total, 6);
-        assert!(head.is_empty());
-        assert_eq!(tail, b"cdef");
     }
 
     #[test]

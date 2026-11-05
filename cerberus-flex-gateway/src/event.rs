@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CerberusEvent {
-    /// Hashed client IP (HMAC-SHA256 hex), or raw IP if no secret is
-    /// configured. None when no IP could be resolved.
+    /// Client IP, normalized and never hashed (see
+    /// `source_ip::event_value`). None when no IP could be resolved.
     pub remote_addr: Option<String>,
 
     /// Request path without query string.

@@ -23,7 +23,7 @@ spec:
         ingestService: http://echo:8080
         token: dev-token
         # Local-mode hashing: comment out secretKey to test the
-        # "no secret → raw PII + warn log" fallback path.
+        # "no secret → redact instead of hash + warn log" fallback path.
         secretKey: cerberus-parity-test-key-v1
         clientIpHeader: X-Forwarded-For
         # No userIdHeader by default — set to e.g. X-User-Id once your

@@ -308,7 +308,8 @@ cerberus-flex-gateway/
 ├── install.sh                # customer installer (publishes into their org)
 ├── rust-toolchain.toml       # pinned build toolchain (build-side only)
 ├── scripts/
-│   └── bundle.sh             # `make bundle` staging logic
+│   ├── bundle.sh             # `make bundle` staging logic
+│   └── redact_generated_config.sh  # keeps the config echo out of src/generated/config.rs
 ├── definition/
 │   └── gcl.yaml              # operator-facing config schema
 ├── playground/
