@@ -151,3 +151,21 @@ def test_overlong_model_is_capped(config):
     event = map_llm_span(Span(name="ChatCompletion"), attrs, config)
     assert len(event["custom_data"]["model"]) == MAX_LABEL_CHARS
     assert len(event["endpoint"]) < 400
+
+
+def test_session_id_absent_when_unset(config):
+    assert "session_id" not in _map("llm_openai_chat", config)
+
+
+def test_session_id_from_configured_attribute(config):
+    span = single_span(load_export("llm_openai_chat"))
+    attrs = {**span_attributes(span), "corr.session": "web-abc123def456"}
+    event = map_llm_span(span, attrs, replace(config, session_id_attribute="corr.session"))
+    assert event["session_id"] == "web-abc123def456"
+
+
+def test_session_id_absent_when_attribute_empty(config):
+    span = single_span(load_export("llm_openai_chat"))
+    attrs = {**span_attributes(span), "corr.session": ""}
+    event = map_llm_span(span, attrs, replace(config, session_id_attribute="corr.session"))
+    assert "session_id" not in event

@@ -183,6 +183,26 @@ def test_oversized_header_fields_truncated_not_dropped(config):
     assert pipeline.dropped_oversize == 0
 
 
+def test_session_id_truncated_like_user_id(config):
+    queue = BoundedQueue(10)
+    pipeline = Pipeline(replace(config, session_id_attribute="corr.session"), queue, None)
+    request = load_export("llm_openai_chat")
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    kv = span.attributes.add()
+    kv.key = "corr.session"
+    kv.value.string_value = "s" * 300
+    pipeline.process_export(request)
+    [event] = queue.drain(10)
+    assert event["session_id"].startswith("s" * 256)
+    assert len(event["session_id"]) == 256 + len("...[TRUNCATED]")
+
+
+def test_session_id_attribute_is_bridge_owned(config):
+    config = replace(config, session_id_attribute="corr.session")
+    with pytest.raises(ConfigError, match="already read by the bridge"):
+        Pipeline(replace(config, extra_attributes=("corr.session",)), BoundedQueue(10), "k")
+
+
 def _schema_report_event(
     tools: list, resources: list | None = None, prompts: list | None = None
 ) -> dict:

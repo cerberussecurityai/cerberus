@@ -95,7 +95,7 @@ export to `Pipeline.process_export`. For each span (`pipeline.py:66`):
 3. **finalize** (`pipeline._finalize`) — the privacy + safety stage, in order:
    - `remote_addr` → `normalize_ip` → `hash_pii` (HMAC-SHA256) when a secret is
      configured, else the normalized raw IP, else `"unknown"`.
-   - `user_agent` / `user_id` / `custom_data.error` truncated to fixed caps —
+   - `user_agent` / `user_id` / `session_id` / `custom_data.error` truncated to fixed caps —
      these are client-controlled header values, so without caps one oversized
      header could push every event from that client over the byte cap and
      silently drop its telemetry (an evasion vector).
@@ -136,6 +136,7 @@ the wire boundary). `token` is omitted; ingest stamps it from `X-API-Key`.
 | `timestamp` | span start → ISO 8601 +00:00 |
 | `remote_addr` | client-IP attr (first XFF hop) → hashed in finalize |
 | `user_id` / `user_agent` | from configured header-mapped attrs |
+| `session_id` (top-level, optional) | from `CERBERUS_SESSION_ID_ATTRIBUTE`; omitted when unset or empty |
 | `body` | only if `CERBERUS_CAPTURE_LLM_CONTENT` — `{input, output}` from `input.value`/`output.value`, sanitized + truncated |
 | `custom_data` | `provider` (`llm.system`/`gen_ai.provider.name`), `model` (`llm.model_name`/`llm.model`), `response_model`, `tokens_{prompt,completion,total,cache_hit,reasoning}` (`llm.token_count.*`), `duration_ms`, `status`, `error`, `streaming`, `temperature`/`top_p`/`max_tokens`, `route_path`, `trace_id`, `span_id` |
 

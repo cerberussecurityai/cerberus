@@ -94,3 +94,10 @@ def span_user_id(attrs: dict[str, Any], attribute: str | None) -> str | None:
     if attribute and attrs.get(attribute) not in (None, ""):
         return str(attrs[attribute])
     return None
+
+
+def span_session_id(attrs: dict[str, Any], attribute: str | None) -> str | None:
+    """Agent session id from the configured span attribute, when set and non-empty."""
+    if attribute and attrs.get(attribute) not in (None, ""):
+        return str(attrs[attribute])
+    return None

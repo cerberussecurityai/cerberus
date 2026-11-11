@@ -28,6 +28,7 @@ from .spanfields import (
     iso_timestamp,
     parse_json_value,
     raw_client_ip,
+    span_session_id,
     span_user_agent,
     span_user_id,
 )
@@ -266,7 +267,7 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         if content["input"] is not None or content["output"] is not None:
             body = content
 
-    return {
+    event: dict[str, Any] = {
         # Backend expects 'remote_addr' (same rename cerberus-django /
         # cerberus-mcp / flex-gateway apply at the wire boundary).
         "remote_addr": raw_client_ip(attrs, config.client_ip_attribute),
@@ -283,3 +284,6 @@ def map_llm_span(span: Span, attrs: dict[str, Any], config: Config) -> dict[str,
         ),
         "user_id": span_user_id(attrs, config.user_id_attribute),
     }
+    if (session_id := span_session_id(attrs, config.session_id_attribute)) is not None:
+        event["session_id"] = session_id
+    return event
