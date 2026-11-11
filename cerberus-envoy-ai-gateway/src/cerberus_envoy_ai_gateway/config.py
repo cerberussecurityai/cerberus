@@ -102,6 +102,7 @@ class Config:
 
     client_ip_attribute: str = "http.client_ip"
     user_id_attribute: str | None = None
+    session_id_attribute: str | None = None
     user_agent_attribute: str = "http.user_agent"
     extra_attributes: tuple[str, ...] = ()
     hash_attributes: tuple[str, ...] = ()
@@ -201,6 +202,8 @@ class Config:
                 os.environ.get("CERBERUS_CLIENT_IP_ATTRIBUTE") or "http.client_ip"
             ).strip(),
             user_id_attribute=(os.environ.get("CERBERUS_USER_ID_ATTRIBUTE") or "").strip() or None,
+            session_id_attribute=(os.environ.get("CERBERUS_SESSION_ID_ATTRIBUTE") or "").strip()
+            or None,
             user_agent_attribute=(
                 os.environ.get("CERBERUS_USER_AGENT_ATTRIBUTE") or "http.user_agent"
             ).strip(),

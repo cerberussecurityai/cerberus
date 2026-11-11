@@ -253,6 +253,7 @@ def _reject_bridge_owned_attributes(config: Config) -> None:
     for attribute in (
         config.client_ip_attribute,
         config.user_id_attribute,
+        config.session_id_attribute,
         config.user_agent_attribute,
     ):
         if attribute:
@@ -491,6 +492,8 @@ class Pipeline:
         event["user_agent"] = truncate_values(event.get("user_agent"), MAX_USER_AGENT_CHARS)
         if event.get("user_id") is not None:
             event["user_id"] = truncate_values(event["user_id"], MAX_USER_ID_CHARS)
+        if event.get("session_id") is not None:
+            event["session_id"] = truncate_values(event["session_id"], MAX_USER_ID_CHARS)
         if event["custom_data"].get("error") is not None:
             event["custom_data"]["error"] = truncate_values(
                 event["custom_data"]["error"], MAX_ERROR_CHARS

@@ -247,3 +247,20 @@ def test_overlapping_lists_count_once_toward_the_cap(monkeypatch):
     monkeypatch.setenv("CERBERUS_EXTRA_ATTRIBUTES", names)
     monkeypatch.setenv("CERBERUS_HASH_ATTRIBUTES", names)
     assert len(Config.from_env().hash_attributes) == MAX_EXTRA_ATTRIBUTES
+
+
+def test_session_id_attribute_defaults_unset(monkeypatch):
+    _set_required(monkeypatch)
+    assert Config.from_env().session_id_attribute is None
+
+
+def test_session_id_attribute_from_env(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CERBERUS_SESSION_ID_ATTRIBUTE", "  session.id ")
+    assert Config.from_env().session_id_attribute == "session.id"
+
+
+def test_session_id_attribute_blank_is_unset(monkeypatch):
+    _set_required(monkeypatch)
+    monkeypatch.setenv("CERBERUS_SESSION_ID_ATTRIBUTE", "   ")
+    assert Config.from_env().session_id_attribute is None

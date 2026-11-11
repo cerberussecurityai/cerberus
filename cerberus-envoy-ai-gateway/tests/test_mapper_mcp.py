@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from helpers import load_expected, load_export, single_span
 
 from cerberus_envoy_ai_gateway.mapper_mcp import map_mcp_span
@@ -106,3 +108,31 @@ def test_long_request_id_capped(config):
     attrs["mcp.request.id"] = "x" * 5000
     event = map_mcp_span(span, attrs, config)
     assert len(event["custom_data"]["request_id"]) <= 256
+
+
+def test_session_id_absent_when_unset(config):
+    assert "session_id" not in _map("mcp_tool_call", config)
+
+
+def test_session_id_from_configured_attribute(config):
+    span = single_span(load_export("mcp_tool_call"))
+    attrs = {**span_attributes(span), "corr.session": "web-abc123def456"}
+    event = map_mcp_span(span, attrs, replace(config, session_id_attribute="corr.session"))
+    assert event["session_id"] == "web-abc123def456"
+
+
+def test_session_id_absent_when_attribute_empty(config):
+    span = single_span(load_export("mcp_tool_call"))
+    attrs = {**span_attributes(span), "corr.session": ""}
+    event = map_mcp_span(span, attrs, replace(config, session_id_attribute="corr.session"))
+    assert "session_id" not in event
+
+
+def test_mcp_top_level_session_wins_but_custom_data_keeps_protocol_session(config):
+    span = single_span(load_export("mcp_tool_call"))
+    attrs = {**span_attributes(span), "corr.session": "web-abc123def456"}
+    baseline = map_mcp_span(span, attrs, config)
+    event = map_mcp_span(span, attrs, replace(config, session_id_attribute="corr.session"))
+    assert event["session_id"] == "web-abc123def456"
+    assert event["custom_data"]["session_id"] == baseline["custom_data"]["session_id"]
+    assert event["custom_data"]["session_id"] != "web-abc123def456"
